@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo, useId } from "react";
+import { resolveVideoPresetFromImageMeta } from "./imageStyleToVideoPreset";
 import {
   HiHome,
   HiPhoto,
@@ -272,8 +273,8 @@ const STYLE_PRESETS = [
     thumbnailImage: "cartoon.jpg",
     thumbnailPrompt: "cartoon human character portrait, simple shapes, bright colors, clean outlines, expressive face, highly legible thumbnail",
     thumbnailNegativePrompt: "photorealistic, gritty realism, animal, anthropomorphic, furry, mascot, creature, blurry, text, watermark",
-    prompt: "cartoon illustration of a human character, simplified human proportions, clean outlines, bright saturated colors, expressive face, smooth shading, polished animated-show visual language",
-    negative_prompt: "photorealistic, gritty realism, natural skin texture, animal, anthropomorphic, furry, mascot, creature, non-human, snout, hooves, beak, tail", category: "illustration",
+    prompt: "cartoon illustration of a human character, simplified human proportions, clean outlines, bright saturated colors, expressive face, smooth shading, polished animated-show visual language, preserved facial structure, readable anatomy",
+    negative_prompt: "photorealistic, gritty realism, natural skin texture, deformed face, distorted anatomy, melted features, broken hands, animal, anthropomorphic, furry, mascot, creature, non-human, snout, hooves, beak, tail", category: "illustration",
   },
   {
     id: "chibi",      tag: "@chibi",      label: "Chibi",           icon: "🧸",
@@ -281,8 +282,8 @@ const STYLE_PRESETS = [
     thumbnailImage: "chibi.jpg",
     thumbnailPrompt: "chibi human character, oversized head, tiny body, huge eyes, kawaii design, clean pastel colors, highly legible thumbnail",
     thumbnailNegativePrompt: "realistic anatomy, photorealistic, animal, anthropomorphic, furry, mascot, creature, blurry, text, watermark",
-    prompt: "chibi kawaii human character design, oversized head, tiny body, huge expressive eyes, simplified human anatomy, soft shading, clean colorful illustration, adorable proportions",
-    negative_prompt: "realistic anatomy, photorealistic, animal, anthropomorphic, furry, mascot, creature, non-human, realistic animal features", category: "illustration",
+    prompt: "chibi kawaii human character design, oversized head, tiny body, huge expressive eyes, simplified human anatomy, soft shading, clean colorful illustration, adorable proportions, preserved facial identity, recognizable face features",
+    negative_prompt: "realistic anatomy, photorealistic, deformed face, distorted features, melted eyes, broken hands, animal, anthropomorphic, furry, mascot, creature, non-human, realistic animal features", category: "illustration",
   },
   {
     id: "pixel",      tag: "@pixel",      label: "Pixel Art",       icon: "🕹️",
@@ -299,8 +300,8 @@ const STYLE_PRESETS = [
     thumbnailImage: "disney.jpg",
     thumbnailPrompt: "stylized 3D human character portrait, expressive face, polished CGI, soft global illumination, premium family animation look, highly legible thumbnail",
     thumbnailNegativePrompt: "photorealistic, gritty realism, animal, anthropomorphic, furry, mascot, creature, non-human, blurry, text, watermark",
-    prompt: "stylized animated 3D human character, expressive human face, polished CGI, soft global illumination, appealing human proportions, glossy materials, high-end family animation finish",
-    negative_prompt: "photorealistic skin, gritty realism, flat 2D line art, animal, anthropomorphic animal, furry, mascot, llama, deer, fox, creature, non-human", category: "3d",
+    prompt: "stylized animated 3D human character, expressive human face, polished CGI, soft global illumination, appealing human proportions, glossy materials, high-end family animation finish, preserved facial structure, recognizable face identity",
+    negative_prompt: "photorealistic skin, gritty realism, flat 2D line art, deformed face, distorted anatomy, asymmetrical eyes, broken hands, animal, anthropomorphic animal, furry, mascot, llama, deer, fox, creature, non-human", category: "3d",
   },
   {
     id: "3d",         tag: "@3d",         label: "3D Render",       icon: "🧊",
@@ -317,8 +318,8 @@ const STYLE_PRESETS = [
     thumbnailImage: "clay.jpg",
     thumbnailPrompt: "claymation human figure, handmade clay texture, tactile imperfections, miniature set feel, soft lighting, highly legible thumbnail",
     thumbnailNegativePrompt: "photorealistic, hyper-clean CGI, metallic realism, animal, mascot, creature, blurry, text, watermark",
-    prompt: "claymation character design, handcrafted clay texture, tactile surface detail, visible imperfections, stylized human figure, miniature set feel, charming stop-motion aesthetic",
-    negative_prompt: "photorealistic skin, hyper-clean CGI, metallic realism, animal, anthropomorphic, furry, mascot, creature, non-human", category: "3d",
+    prompt: "stylized clay animation look, soft clay material, handcrafted surface texture, stop-motion aesthetic, preserved facial structure, readable human anatomy, clean character proportions",
+    negative_prompt: "deformed face, distorted anatomy, asymmetrical eyes, broken hands, melted features, uncanny face, extra fingers, warped reflection, grotesque proportions, animal, anthropomorphic, furry, mascot, creature, non-human", category: "3d",
   },
   {
     id: "isometric",  tag: "@isometrico", label: "Isometrico",      icon: "📐",
@@ -1187,20 +1188,316 @@ function describeAppearanceChanges(diff) {
   return descs;
 }
 
-const PRESERVATION_CLAUSE = "Keep the same pose, facial expression, composition, background, lighting, camera framing, proportions, face identity, and all other details unchanged.";
+// ═══════════════════════════════════════════════════════════════════════════════
+// ── GLOBAL IDENTITY PRESERVATION LAYER ──────────────────────────────────────
+// Sistema centralizzato di protezione identità soggetto per immagini, update e video.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ── Preservation clauses ──
+
+const DEFAULT_PRESERVATION_CLAUSE = "Keep the same pose, facial expression, composition, background, lighting, camera framing, proportions, face identity, and all other details unchanged.";
+const REFLECTION_PRESERVATION_CLAUSE = "Keep the same face identity, pose, expression, mirror composition, background, lighting, camera framing, and all other details unchanged.";
+const PRESERVATION_CLAUSE = DEFAULT_PRESERVATION_CLAUSE;
+
+// ── Risky style definitions ──
+
+const RISKY_IMAGE_STYLE_IDS = new Set(["clay", "chibi", "cartoon", "disney", "anime", "ghibli", "popart"]);
+const RISKY_VIDEO_DIRECTION_IDS = new Set(["chaotic", "found_footage", "bodycam", "fpv_drone"]);
+
+const STYLE_PRESERVATION_CLAUSES = {
+  clay: "Apply the clay style mainly as a material and surface treatment. Do not redesign the face, anatomy, proportions, or reflection.",
+  default_risky: "Apply the style mainly as a surface, rendering, or material treatment. Preserve the same face identity, anatomy, proportions, reflection consistency, and overall composition.",
+};
+
+function detectRiskyStyles(selectedStyleIds) {
+  if (!selectedStyleIds || selectedStyleIds.length === 0) return { hasRiskyStyle: false, riskyIds: [] };
+  const riskyIds = selectedStyleIds.filter(id => RISKY_IMAGE_STYLE_IDS.has(id));
+  return { hasRiskyStyle: riskyIds.length > 0, riskyIds };
+}
+
+function detectRiskyVideoDirections(selectedDirectionIds) {
+  if (!selectedDirectionIds || selectedDirectionIds.length === 0) return { hasRiskyDirection: false, riskyIds: [] };
+  const riskyIds = selectedDirectionIds.filter(id => RISKY_VIDEO_DIRECTION_IDS.has(id));
+  return { hasRiskyDirection: riskyIds.length > 0, riskyIds };
+}
+
+function buildStylePreservationClause(riskyIds) {
+  if (!riskyIds || riskyIds.length === 0) return null;
+  if (riskyIds.includes("clay")) return STYLE_PRESERVATION_CLAUSES.clay;
+  return STYLE_PRESERVATION_CLAUSES.default_risky;
+}
+
+// ── Reflection detection & clauses ──
+
+const REFLECTION_KEYWORDS_IT = [
+  "davanti allo specchio", "allo specchio", "nello specchio",
+  "specchio", "riflesso", "riflessa", "riflessi", "riflesse",
+  "superficie riflettente",
+];
+const REFLECTION_KEYWORDS_EN = [
+  "in the mirror", "in front of the mirror", "mirror reflection",
+  "reflected image", "reflected in", "reflection in",
+  "mirror", "reflection", "reflected",
+];
+
+function detectReflectionContext({ sourcePromptIT, sourcePromptEN, editTextIT, editTextEN } = {}) {
+  const allTexts = [sourcePromptIT, sourcePromptEN, editTextIT, editTextEN]
+    .filter(Boolean)
+    .map(t => t.toLowerCase());
+  if (allTexts.length === 0) return { hasReflectionContext: false, reflectionType: null };
+  const combined = allTexts.join(" ");
+  const hasMirrorIT = REFLECTION_KEYWORDS_IT.some(kw => combined.includes(kw));
+  const hasMirrorEN = REFLECTION_KEYWORDS_EN.some(kw => combined.includes(kw));
+  if (!hasMirrorIT && !hasMirrorEN) return { hasReflectionContext: false, reflectionType: null };
+  const mirrorSpecific = ["specchio", "mirror", "in the mirror", "allo specchio", "davanti allo specchio", "nello specchio", "in front of the mirror"];
+  const isMirror = mirrorSpecific.some(kw => combined.includes(kw));
+  return { hasReflectionContext: true, reflectionType: isMirror ? "mirror" : "generic_reflection" };
+}
+
+const APPEARANCE_CHANGE_FIELDS = new Set([
+  "hairLength", "hairColor", "hairStyle",
+  "skinColor", "eyeColor",
+  "beard", "breastSize", "buttSize",
+  "bodyType", "gender", "age",
+]);
+const HAIR_FIELDS = new Set(["hairLength", "hairColor", "hairStyle"]);
+
+const APPEARANCE_KEYWORDS_EN = [
+  "hair", "hairstyle", "haircut", "ponytail", "bun", "braid",
+  "face", "eyes", "skin", "complexion",
+  "dress", "outfit", "clothing", "clothes", "shirt", "jacket", "coat",
+  "smile", "expression", "makeup",
+];
+
+function buildReflectionConsistencyClause(appearanceDiff, editTextEN) {
+  const changedFields = Object.keys(appearanceDiff || {});
+  const hasHairChange = changedFields.some(f => HAIR_FIELDS.has(f));
+  const hasAppearanceFieldChange = changedFields.some(f => APPEARANCE_CHANGE_FIELDS.has(f));
+  const editLower = (editTextEN || "").toLowerCase();
+  const hasAppearanceTextChange = APPEARANCE_KEYWORDS_EN.some(kw => editLower.includes(kw));
+  const hasHairTextChange = ["hair", "hairstyle", "haircut", "ponytail", "bun", "braid"].some(kw => editLower.includes(kw));
+  if (hasHairChange || hasHairTextChange) {
+    return "Update the hairstyle consistently on both the real subject and the mirror reflection. The reflection must show the same updated hair and must not keep the previous hairstyle.";
+  }
+  if (hasAppearanceFieldChange || hasAppearanceTextChange) {
+    return "Apply the appearance change consistently to both the real subject and her mirror reflection. The reflection must match exactly and must not preserve the previous appearance.";
+  }
+  return "Apply the requested change consistently to the subject and any visible mirror reflection. The reflection must match the updated appearance exactly.";
+}
+
+// ── Identity-sensitive context detection ──
+
+const FACE_CENTRIC_KEYWORDS = [
+  "portrait", "ritratto", "close-up", "closeup", "primo piano",
+  "face", "volto", "viso", "faccia",
+  "eyes", "occhi", "smile", "sorriso", "expression", "espressione",
+  "makeup", "trucco", "lipstick", "rossetto",
+  "selfie", "headshot",
+];
+
+/**
+ * Rileva se il contesto richiede protezione identità alta.
+ * @param {{ selectedCharacter?: object, humanType?: string|null, promptTextEN?: string, promptTextIT?: string, isUpdateMode?: boolean, reflectionCtx?: object, riskyStyleIds?: string[], appearanceDiff?: object }} ctx
+ * @returns {{ hasIdentitySensitiveContext: boolean, needsFacePreservation: boolean, needsAnatomyPreservation: boolean, needsReflectionConsistency: boolean, needsFrameConsistency: boolean, needsStyleGuardrails: boolean }}
+ */
+function detectIdentitySensitiveContext({ selectedCharacter, humanType, promptTextEN, promptTextIT, isUpdateMode, reflectionCtx, riskyStyleIds, appearanceDiff } = {}) {
+  const combined = [promptTextEN, promptTextIT].filter(Boolean).join(" ").toLowerCase();
+  const hasCharacter = Boolean(selectedCharacter);
+  const hasHuman = Boolean(humanType);
+  const hasReflection = Boolean(reflectionCtx?.hasReflectionContext);
+  const hasRisky = Boolean(riskyStyleIds?.length > 0);
+  const hasAppearanceChanges = Boolean(appearanceDiff && Object.keys(appearanceDiff).length > 0);
+  const isFaceCentric = FACE_CENTRIC_KEYWORDS.some(kw => combined.includes(kw));
+
+  const hasIdentitySensitiveContext = hasCharacter || hasHuman || isUpdateMode || hasReflection || hasAppearanceChanges || isFaceCentric || hasRisky;
+
+  return {
+    hasIdentitySensitiveContext,
+    needsFacePreservation: hasCharacter || hasHuman || isFaceCentric || isUpdateMode,
+    needsAnatomyPreservation: hasRisky || isUpdateMode,
+    needsReflectionConsistency: hasReflection,
+    needsFrameConsistency: false,
+    needsStyleGuardrails: hasRisky,
+  };
+}
+
+// ── Identity preservation clause builders ──
+
+const IDENTITY_CLAUSE_IMAGE = "Preserve the same face identity, facial proportions, eye shape, nose shape, mouth shape, hairstyle consistency, body proportions, and overall character identity.";
+const IDENTITY_CLAUSE_IMAGE_FACE = "Keep the same face identity, facial structure, eye spacing, nose shape, mouth shape, jawline, and hairstyle consistency.";
+const IDENTITY_CLAUSE_VIDEO = "Preserve the same face identity, facial structure, hairstyle consistency, body proportions, and overall character identity across the whole clip. Maintain stable facial features and coherent anatomy throughout the shot.";
+const IDENTITY_CLAUSE_VIDEO_CHARACTER = "Keep the same character identity consistent across all frames. Avoid facial drift, anatomy drift, hairstyle drift, and identity changes over time.";
+const VIDEO_REFLECTION_CLAUSE = "Maintain consistent appearance between the subject and any visible mirror reflection throughout the clip. Hair, face, clothing, and visible features must match between the subject and the reflection at all times.";
+
+// ── Character Subject Anchoring ──
+
+const CHARACTER_SUBJECT_LOCK = "Use the selected character as the ONLY main subject. Preserve the same face identity, hairstyle, facial structure, body proportions, and overall appearance exactly as shown in the reference.";
+const CHARACTER_ROLE_BINDING = "Treat any role, title, or profession mentioned in the prompt (e.g. mayor, detective, queen, doctor, hero) as a narrative role, outfit, or context for the selected character — NOT as a different subject to generate from scratch.";
+const CHARACTER_ANTI_ANIMAL = "Do not replace the human subject with an animal, cat, dog, feline, canine, mascot, furry, anthropomorphic creature, cartoon animal, or any non-human entity. The subject must remain the same human character.";
+const CHARACTER_ANTI_ANIMAL_NEGATIVE = "animal, cat, dog, feline, canine, furry, anthropomorphic, mascot, creature, cartoon animal, non-human, animal face, animal ears, animal nose, snout, whiskers, paws, tail";
+
+const ROLE_KEYWORDS_IT = [
+  "sindaco", "sindaca", "detective", "investigatore", "investigatrice",
+  "regina", "re", "principe", "principessa", "imperatore", "imperatrice",
+  "insegnante", "professore", "professoressa", "maestro", "maestra",
+  "supereroe", "supereroina", "eroe", "eroina",
+  "avvocato", "avvocatessa", "giudice",
+  "dottore", "dottoressa", "medico", "infermiere", "infermiera",
+  "poliziotto", "carabiniere", "soldato", "generale", "capitano",
+  "cuoco", "chef", "cameriere", "cameriera",
+  "pirata", "cowboy", "astronauta", "pilota",
+  "presidente", "ministro", "governatore", "ambasciatore",
+  "mago", "strega", "vampiro", "zombie",
+  "ninja", "samurai", "gladiatore", "cavaliere",
+];
+const ROLE_KEYWORDS_EN = [
+  "mayor", "detective", "investigator",
+  "queen", "king", "prince", "princess", "emperor", "empress",
+  "teacher", "professor",
+  "superhero", "superheroine", "hero", "heroine",
+  "lawyer", "judge",
+  "doctor", "nurse", "medic",
+  "police", "officer", "soldier", "general", "captain",
+  "chef", "cook", "waiter", "waitress",
+  "pirate", "cowboy", "astronaut", "pilot",
+  "president", "minister", "governor", "ambassador",
+  "wizard", "witch", "vampire", "zombie",
+  "ninja", "samurai", "gladiator", "knight",
+];
+
+function detectRoleInPrompt(promptIT, promptEN) {
+  const combinedLC = `${promptIT || ""} ${promptEN || ""}`.toLowerCase();
+  const foundIT = ROLE_KEYWORDS_IT.filter(kw => combinedLC.includes(kw));
+  const foundEN = ROLE_KEYWORDS_EN.filter(kw => combinedLC.includes(kw));
+  return { hasRole: foundIT.length > 0 || foundEN.length > 0, rolesIT: foundIT, rolesEN: foundEN };
+}
+
+function buildCharacterAnchoringClauses(selectedCharacter, humanType, promptIT, promptEN, riskyStyleIds) {
+  if (!selectedCharacter) return { subjectLockClause: null, roleBindingClause: null, antiAnimalClause: null, antiAnimalNegative: null };
+
+  const subjectLockClause = CHARACTER_SUBJECT_LOCK;
+
+  const roleInfo = detectRoleInPrompt(promptIT, promptEN);
+  const roleBindingClause = roleInfo.hasRole ? CHARACTER_ROLE_BINDING : null;
+
+  const isHuman = Boolean(humanType) || Boolean(selectedCharacter?.appearance?.gender);
+  const hasRiskyStyle = riskyStyleIds && riskyStyleIds.length > 0;
+  const antiAnimalClause = isHuman ? CHARACTER_ANTI_ANIMAL : null;
+  const antiAnimalNegative = (isHuman && (hasRiskyStyle || roleInfo.hasRole))
+    ? CHARACTER_ANTI_ANIMAL_NEGATIVE
+    : (isHuman ? "animal, anthropomorphic, furry, mascot, creature" : null);
+
+  return { subjectLockClause, roleBindingClause, antiAnimalClause, antiAnimalNegative };
+}
+
+// ── Character Signature Clause (anchors distinctive visual traits) ──
+
+function buildCharacterSignatureClause(selectedCharacter) {
+  if (!selectedCharacter) return null;
+  const name = selectedCharacter.name;
+  const app = selectedCharacter.appearance;
+  if (!name && !app) return null;
+
+  const traits = [];
+
+  if (app) {
+    const genderEN = { "Uomo": "male", "Donna": "female" }[app.gender] || null;
+    const bodyEN = { "Magra": "thin", "Snella": "slim", "Media": "average build", "Robusta": "sturdy", "Grassa": "heavy build", "Muscolosa": "muscular" }[app.bodyType] || null;
+    const hairLenEN = { "Rasati": "shaved head", "Molto corti": "very short hair", "Corti": "short hair", "Medi": "medium-length hair", "Lunghi": "long hair", "Molto lunghi": "very long hair" }[app.hairLength] || null;
+    const hairColEN = { "Neri": "black", "Castano scuro": "dark brown", "Castano chiaro": "light brown", "Biondo scuro": "dark blonde", "Biondo chiaro": "light blonde", "Rosso": "red", "Bianco/Grigio": "white/grey", "Colorati": "colorful dyed" }[app.hairColor] || null;
+    const hairStyleEN = { "Lisci": "straight", "Mossi": "wavy", "Ricci": "curly", "Afro": "afro", "Raccolti": "tied up", "Coda": "ponytail", "Trecce": "braided" }[app.hairStyle] || null;
+    const eyeEN = { "Marroni": "brown eyes", "Nocciola": "hazel eyes", "Verdi": "green eyes", "Azzurri": "blue eyes", "Grigi": "grey eyes", "Neri": "dark eyes" }[app.eyeColor] || null;
+    const skinEN = { "Molto chiara": "very pale skin", "Chiara": "fair skin", "Olivastra": "olive skin", "Scura": "dark skin", "Molto scura": "very dark skin" }[app.skinColor] || null;
+    const beardEN = { "Barba corta": "short beard", "Barba media": "medium beard", "Barba lunga": "long beard", "Pizzetto": "goatee", "Baffi": "mustache" }[app.beard] || null;
+
+    if (hairColEN && hairLenEN) {
+      traits.push(`${hairColEN} ${hairLenEN}${hairStyleEN ? ` (${hairStyleEN})` : ""}`);
+    } else if (hairLenEN) {
+      traits.push(hairLenEN);
+    }
+    if (eyeEN) traits.push(eyeEN);
+    if (skinEN) traits.push(skinEN);
+    if (beardEN) traits.push(beardEN);
+    if (bodyEN) traits.push(`${bodyEN} physique`);
+    if (genderEN) traits.push(genderEN);
+  }
+
+  if (traits.length === 0 && name) {
+    return `Keep the character clearly recognizable as ${name} throughout the entire video. Maintain the same face, hairstyle, outfit, and overall silhouette as the reference image.`;
+  }
+
+  const nameStr = name ? ` as ${name}` : "";
+  return `Keep the character clearly recognizable${nameStr} throughout the entire video: ${traits.join(", ")}. Maintain the same face, outfit, and overall silhouette as the reference image.`;
+}
+
+function buildCharacterVisualSignatureClause(selectedCharacter) {
+  const sig = selectedCharacter?.visualSignature?.trim();
+  if (!sig) return null;
+  return `Preserve these distinctive visual signature details: ${sig}.`;
+}
+
+function buildIdentityPreservationClause(identityCtx) {
+  if (!identityCtx?.hasIdentitySensitiveContext) return null;
+  if (identityCtx.needsFacePreservation) return IDENTITY_CLAUSE_IMAGE_FACE;
+  return IDENTITY_CLAUSE_IMAGE;
+}
+
+function buildVideoIdentityPreservationClause(identityCtx, hasCharacter) {
+  if (!identityCtx?.hasIdentitySensitiveContext) return null;
+  const parts = [IDENTITY_CLAUSE_VIDEO];
+  if (hasCharacter) parts.push(IDENTITY_CLAUSE_VIDEO_CHARACTER);
+  return parts.join(" ");
+}
+
+// ── Prompt builders ──
 
 /** Costruisce il prompt EN per image update (edit conservativo). */
-function buildProjectImageUpdatePrompt(appearanceDiff, editTextEN) {
+function buildProjectImageUpdatePrompt(appearanceDiff, editTextEN, reflectionCtx, selectedStyles, identityCtx, charAnchoring, visualSignatureClause) {
   const parts = [];
+
+  // 1. Character subject lock (priorità massima in update)
+  if (charAnchoring?.subjectLockClause) {
+    parts.push(charAnchoring.subjectLockClause);
+  }
+
+  // 2. Modifiche appearance del personaggio
   const traitDescs = describeAppearanceChanges(appearanceDiff);
   if (traitDescs.length > 0) {
     parts.push(`Update the character to have: ${traitDescs.join(", ")}.`);
   }
+
+  // 3. Testo aggiuntivo utente
   if (editTextEN) {
     parts.push(editTextEN.endsWith(".") ? editTextEN : `${editTextEN}.`);
   }
-  if (parts.length === 0) parts.push("Regenerate the image with minimal changes.");
-  parts.push(PRESERVATION_CLAUSE);
+
+  if (parts.length === 0 && !charAnchoring?.subjectLockClause) parts.push("Regenerate the image with minimal changes.");
+
+  // 4. Identity preservation clause
+  const idClause = buildIdentityPreservationClause(identityCtx);
+  if (idClause) parts.push(idClause);
+
+  // 5. Visual signature clause
+  if (visualSignatureClause) parts.push(visualSignatureClause);
+
+  // 6. Style preservation clause (se stile rischioso)
+  const { hasRiskyStyle, riskyIds } = detectRiskyStyles(selectedStyles);
+  const styleClause = hasRiskyStyle ? buildStylePreservationClause(riskyIds) : null;
+  if (styleClause) parts.push(styleClause);
+
+  // 7. Role binding + anti-animal
+  if (charAnchoring?.roleBindingClause) parts.push(charAnchoring.roleBindingClause);
+  if (charAnchoring?.antiAnimalClause) parts.push(charAnchoring.antiAnimalClause);
+
+  // 8. Reflection consistency clause
+  if (reflectionCtx?.hasReflectionContext) {
+    const refClause = buildReflectionConsistencyClause(appearanceDiff, editTextEN);
+    if (refClause) parts.push(refClause);
+  }
+
+  // 9. Preservation clause finale
+  parts.push(reflectionCtx?.hasReflectionContext ? REFLECTION_PRESERVATION_CLAUSE : DEFAULT_PRESERVATION_CLAUSE);
+
   return parts.join(" ");
 }
 
@@ -1332,6 +1629,15 @@ const VIDEO_SYSTEM_PROMPT =
   "The user describes a scene/action in Italian. Your job is to translate and create a RICH, DETAILED video prompt. " +
   "CRITICAL: The user's idea is SACRED — do NOT change the subject or setting. " +
   "HOWEVER, you MUST adapt the AMOUNT of action to fit the video duration provided. " +
+  "\n\n=== NO-INVENTION RULE (MANDATORY — HIGHEST PRIORITY) ===" +
+  "\nDo NOT invent objects, materials, vehicles, body parts, costume elements, or physical attributes that are NOT explicitly mentioned in the user's prompt or character description. " +
+  "\nFORBIDDEN unless user explicitly mentions them: metallic armor, metal body, chrome surface, armor plates, mechanical joints, robotic plating, " +
+  "metallic reflections on armor, vehicle surface, bodywork, chassis, glowing runes, wings, cape, sword, gun, helmet, shield. " +
+  "\nFor named characters without detailed metadata, use ONLY generic wording: 'the character', 'the figure', 'the character's outfit', 'the character's silhouette'. " +
+  "\nSAFE enrichments: lighting, atmosphere, camera, pacing, ambient environment — but ONLY using elements coherent with what the user described. " +
+  "\nWRONG: 'metallic reflections on armor', 'light reflecting off metal body', 'chrome plating'. " +
+  "\nRIGHT: 'sunset light on the character', 'warm highlights on the outfit', 'golden-hour light on the figure'. " +
+  "\n=== END NO-INVENTION RULE ===" +
   "\n\nDURATION RULES: " +
   "- 3s: ONE single micro-movement (a glance, wind in hair, a blink, a subtle smile). No sequences. " +
   "- 5s: ONE main action with natural beginning and end (a few steps, picking up an object, a slow camera pan). Max 1-2 movements. " +
@@ -1343,7 +1649,7 @@ const VIDEO_SYSTEM_PROMPT =
   "- CAMERA: specify movement (slow dolly in, tracking left, static wide shot, handheld follow) " +
   "- ATMOSPHERE: lighting changes, weather, ambient motion (leaves falling, smoke drifting, light flickering) " +
   "- PACING: describe the rhythm (building tension, calm and steady, sudden burst of energy) " +
-  "- DETAILS: small secondary motions that make the scene feel alive (hair moving, fabric swaying, reflections) " +
+  "- DETAILS: small secondary motions that make the scene feel alive (hair moving, fabric swaying) — but ONLY details the user mentioned or that are generic environmental elements " +
   "\n\nIF THE USER'S IDEA IS TOO COMPLEX FOR THE SELECTED DURATION: " +
   "- Simplify to fit, keeping only the most visually impactful actions. " +
   "- In 'prompt_it', explain what you kept and what you dropped. " +
@@ -1601,14 +1907,19 @@ function normalizeVideoActionPrompt(textEn, guidance) {
  * @param {{ subjectLock: string, scenePromptEn: string, guidance: object, visualStylePrompt: string, visualMotionPrompt: string, directionStylePrompt: string, directionMotionPrompt: string }} p
  * @returns {{ finalPrompt: string, framePrompt: string, negativeAddition: string }}
  */
-function composeVideoPrompt({ subjectLock, scenePromptEn, guidance, visualStylePrompt, visualMotionPrompt, directionStylePrompt, directionMotionPrompt }) {
+function composeVideoPrompt({ subjectLock, characterSignatureClause, characterVisualSignatureClause, scenePromptEn, guidance, visualStylePrompt, visualMotionPrompt, directionStylePrompt, directionMotionPrompt, videoIdentityClause, videoStyleClause, videoReflectionClause }) {
   const finalPrompt = [
     subjectLock,
+    characterSignatureClause,
+    characterVisualSignatureClause,
     scenePromptEn,
     guidance.cameraHint,
     guidance.placementHint,
     visualStylePrompt,
     directionStylePrompt,
+    videoIdentityClause,
+    videoStyleClause,
+    videoReflectionClause,
     visualMotionPrompt,
     directionMotionPrompt,
     guidance.motionHint,
@@ -1616,16 +1927,542 @@ function composeVideoPrompt({ subjectLock, scenePromptEn, guidance, visualStyleP
 
   const framePrompt = [
     subjectLock,
+    characterSignatureClause,
+    characterVisualSignatureClause,
     scenePromptEn,
     guidance.cameraHint,
     guidance.placementHint,
     visualStylePrompt,
     directionStylePrompt,
+    videoIdentityClause,
+    videoStyleClause,
+    videoReflectionClause,
   ].filter(Boolean).join(", ");
 
   const negativeAddition = guidance.negativeHint || "";
 
   return { finalPrompt, framePrompt, negativeAddition };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ── VIDEO SCENE PLANNING ENGINE ──────────────────────────────────────────────
+// Separates reference image from opening frame; enforces dominant action.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const SCENE_PLAN_SYSTEM_PROMPT =
+  "You are an expert AI video scene planner for Kling 3.0 Pro (image-to-video). " +
+  "The user describes a video scene. Your job is to decompose it into a structured plan. " +
+  "\n\n=== SEMANTIC GUARDRAIL — ABSOLUTE RULE (HIGHEST PRIORITY) ===" +
+  "\nYou MUST NOT invent, assume, or infer ANY of the following unless EXPLICITLY stated in the user's prompt or character metadata:" +
+  "\n- Materials: metal, metallic, armor, chrome, glass, wood, stone, crystal, leather, fur, scales, etc." +
+  "\n- Costume/body parts: wings, cape, sword, gun, helmet, shield, crown, horns, tail, claws, etc." +
+  "\n- Object types: vehicle, car, chassis, bodywork, motorcycle, mech, robot, spaceship, etc." +
+  "\n- Surface attributes: metallic reflections, armor plates, mechanical joints, robotic plating, glowing runes, etc." +
+  "\n" +
+  "\nFORBIDDEN PHRASES (never use unless the user explicitly mentions them):" +
+  "\n'metallic armor', 'metal body', 'metallic reflections on armor', 'chrome surface', 'armored figure'," +
+  "\n'mechanical suit', 'robotic plating', 'vehicle surface', 'bodywork reflections', 'metal chassis'," +
+  "\n'armor plates', 'gleaming metal', 'steel body', 'iron plating'" +
+  "\n" +
+  "\nSAFE GENERIC WORDING (use these instead when describing light/appearance on a character):" +
+  "\n'sunset light on the character', 'warm highlights on the outfit', 'golden-hour light on the figure'," +
+  "\n'dramatic rim light on the silhouette', 'soft light on the costume', 'ambient glow on the character'," +
+  "\n'light reflecting on the character's outfit', 'highlights across the figure'" +
+  "\n" +
+  "\nNAMED CHARACTERS: If the subject is a named character (e.g. 'Kiavik', 'Luna', etc.) and you have NO metadata " +
+  "describing their specific materials or costume details, you MUST refer to them ONLY as 'the character', " +
+  "'the figure', 'the character's outfit/costume/silhouette'. Let the reference image define appearance. " +
+  "Do NOT guess what they wear, what they are made of, or what they carry." +
+  "\n" +
+  "\nWRONG: 'golden sunset light reflecting off metallic armor' (invented armor)" +
+  "\nWRONG: 'metallic reflections on the character's body' (invented material)" +
+  "\nWRONG: 'wind catching the character's cape' (invented cape)" +
+  "\nRIGHT: 'golden sunset light on the character' (safe, generic)" +
+  "\nRIGHT: 'warm highlights on the outfit' (safe, generic)" +
+  "\nRIGHT: 'wind in the character's hair' (only if hair is mentioned or visible in reference)" +
+  "\n=== END SEMANTIC GUARDRAIL ===" +
+  "\n\nYou MUST identify: " +
+  "1) The PRIMARY ACTION — the single most important movement/event that must dominate the video. " +
+  "2) The START STATE — what the opening frame should look like (where the subject is, what pose, what framing). " +
+  "3) The END STATE — where the scene should conclude. " +
+  "4) The CAMERA PLAN — how the camera moves during the scene. " +
+  "5) SECONDARY ELEMENTS — ambient details, environment, lighting, weather. ONLY elements from the user's prompt or generic atmosphere (sky, clouds, sunlight, wind, ground). " +
+  "6) DURATION STRATEGY — how to fit the action into the given duration. " +
+  "7) AVOID ACTIONS — things the video must NOT do (anti-misinterpretation hints). " +
+  "8) OPENING FRAME PROMPT — a standalone image prompt describing ONLY the first frame of the video. " +
+  "   This must show the START STATE, not a generic standing pose. " +
+  "   If the action is a descent, the opening frame must show the subject IN THE AIR. " +
+  "   If the action is running, the opening frame must show the subject MID-STRIDE. " +
+  "   The opening frame must NEVER be a static neutral pose unless that IS the start state. " +
+  "   Do NOT add materials, costume details, or attributes the user didn't mention. " +
+  "   Use ONLY safe generic wording for character appearance." +
+  "\n\nCRITICAL RULES: " +
+  "- The primary_action must be the FOCUS of the video's limited duration. " +
+  "- For 5s: only ONE action. Do not attempt sequences. " +
+  "- For 10s: at most 2-3 connected movements. " +
+  "- The opening_frame_prompt must be a valid, self-contained image generation prompt (40-80 words, English). " +
+  "- The opening_frame_prompt must describe the START STATE, not the reference photo's pose. " +
+  "- Include character appearance hints from the reference context if provided, but do NOT invent new appearance attributes. " +
+  "- When uncertain about a character's look, use 'the character', 'the figure', 'the outfit' — NEVER specific invented materials." +
+  "\n\nReturn ONLY valid JSON (no markdown, no backticks): " +
+  '{"primary_action":"short English description of main action",' +
+  '"start_state":"what the opening frame shows",' +
+  '"end_state":"where the scene concludes",' +
+  '"camera_plan":"camera movement description",' +
+  '"secondary_elements":["element1","element2"],' +
+  '"duration_strategy":"how to fit into Xs",' +
+  '"avoid_actions":["do not X","do not Y"],' +
+  '"opening_frame_prompt":"detailed English image prompt for the opening frame",' +
+  '"action_emphasis_prompt":"1-2 sentence English addition to enforce the dominant action in the video prompt"}';
+
+async function buildScenePlan(promptIT, promptEN, duration, referenceContext = "", visualStyle = "", directionStyle = "") {
+  const context = [
+    `Scene (IT): ${promptIT}`,
+    promptEN ? `Scene (EN): ${promptEN}` : "",
+    `Duration: ${duration}s`,
+    referenceContext ? `Reference image context: ${referenceContext}` : "",
+    visualStyle ? `Visual style: ${visualStyle}` : "",
+    directionStyle ? `Direction style: ${directionStyle}` : "",
+  ].filter(Boolean).join("\n");
+
+  for (const model of LLM_MODELS) {
+    try {
+      const res = await fetch(OPENROUTER_API_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${OPENROUTER_API_KEY}`,
+          "HTTP-Referer": "https://axstudio.app",
+          "X-Title": "AXSTUDIO",
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: "system", content: SCENE_PLAN_SYSTEM_PROMPT },
+            { role: "user", content: context },
+          ],
+          temperature: 0.5,
+          max_tokens: 600,
+        }),
+      });
+      const data = await res.json();
+      const text = data?.choices?.[0]?.message?.content;
+      if (!text) continue;
+      const clean = text.replace(/```json|```/g, "").trim();
+      const jsonMatch = clean.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) continue;
+      const parsed = JSON.parse(jsonMatch[0]);
+      if (parsed.primary_action && parsed.opening_frame_prompt) {
+        const rawPlan = {
+          primary_action: parsed.primary_action,
+          start_state: parsed.start_state || "",
+          end_state: parsed.end_state || "",
+          camera_plan: parsed.camera_plan || "",
+          secondary_elements: Array.isArray(parsed.secondary_elements) ? parsed.secondary_elements : [],
+          duration_strategy: parsed.duration_strategy || "",
+          avoid_actions: Array.isArray(parsed.avoid_actions) ? parsed.avoid_actions : [],
+          opening_frame_prompt: parsed.opening_frame_prompt,
+          action_emphasis_prompt: parsed.action_emphasis_prompt || "",
+        };
+        const { plan: sanitizedPlan, guardrailApplied, replacements } = sanitizeScenePlan(rawPlan, promptIT, promptEN);
+        if (process.env.NODE_ENV === "development") {
+          console.log("[SCENE PLAN SEMANTIC GUARDRAIL]", {
+            scenePlanBeforeSanitization: rawPlan,
+            scenePlanAfterSanitization: sanitizedPlan,
+            semanticGuardrailApplied: guardrailApplied,
+            replacements,
+          });
+        }
+        return sanitizedPlan;
+      }
+    } catch (e) {
+      console.warn("[SCENE PLAN] Model failed:", e.message);
+    }
+  }
+  return null;
+}
+
+function buildOpeningFramePrompt(scenePlan, referenceContext, visualStylePrompt, identityClause, characterSignatureClause, characterVisualSignatureClause) {
+  if (!scenePlan?.opening_frame_prompt) return null;
+  const parts = [
+    scenePlan.opening_frame_prompt,
+    characterSignatureClause,
+    characterVisualSignatureClause,
+    identityClause,
+    visualStylePrompt,
+    "masterpiece, best quality, highly detailed, 8K",
+  ].filter(Boolean);
+  return parts.join(", ");
+}
+
+function buildAvoidActionsNegative(scenePlan) {
+  if (!scenePlan?.avoid_actions?.length) return "";
+  return scenePlan.avoid_actions.join(", ");
+}
+
+// ── Semantic Sanitizer for Scene Plan (post-LLM guardrail) ──────────────────
+const INVENTED_MATERIAL_PATTERNS = [
+  /\bmetall?ic\s+(armor|body|bodywork|plating|surface|chassis|reflections?\s+on\s+armor|suit)\b/gi,
+  /\b(armor\s+plates?|armou?red\s+figure|armou?red\s+body|armou?red\s+suit)\b/gi,
+  /\b(metal\s+body|metal\s+chassis|metal\s+plating|steel\s+body|iron\s+plating)\b/gi,
+  /\b(chrome\s+surface|chrome\s+body|chrome\s+plating)\b/gi,
+  /\b(robotic\s+plating|robotic\s+suit|robotic\s+body|mechanical\s+suit|mechanical\s+joints?)\b/gi,
+  /\b(vehicle\s+surface|vehicle.like\s+body|bodywork\s+reflections?)\b/gi,
+  /\b(glowing\s+runes?|energy\s+shield|force\s+field)\b/gi,
+  /\breflect(?:ing|ions?)\s+(?:off|on)\s+(?:metallic|metal|chrome|steel|iron)\s+\w*/gi,
+  /\b(?:gleaming|shining|glinting)\s+(?:metal|armor|steel|chrome|iron)\b/gi,
+];
+
+const SAFE_REPLACEMENTS = {
+  "metallic reflections on armor": "warm light on the character",
+  "metallic armor": "the character's outfit",
+  "metal body": "the character's figure",
+  "metallic body": "the character's figure",
+  "metal chassis": "the character's silhouette",
+  "chrome surface": "the character's outfit",
+  "armored figure": "the character",
+  "armored body": "the character's figure",
+  "mechanical suit": "the character's costume",
+  "mechanical joints": "the character's pose",
+  "robotic plating": "the character's outfit",
+  "armor plates": "the character's costume",
+  "steel body": "the character's figure",
+  "iron plating": "the character's outfit",
+  "vehicle surface": "the character's silhouette",
+  "bodywork reflections": "highlights on the character",
+  "glowing runes": "ambient glow",
+  "gleaming metal": "soft highlights on the outfit",
+  "gleaming armor": "soft highlights on the outfit",
+  "shining metal": "warm highlights on the character",
+  "shining armor": "warm highlights on the outfit",
+};
+
+function sanitizeScenePlanText(text, userPromptLC) {
+  if (!text || typeof text !== "string") return { text, changed: false, replaced: [] };
+  let result = text;
+  const replaced = [];
+
+  for (const [bad, good] of Object.entries(SAFE_REPLACEMENTS)) {
+    const re = new RegExp(bad.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi");
+    if (re.test(result)) {
+      if (!userPromptLC.includes(bad.toLowerCase())) {
+        replaced.push({ from: bad, to: good });
+        result = result.replace(re, good);
+      }
+    }
+  }
+
+  for (const pattern of INVENTED_MATERIAL_PATTERNS) {
+    const rx = new RegExp(pattern.source, pattern.flags);
+    const matches = result.match(rx);
+    if (matches) {
+      for (const m of matches) {
+        if (!userPromptLC.includes(m.toLowerCase())) {
+          replaced.push({ from: m, to: "the character" });
+          result = result.replace(m, "the character");
+        }
+      }
+    }
+  }
+
+  return { text: result, changed: replaced.length > 0, replaced };
+}
+
+function sanitizeScenePlan(scenePlan, sourcePromptIT = "", sourcePromptEN = "") {
+  if (!scenePlan) return { plan: null, guardrailApplied: false, replacements: [] };
+
+  const userPromptLC = `${sourcePromptIT} ${sourcePromptEN}`.toLowerCase();
+  const allReplacements = [];
+  const sanitized = { ...scenePlan };
+
+  const textFields = [
+    "primary_action", "start_state", "end_state", "camera_plan",
+    "duration_strategy", "opening_frame_prompt", "action_emphasis_prompt",
+  ];
+
+  for (const field of textFields) {
+    if (sanitized[field]) {
+      const { text, replaced } = sanitizeScenePlanText(sanitized[field], userPromptLC);
+      if (replaced.length > 0) {
+        sanitized[field] = text;
+        allReplacements.push(...replaced.map(r => ({ field, ...r })));
+      }
+    }
+  }
+
+  if (Array.isArray(sanitized.secondary_elements)) {
+    sanitized.secondary_elements = sanitized.secondary_elements.map((el, i) => {
+      const { text, replaced } = sanitizeScenePlanText(el, userPromptLC);
+      if (replaced.length > 0) {
+        allReplacements.push(...replaced.map(r => ({ field: `secondary_elements[${i}]`, ...r })));
+      }
+      return text;
+    });
+  }
+
+  if (Array.isArray(sanitized.avoid_actions)) {
+    sanitized.avoid_actions = sanitized.avoid_actions.map((el, i) => {
+      const { text, replaced } = sanitizeScenePlanText(el, userPromptLC);
+      if (replaced.length > 0) {
+        allReplacements.push(...replaced.map(r => ({ field: `avoid_actions[${i}]`, ...r })));
+      }
+      return text;
+    });
+  }
+
+  return {
+    plan: sanitized,
+    guardrailApplied: allReplacements.length > 0,
+    replacements: allReplacements,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ── DIRECTION STYLE SUGGESTION ENGINE ────────────────────────────────────────
+// Hybrid: fast local heuristics → optional LLM refinement for reason_it.
+// Returns { recommended_direction_style, alternative_direction_styles, reason_it, confidence, source }
+// ─────────────────────────────────────────────────────────────────────────────
+
+const DIRECTION_VALID_IDS = new Set(VIDEO_DIRECTION_STYLE_PRESETS.map(p => p.id));
+
+const DIRECTION_HEURISTIC_RULES = [
+  {
+    keywords: ["caffè", "cucina", "colazione", "pranzo", "cena", "tavola", "divano", "letto", "bagno", "doccia", "specchio", "quotidian", "routine", "sveglia", "mattina", "casa", "appartamento", "stanza", "camera da letto", "salotto"],
+    recommended: "documentary", alternatives: ["handheld", "cinematic"],
+    reason: "Scena quotidiana e intima: una regia osservazionale mantiene naturalezza e leggibilità dell'azione.",
+    confidence: 0.85,
+  },
+  {
+    keywords: ["vola", "volare", "drago", "panorama", "città dall'alto", "montagna", "valle", "sorvola", "sopra la città", "veduta", "paesaggio", "aereo", "cielo", "nuvole", "orizzonte", "costa", "mare dall'alto", "castello"],
+    recommended: "drone", alternatives: ["cinematic", "trailer"],
+    reason: "Scena ampia e panoramica con grande respiro visivo: una ripresa aerea o cinematica valorizza il movimento nello spazio.",
+    confidence: 0.88,
+  },
+  {
+    keywords: ["sogno", "sogna", "oniric", "magico", "luminosa", "sfera luminosa", "bosco incantato", "fata", "galleggia", "fluttua", "contempla", "ammira", "meraviglia", "surreale", "nebbia", "foschia", "aurora", "stelle cadenti", "riflesso nell'acqua", "magia", "incanto", "fiaba"],
+    recommended: "dreamy", alternatives: ["cinematic", "dolly_in"],
+    reason: "Scena contemplativa e poetica: una regia sognante esalta atmosfera e meraviglia.",
+    confidence: 0.84,
+  },
+  {
+    keywords: ["corre", "correre", "inseguit", "fuga", "scappa", "vicolo", "inseguimento", "rincorre", "spara", "sparo", "combattimento", "lotta", "pugni", "calci", "esplosione", "esplosioni", "scontro", "attacco", "difesa", "panico", "emergenza"],
+    recommended: "handheld", alternatives: ["chaotic", "bodycam"],
+    reason: "Alta energia e tensione: una camera a mano con movimento reattivo trasmette urgenza e immersione.",
+    confidence: 0.87,
+  },
+  {
+    keywords: ["orologio", "gioiello", "anello", "bottiglia", "profumo", "scarpa", "borsa", "lusso", "prodotto", "design", "elegante", "packaging", "vetrina", "espositore", "diamante", "cristallo", "brand"],
+    recommended: "commercial", alternatives: ["orbit", "push_in_macro"],
+    reason: "Focus prodotto e dettaglio: una regia commerciale con movimento controllato esalta eleganza e precisione.",
+    confidence: 0.89,
+  },
+  {
+    keywords: ["tramonto", "alba", "nuvole che si muovono", "cielo che cambia", "stagioni", "passare del tempo", "costruzione", "folla", "traffico", "fiori che sbocciano", "giorno e notte", "ore passano"],
+    recommended: "timelapse", alternatives: ["hyperlapse", "cinematic"],
+    reason: "Scena con passaggio del tempo o evoluzione ambientale: il time-lapse comprime il cambiamento in modo chiaro e visivo.",
+    confidence: 0.86,
+  },
+  {
+    keywords: ["dettaglio", "occhio", "labbra", "texture", "superficie", "goccia", "gocce", "pioggia su", "rugiada", "food", "cibo da vicino", "primo piano estremo", "macro", "filo d'erba", "insetto", "petalo"],
+    recommended: "push_in_macro", alternatives: ["rack_focus", "dolly_in"],
+    reason: "Focus su dettaglio ravvicinato: una regia macro valorizza texture, materialità e intimità visiva.",
+    confidence: 0.85,
+  },
+  {
+    keywords: ["epico", "epica", "battaglia", "guerra", "esercito", "armata", "cavaliere", "gladiatore", "arena", "trono", "spada", "fantasy", "sci-fi", "astronave", "galassia", "supereroe", "apocalisse", "catastrofe", "distruzione"],
+    recommended: "trailer", alternatives: ["cinematic", "drone"],
+    reason: "Scena epica e ad alto impatto: una regia da trailer massimizza drammaticità e tensione narrativa.",
+    confidence: 0.87,
+  },
+  {
+    keywords: ["danza", "balla", "ballare", "palco", "performance", "concerto", "cantante", "rapper", "dj", "discoteca", "club", "neon", "luci colorate", "moda", "sfilata", "passerella", "modella"],
+    recommended: "music_video", alternatives: ["gimbal", "cinematic"],
+    reason: "Scena performativa e stilizzata: una regia da music video esalta ritmo, energia e impatto visivo.",
+    confidence: 0.86,
+  },
+  {
+    keywords: ["statua", "monumento", "scultura", "personaggio in posa", "creatura", "robot", "mech", "auto", "macchina", "moto", "icona", "busto", "ritratto a 360"],
+    recommended: "orbit", alternatives: ["dolly_in", "commercial"],
+    reason: "Soggetto iconico e centrale: un'orbita attorno al soggetto ne esalta la presenza e la tridimensionalità.",
+    confidence: 0.84,
+  },
+  {
+    keywords: ["cammina per", "attraversa", "corridoio", "tunnel", "mercato", "strada affollata", "passeggiata", "esplora", "percorre", "cammino", "viaggio", "sentiero"],
+    recommended: "gimbal", alternatives: ["hyperlapse", "handheld"],
+    reason: "Movimento attraverso uno spazio: una ripresa stabilizzata con gimbal mantiene fluidità e progressione narrativa.",
+    confidence: 0.83,
+  },
+  {
+    keywords: ["rivela", "reveal", "compare", "appare", "scopre", "trova", "apre gli occhi", "si volta", "dietro la porta", "momento chiave", "emozione", "piange", "lacrima", "sorriso lento"],
+    recommended: "dolly_in", alternatives: ["cinematic", "rack_focus"],
+    reason: "Momento emotivo o reveal: un lento avvicinamento al soggetto amplifica tensione e coinvolgimento.",
+    confidence: 0.85,
+  },
+  {
+    keywords: ["cctv", "sicurezza", "telecamera", "sorveglianza", "registrazione", "infrarossi", "notturna", "parcheggio vuoto"],
+    recommended: "surveillance", alternatives: ["found_footage", "documentary"],
+    reason: "Estetica da sorveglianza: inquadratura fissa e distaccata per un effetto di osservazione fredda.",
+    confidence: 0.90,
+  },
+  {
+    keywords: ["soggettiva", "prima persona", "punto di vista", "pov", "vedo", "guardo le mie mani", "mi guardo"],
+    recommended: "first_person", alternatives: ["bodycam", "handheld"],
+    reason: "Prospettiva soggettiva: la camera in prima persona crea immersione diretta nell'esperienza del personaggio.",
+    confidence: 0.88,
+  },
+  {
+    keywords: ["loop", "ripetizione", "ciclico", "infinito", "continuo", "wallpaper", "sfondo animato", "fiamma", "acqua che scorre"],
+    recommended: "loop", alternatives: ["slow_motion", "dreamy"],
+    reason: "Composizione ciclica e ripetibile: una regia loop crea continuità visiva senza interruzioni.",
+    confidence: 0.87,
+  },
+  {
+    keywords: ["rallentatore", "slow motion", "al rallentatore", "caduta lenta", "goccia che cade", "capelli al vento", "esplosione lenta", "impatto lento"],
+    recommended: "slow_motion", alternatives: ["cinematic", "dreamy"],
+    reason: "Azione da valorizzare al rallentatore: lo slow motion enfatizza il gesto e crea eleganza visiva.",
+    confidence: 0.88,
+  },
+  {
+    keywords: ["stop motion", "pupazzo", "plastilina", "marionetta", "claymation", "miniatura", "giocattolo", "artigianale"],
+    recommended: "stop_motion", alternatives: ["commercial", "loop"],
+    reason: "Estetica artigianale e handmade: una regia stop motion dà carattere tattile e charme alla scena.",
+    confidence: 0.87,
+  },
+];
+
+function suggestDirectionStyleHeuristic(promptIT, promptEN = "", selectedVisualStyles = [], duration = 5) {
+  const text = `${promptIT} ${promptEN}`.toLowerCase();
+
+  let bestMatch = null;
+  let bestScore = 0;
+
+  for (const rule of DIRECTION_HEURISTIC_RULES) {
+    const hits = rule.keywords.filter(kw => text.includes(kw)).length;
+    if (hits > 0) {
+      const score = hits / rule.keywords.length + rule.confidence * 0.1;
+      if (score > bestScore) {
+        bestScore = score;
+        bestMatch = rule;
+      }
+    }
+  }
+
+  if (bestMatch) {
+    return {
+      recommended_direction_style: bestMatch.recommended,
+      alternative_direction_styles: bestMatch.alternatives.filter(a => a !== bestMatch.recommended),
+      reason_it: bestMatch.reason,
+      confidence: Math.min(0.95, bestMatch.confidence + bestScore * 0.05),
+      source: "heuristic",
+    };
+  }
+
+  return {
+    recommended_direction_style: "cinematic",
+    alternative_direction_styles: ["gimbal", "documentary"],
+    reason_it: "Nessun pattern specifico rilevato: la regia cinematica è la scelta più versatile e sicura.",
+    confidence: 0.55,
+    source: "heuristic_fallback",
+  };
+}
+
+const DIRECTION_SUGGEST_SYSTEM_PROMPT =
+  "You are a video direction advisor for an AI video generator. " +
+  "Given a scene description, suggest the BEST camera direction style. " +
+  "You MUST choose ONLY from this exact list of IDs: " +
+  "cinematic, slow_motion, timelapse, hyperlapse, drone, handheld, gimbal, dolly_in, dolly_out, orbit, push_in_macro, rack_focus, found_footage, documentary, surveillance, bodycam, first_person, fpv_drone, music_video, commercial, trailer, dreamy, chaotic, loop, stop_motion. " +
+  "\n\nAnalyze the scene for: type (intimate/epic/action/poetic/product/transitional), energy level, shot width, mood, and visual style compatibility. " +
+  "\n\nReturn ONLY valid JSON (no markdown): " +
+  '{"recommended_direction_style": "id", "alternative_direction_styles": ["id1", "id2"], "reason_it": "Brief Italian explanation of why this direction fits the scene", "confidence": 0.85}' +
+  "\n\nThe reason_it MUST be in Italian, 1-2 sentences max. " +
+  "Alternatives must be 2-3 different valid IDs. Never duplicate the recommended in alternatives.";
+
+async function suggestDirectionStyleLLM(promptIT, promptEN = "", selectedVisualStyles = [], duration = 5) {
+  const context = [
+    promptEN ? `Scene (EN): ${promptEN}` : "",
+    `Scene (IT): ${promptIT}`,
+    selectedVisualStyles.length > 0 ? `Visual style: ${selectedVisualStyles.join(", ")}` : "",
+    `Duration: ${duration}s`,
+  ].filter(Boolean).join("\n");
+
+  for (const model of LLM_MODELS) {
+    try {
+      const res = await fetch(OPENROUTER_API_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${OPENROUTER_API_KEY}`,
+          "HTTP-Referer": "https://axstudio.app",
+          "X-Title": "AXSTUDIO",
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: "system", content: DIRECTION_SUGGEST_SYSTEM_PROMPT },
+            { role: "user", content: context },
+          ],
+          temperature: 0.4,
+          max_tokens: 300,
+        }),
+      });
+      const data = await res.json();
+      const text = data?.choices?.[0]?.message?.content;
+      if (!text) continue;
+      const clean = text.replace(/```json|```/g, "").trim();
+      const jsonMatch = clean.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) continue;
+      const parsed = JSON.parse(jsonMatch[0]);
+      if (parsed.recommended_direction_style && DIRECTION_VALID_IDS.has(parsed.recommended_direction_style)) {
+        const alts = (parsed.alternative_direction_styles || [])
+          .filter(id => DIRECTION_VALID_IDS.has(id) && id !== parsed.recommended_direction_style)
+          .slice(0, 3);
+        return {
+          recommended_direction_style: parsed.recommended_direction_style,
+          alternative_direction_styles: alts.length > 0 ? alts : ["cinematic", "gimbal"].filter(id => id !== parsed.recommended_direction_style).slice(0, 2),
+          reason_it: parsed.reason_it || "",
+          confidence: typeof parsed.confidence === "number" ? Math.min(1, Math.max(0, parsed.confidence)) : 0.75,
+          source: "llm",
+        };
+      }
+    } catch (e) {
+      console.warn("[DIRECTION SUGGEST LLM] Model failed:", e.message);
+    }
+  }
+  return null;
+}
+
+async function suggestDirectionStyle(promptIT, promptEN = "", selectedVisualStyles = [], duration = 5) {
+  const heuristic = suggestDirectionStyleHeuristic(promptIT, promptEN, selectedVisualStyles, duration);
+  try {
+    const llmResult = await suggestDirectionStyleLLM(promptIT, promptEN, selectedVisualStyles, duration);
+    if (llmResult) {
+      if (process.env.NODE_ENV === "development") {
+        console.log("[DIRECTION SUGGEST]", {
+          userPromptIT: promptIT,
+          preparedPromptEn: promptEN,
+          selectedVideoVisualStyle: selectedVisualStyles,
+          videoDuration: duration,
+          heuristicResult: heuristic,
+          llmResult,
+          recommendationSource: "hybrid",
+        });
+      }
+      return { ...llmResult, source: "hybrid" };
+    }
+  } catch (e) {
+    console.warn("[DIRECTION SUGGEST] LLM layer failed, using heuristic only:", e.message);
+  }
+  if (process.env.NODE_ENV === "development") {
+    console.log("[DIRECTION SUGGEST]", {
+      userPromptIT: promptIT,
+      preparedPromptEn: promptEN,
+      selectedVideoVisualStyle: selectedVisualStyles,
+      videoDuration: duration,
+      directionRecommendation: heuristic,
+      recommendationSource: "heuristic",
+    });
+  }
+  return heuristic;
 }
 
 // ── AXSTUDIO UI (palette + asset) ──
@@ -2416,8 +3253,8 @@ function GalleryPreviewModal({ entry, onClose }) {
     }
   }, [entry.filePath, entry.fileName, displaySrc, isVideo]);
 
-  const title = (entry.prompt || "").trim() || entry.fileName || "Anteprima";
-  const subtitle = entry.fileName && title !== entry.fileName ? entry.fileName : null;
+  const title = entry.fileName || "Anteprima";
+  const subtitle = null;
 
   return (
     <div
@@ -3223,6 +4060,7 @@ export default function AIStudio() {
   const [projectVideoSourceImg, setProjectVideoSourceImg] = useState(null);
   const [projectVideoProposalResetNonce, setProjectVideoProposalResetNonce] = useState(0);
   const [generating, setGenerating] = useState(false);
+  const [videoStatus, setVideoStatus] = useState("");
   const [generatedImages, setGeneratedImages] = useState([]);
   /** Sessione video (sidebar + VidGen) — blob URL */
   const [generatedVideos, setGeneratedVideos] = useState([]);
@@ -3260,12 +4098,17 @@ export default function AIStudio() {
   const [imgCfg, setImgCfg] = useState(1.0);
   const [imgAdv, setImgAdv] = useState(false);
 
+  // Mappa URL immagine → metadati prompt (condivisa tra ImgGen e VidGen)
+  const imgSessionPromptMap = useRef(new Map());
+
   // ── Stati persistenti VidGen (sopravvivono alla navigazione) ──
   const [vidSelectedStyles, setVidSelectedStyles] = useState([]);
   const [vidSelectedDirectionStyles, setVidSelectedDirectionStyles] = useState([]);
   const [vidAspect, setVidAspect] = useState("9:16");
   const [vidSteps, setVidSteps] = useState(20);
   const [vidFreeSourceImg, setVidFreeSourceImg] = useState(null);
+  const [vidDirectionRecommendation, setVidDirectionRecommendation] = useState(null);
+  const [vidDirectionRecLoading, setVidDirectionRecLoading] = useState(false);
 
   const [history, setHistory] = useState([]);
   console.log("[AISTUDIO] history.length:", history.length);
@@ -3461,6 +4304,7 @@ export default function AIStudio() {
     if (item === STUDIO_VIDEO_GENERATING) {
       setGeneratedVideos(p => p.filter((_, i) => i !== index));
       setGenerating(false);
+      setVideoStatus("");
       return;
     }
     const fp = filePathFromAxstudioMediaUrl(item);
@@ -3714,7 +4558,7 @@ export default function AIStudio() {
     </a>
   );
 
-  const BackBtn = () => (view !== "home" && view !== "projects") ? <button type="button" onClick={() => { if (view === "project") { setView("projects"); } else { setView("home"); setCurrentProject(null); } }} style={{ background: AX.surface, border: `1px solid ${AX.border}`, color: AX.text2, cursor: "pointer", padding: "8px 12px", fontSize: 16, borderRadius: 10 }}>←</button> : null;
+  const BackBtn = () => (view !== "home" && view !== "projects" && view !== "free-image" && view !== "free-video") ? <button type="button" onClick={() => { if (view === "project") { setView("projects"); } else { setView("home"); setCurrentProject(null); } }} style={{ background: AX.surface, border: `1px solid ${AX.border}`, color: AX.text2, cursor: "pointer", padding: "8px 12px", fontSize: 16, borderRadius: 10 }}>←</button> : null;
 
   const NavBtn = ({ icon, label, active, onClick }) => (
     <button type="button" onClick={onClick} style={{
@@ -4386,6 +5230,23 @@ export default function AIStudio() {
                     );
                   })()}
 
+                  {/* Visual Signature */}
+                  <div style={{ marginTop: 14, paddingTop: 12, borderTop: "1px solid rgba(255,255,255,0.06)" }}>
+                    <label style={{ fontSize: 11, fontWeight: 700, color: AX.electric, letterSpacing: "0.05em", textTransform: "uppercase", display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
+                      <span style={{ fontSize: 14 }}>👤</span> Firma visiva / Costume
+                    </label>
+                    <textarea
+                      value={charCreatorTarget.visualSignature || ""}
+                      onChange={e => setCharCreatorTarget(prev => ({ ...prev, visualSignature: e.target.value }))}
+                      placeholder="Es: tuta blu con simbolo K sul petto, occhiali scuri, mantello nero, guanti tattici"
+                      rows={2}
+                      style={{ width: "100%", padding: "10px 12px", borderRadius: 10, background: AX.bg, border: `1px solid ${charCreatorTarget.visualSignature ? AX.electric : AX.border}`, color: AX.text, fontSize: 12, lineHeight: 1.5, resize: "vertical", outline: "none", boxSizing: "border-box", fontFamily: "inherit", transition: "border-color 0.15s" }}
+                    />
+                    <div style={{ fontSize: 10, color: AX.muted, marginTop: 4, lineHeight: 1.4 }}>
+                      Descrivi costume, accessori, emblemi o dettagli iconici che rendono il personaggio riconoscibile oltre ai tratti fisici.
+                    </div>
+                  </div>
+
                   {/* Footer buttons */}
                   <div style={{ display: "flex", gap: 8, marginTop: 14, paddingTop: 12, borderTop: "1px solid rgba(255,255,255,0.06)" }}>
                     <button
@@ -4417,11 +5278,11 @@ export default function AIStudio() {
 
           {activeTab === "image" && (
             <>
-              <ImgGen {...{ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setResolution, generating, setGenerating, generatedImages, setGeneratedImages, selectedCharacter, scenes: scenePresets, onSave: saveGeneratedImage, previewImg: genPreviewImg, setPreviewImg: setGenPreviewImg, layoutFill: false, history, recallImageUrl, setRecallImageUrl, selectedStyles: imgSelectedStyles, setSelectedStyles: setImgSelectedStyles, aspect: imgAspect, setAspect: setImgAspect, steps: imgSteps, setSteps: setImgSteps, cfg: imgCfg, setCfg: setImgCfg, adv: imgAdv, setAdv: setImgAdv, projectSourceImageUrl, setProjectSourceImageUrl, currentProjectId: currentProject?.id }} />
+              <ImgGen {...{ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setResolution, generating, setGenerating, generatedImages, setGeneratedImages, selectedCharacter, scenes: scenePresets, onSave: saveGeneratedImage, previewImg: genPreviewImg, setPreviewImg: setGenPreviewImg, layoutFill: false, history, recallImageUrl, setRecallImageUrl, selectedStyles: imgSelectedStyles, setSelectedStyles: setImgSelectedStyles, aspect: imgAspect, setAspect: setImgAspect, steps: imgSteps, setSteps: setImgSteps, cfg: imgCfg, setCfg: setImgCfg, adv: imgAdv, setAdv: setImgAdv, projectSourceImageUrl, setProjectSourceImageUrl, currentProjectId: currentProject?.id, imgSessionPromptMap }} />
             </>
           )}
           {activeTab === "video" && (
-            <VidGen {...{ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, videoResolution, setVideoResolution, generating, setGenerating, selectedCharacter, vidTemplates: videoStylePresets, onSaveVideo: saveGeneratedVideo, generatedVideos, setGeneratedVideos, previewVideo: genPreviewVideo, setPreviewVideo: setGenPreviewVideo, layoutFill: false, history, diskMediaEntries, generatedImages, controlledSourceImg: projectVideoSourceImg, setControlledSourceImg: setProjectVideoSourceImg, proposalResetNonce: projectVideoProposalResetNonce, pickerImageEntries: projectGalleryEntryList, pickerSelectedEntryId: projectGallerySelectedEntryId, onPickerImageChange: handleProjectGallerySelection, selectedVideoStyles: vidSelectedStyles, setSelectedVideoStyles: setVidSelectedStyles, selectedDirectionStyles: vidSelectedDirectionStyles, setSelectedDirectionStyles: setVidSelectedDirectionStyles, vidAspect, setVidAspect, vidSteps, setVidSteps, recallVideoUrl, setRecallVideoUrl }} />
+            <VidGen {...{ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, videoResolution, setVideoResolution, generating, setGenerating, selectedCharacter, vidTemplates: videoStylePresets, onSaveVideo: saveGeneratedVideo, generatedVideos, setGeneratedVideos, previewVideo: genPreviewVideo, setPreviewVideo: setGenPreviewVideo, layoutFill: false, history, diskMediaEntries, generatedImages, controlledSourceImg: projectVideoSourceImg, setControlledSourceImg: setProjectVideoSourceImg, proposalResetNonce: projectVideoProposalResetNonce, pickerImageEntries: projectGalleryEntryList, pickerSelectedEntryId: projectGallerySelectedEntryId, onPickerImageChange: handleProjectGallerySelection, selectedVideoStyles: vidSelectedStyles, setSelectedVideoStyles: setVidSelectedStyles, selectedDirectionStyles: vidSelectedDirectionStyles, setSelectedDirectionStyles: setVidSelectedDirectionStyles, vidAspect, setVidAspect, vidSteps, setVidSteps, recallVideoUrl, setRecallVideoUrl, videoStatus, setVideoStatus, directionRecommendation: vidDirectionRecommendation, setDirectionRecommendation: setVidDirectionRecommendation, directionRecLoading: vidDirectionRecLoading, setDirectionRecLoading: setVidDirectionRecLoading, imgSessionPromptMap }} />
           )}
           {activeTab === "voice" && (
             <VoiceGen />
@@ -4433,14 +5294,14 @@ export default function AIStudio() {
         {/* ═══ FREE IMAGE ═══ */}
         {view === "free-image" && (
           <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflowY: "auto", overflowX: "hidden" }}>
-            <ImgGen {...{ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setResolution, generating, setGenerating, generatedImages, setGeneratedImages, selectedCharacter: null, scenes: scenePresets, onSave: saveGeneratedImage, previewImg: genPreviewImg, setPreviewImg: setGenPreviewImg, layoutFill: true, history, recallImageUrl, setRecallImageUrl, selectedStyles: imgSelectedStyles, setSelectedStyles: setImgSelectedStyles, aspect: imgAspect, setAspect: setImgAspect, steps: imgSteps, setSteps: setImgSteps, cfg: imgCfg, setCfg: setImgCfg, adv: imgAdv, setAdv: setImgAdv }} />
+            <ImgGen {...{ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setResolution, generating, setGenerating, generatedImages, setGeneratedImages, selectedCharacter: null, scenes: scenePresets, onSave: saveGeneratedImage, previewImg: genPreviewImg, setPreviewImg: setGenPreviewImg, layoutFill: true, history, recallImageUrl, setRecallImageUrl, selectedStyles: imgSelectedStyles, setSelectedStyles: setImgSelectedStyles, aspect: imgAspect, setAspect: setImgAspect, steps: imgSteps, setSteps: setImgSteps, cfg: imgCfg, setCfg: setImgCfg, adv: imgAdv, setAdv: setImgAdv, imgSessionPromptMap }} />
           </div>
         )}
 
         {/* ═══ FREE VIDEO ═══ */}
         {view === "free-video" && (
           <div className="ax-hide-scrollbar" style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflowY: "auto", overflowX: "hidden" }}>
-            <VidGen {...{ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, videoResolution, setVideoResolution, generating, setGenerating, selectedCharacter: null, vidTemplates: videoStylePresets, onSaveVideo: saveGeneratedVideo, generatedVideos, setGeneratedVideos, previewVideo: genPreviewVideo, setPreviewVideo: setGenPreviewVideo, layoutFill: true, history, diskMediaEntries, generatedImages, freeSourceImg: vidFreeSourceImg, setFreeSourceImg: setVidFreeSourceImg, selectedVideoStyles: vidSelectedStyles, setSelectedVideoStyles: setVidSelectedStyles, selectedDirectionStyles: vidSelectedDirectionStyles, setSelectedDirectionStyles: setVidSelectedDirectionStyles, vidAspect, setVidAspect, vidSteps, setVidSteps, recallVideoUrl, setRecallVideoUrl }} />
+            <VidGen {...{ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, videoResolution, setVideoResolution, generating, setGenerating, selectedCharacter: null, vidTemplates: videoStylePresets, onSaveVideo: saveGeneratedVideo, generatedVideos, setGeneratedVideos, previewVideo: genPreviewVideo, setPreviewVideo: setGenPreviewVideo, layoutFill: true, history, diskMediaEntries, generatedImages, freeSourceImg: vidFreeSourceImg, setFreeSourceImg: setVidFreeSourceImg, selectedVideoStyles: vidSelectedStyles, setSelectedVideoStyles: setVidSelectedStyles, selectedDirectionStyles: vidSelectedDirectionStyles, setSelectedDirectionStyles: setVidSelectedDirectionStyles, vidAspect, setVidAspect, vidSteps, setVidSteps, recallVideoUrl, setRecallVideoUrl, videoStatus, setVideoStatus, directionRecommendation: vidDirectionRecommendation, setDirectionRecommendation: setVidDirectionRecommendation, directionRecLoading: vidDirectionRecLoading, setDirectionRecLoading: setVidDirectionRecLoading, imgSessionPromptMap }} />
           </div>
         )}
         </div>
@@ -4608,21 +5469,28 @@ function VideoPreviewModal({ src, onClose, videoStatus, setVideoStatus }) {
   const [buffering, setBuffering] = useState(false);
   const [downloadMsg, setDownloadMsg] = useState("");
 
+  useEffect(() => {
+    const onKey = e => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
   const handleDownload = async () => {
     if (!src) return;
-    // Se è già un path locale (axstudio-local:// o blob:) usa l'anchor diretto
+    const fileName = `axstudio-video-${Date.now()}.mp4`;
+    // Path locale (axstudio-local:// o blob:) → anchor diretto
     if (!src.startsWith("http")) {
       const a = document.createElement("a");
       a.href = src;
-      a.download = `axstudio-video-${Date.now()}.mp4`;
+      a.download = fileName;
       a.click();
       return;
     }
     try {
       setDownloadMsg("Scaricamento…");
+      const response = await fetch(src);
+      const blob = await response.blob();
       if (isElectron && window.electronAPI?.saveFile) {
-        const response = await fetch(src);
-        const blob = await response.blob();
         const base64 = await new Promise((resolve, reject) => {
           const reader = new FileReader();
           reader.onload = () => {
@@ -4632,15 +5500,17 @@ function VideoPreviewModal({ src, onClose, videoStatus, setVideoStatus }) {
           reader.onerror = reject;
           reader.readAsDataURL(blob);
         });
-        const fileName = `vid_${Date.now()}.mp4`;
         await window.electronAPI.saveFile("videos", fileName, base64);
-        setDownloadMsg("✅ Salvato!");
-        setTimeout(() => setDownloadMsg(""), 2500);
       } else {
-        // Fallback browser: apri in nuova tab
-        window.open(src, "_blank");
-        setDownloadMsg("");
+        const blobUrl = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = blobUrl;
+        a.download = fileName;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 5000);
       }
+      setDownloadMsg("✅ Salvato!");
+      setTimeout(() => setDownloadMsg(""), 2500);
     } catch (err) {
       console.error("Download video:", err);
       setDownloadMsg("Errore: " + err.message);
@@ -4653,7 +5523,18 @@ function VideoPreviewModal({ src, onClose, videoStatus, setVideoStatus }) {
       onClick={onClose}
       style={{ position: "fixed", inset: 0, background: "rgba(10,10,15,0.88)", backdropFilter: "blur(12px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 2000, cursor: "zoom-out" }}
     >
-      <div onClick={e => e.stopPropagation()} style={{ maxWidth: "92vw", maxHeight: "92vh", display: "flex", flexDirection: "column", alignItems: "center", gap: 14 }}>
+      <div onClick={e => e.stopPropagation()} style={{ position: "relative", maxWidth: "92vw", maxHeight: "92vh", display: "flex", flexDirection: "column", alignItems: "center", gap: 14 }}>
+        {/* Pulsante X in alto a destra */}
+        <button
+          type="button"
+          onClick={onClose}
+          title="Chiudi (Esc)"
+          style={{ position: "absolute", top: -8, right: -8, zIndex: 10, width: 36, height: 36, borderRadius: "50%", border: `1px solid ${AX.border}`, background: "rgba(26,31,43,0.95)", color: AX.text2, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 4px 16px rgba(0,0,0,0.5)", transition: "background 0.15s, color 0.15s" }}
+          onMouseEnter={e => { e.currentTarget.style.background = "rgba(239,68,68,0.85)"; e.currentTarget.style.color = "#fff"; }}
+          onMouseLeave={e => { e.currentTarget.style.background = "rgba(26,31,43,0.95)"; e.currentTarget.style.color = AX.text2; }}
+        >
+          <HiXMark size={18} />
+        </button>
         {/* Player con buffering indicator */}
         <div style={{ position: "relative", maxWidth: "100%", maxHeight: "80vh" }}>
           <video
@@ -4700,7 +5581,7 @@ function VideoPreviewModal({ src, onClose, videoStatus, setVideoStatus }) {
 }
 
 // ── Image Generator ──
-function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setResolution, generating, setGenerating, generatedImages, setGeneratedImages, selectedCharacter, scenes, onSave, previewImg, setPreviewImg, layoutFill, history, recallImageUrl, setRecallImageUrl, selectedStyles, setSelectedStyles, aspect, setAspect, steps, setSteps, cfg, setCfg, adv, setAdv, projectSourceImageUrl, setProjectSourceImageUrl, currentProjectId }) {
+function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setResolution, generating, setGenerating, generatedImages, setGeneratedImages, selectedCharacter, scenes, onSave, previewImg, setPreviewImg, layoutFill, history, recallImageUrl, setRecallImageUrl, selectedStyles, setSelectedStyles, aspect, setAspect, steps, setSteps, cfg, setCfg, adv, setAdv, projectSourceImageUrl, setProjectSourceImageUrl, currentProjectId, imgSessionPromptMap }) {
   console.log("[IMGGEN] history prop length:", history?.length, "recallImageUrl:", recallImageUrl?.slice(0, 60));
   const [tmpl, setTmpl] = useState(null);
   const [translating, setTranslating] = useState(false);
@@ -4733,8 +5614,8 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
   // modalEditedItRef: testo IT modificato nella modale, usato da generate() prima del re-render
   const modalEditedItRef = useRef(null);
 
-  // Mappa URL immagine → metadati prompt (per immagini di sessione non ancora su disco)
-  const sessionPromptMap = useRef(new Map());
+  const _fallbackMap = useRef(new Map());
+  const sessionPromptMap = imgSessionPromptMap || _fallbackMap;
   const historyRef = useRef(history);
   historyRef.current = history;
 
@@ -4921,6 +5802,29 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
         ? "photorealistic digital art, detailed fur texture, highly detailed, 8K"
         : "RAW photograph, natural skin texture, photorealistic, highly detailed, 8K");
 
+      // ── Identity preservation layer (image create) ──
+      const imgReflectionCtx = detectReflectionContext({ sourcePromptIT: prompt, sourcePromptEN: resolvedEn });
+      const imgRiskyInfo = detectRiskyStyles(selectedStyles);
+      const imgIdentityCtx = detectIdentitySensitiveContext({
+        selectedCharacter,
+        humanType,
+        promptTextEN: resolvedEn,
+        promptTextIT: prompt,
+        isUpdateMode: false,
+        reflectionCtx: imgReflectionCtx,
+        riskyStyleIds: imgRiskyInfo.riskyIds,
+      });
+
+      const imgIdentityClause = buildIdentityPreservationClause(imgIdentityCtx);
+      const imgStyleClause = imgRiskyInfo.hasRiskyStyle ? buildStylePreservationClause(imgRiskyInfo.riskyIds) : null;
+      const imgReflectionClause = imgReflectionCtx.hasReflectionContext ? "Apply any change consistently to the subject and any visible mirror reflection. The reflection must match the subject exactly." : null;
+
+      // ── Character subject anchoring (anti-substitution) ──
+      const charAnchoring = buildCharacterAnchoringClauses(
+        selectedCharacter, humanType, prompt, resolvedEn, imgRiskyInfo.riskyIds,
+      );
+      const imgVisualSignatureClause = buildCharacterVisualSignatureClause(selectedCharacter);
+
       // ── Log debug prompt ──
       console.log("[PROMPT DEBUG]", {
         "prompt (IT visible)": prompt,
@@ -4931,19 +5835,40 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
         stylePrefix,
         effectiveStylePrefix,
         anthropoAnimal,
+        selectedCharacterId: selectedCharacter?.id || null,
+        characterSubjectLockUsed: charAnchoring.subjectLockClause || null,
+        characterVisualSignatureClauseUsed: imgVisualSignatureClause || null,
+        roleBindingClauseUsed: charAnchoring.roleBindingClause || null,
+        antiAnimalOverrideUsed: charAnchoring.antiAnimalClause || null,
+        identitySensitiveContext: imgIdentityCtx,
+        riskyStyleContext: imgRiskyInfo,
+        identityClauseUsed: imgIdentityClause || null,
+        stylePreservationClauseUsed: imgStyleClause || null,
+        reflectionClauseUsed: imgReflectionClause || null,
       });
 
-      // ── Composizione finale: subjectPrompt → subjectLock → scenePrompt → stylePrefix ──
-      const finalPrompt = [subjectPrompt, subjectLock, scenePrompt, effectiveStylePrefix]
-        .filter(Boolean)
-        .join(", ");
+      // ── Composizione finale ──
+      // Ordine: charSubjectLock → subjectPrompt → visualSignature → humanLock → scenePrompt → stylePrefix → identity → style → roleBinding → antiAnimal → reflection
+      const finalPrompt = [
+        charAnchoring.subjectLockClause,
+        subjectPrompt,
+        imgVisualSignatureClause,
+        subjectLock,
+        scenePrompt,
+        effectiveStylePrefix,
+        imgIdentityClause,
+        imgStyleClause,
+        charAnchoring.roleBindingClause,
+        charAnchoring.antiAnimalClause,
+        imgReflectionClause,
+      ].filter(Boolean).join(", ");
 
       console.log("[PROMPT DEBUG] finalPrompt:", finalPrompt);
       console.log("[PROMPT DEBUG] finalNegativePrompt (pre-build):", [negPrompt, styleNegative].filter(Boolean).join(", "));
 
-      // ── Negative prompt: deduplicazione di negPrompt (utente) + styleNegative (preset) ──
+      // ── Negative prompt: deduplicazione di negPrompt (utente) + styleNegative (preset) + anti-animal ──
       const finalNegativePrompt = [...new Set(
-        [negPrompt, styleNegative]
+        [negPrompt, styleNegative, charAnchoring.antiAnimalNegative]
           .filter(Boolean)
           .join(", ")
           .split(",")
@@ -4980,12 +5905,55 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
             editTextEN = prompt.trim();
           }
         }
-        const updatePromptEN = buildProjectImageUpdatePrompt(appearanceDiffObj, editTextEN);
+        // ── Reflection-aware: rileva contesto specchio/riflesso ──
+        const sourceMetaForReflection = sessionPromptMap.current.get(projectSourceImageUrl);
+        const reflectionCtx = detectReflectionContext({
+          sourcePromptIT: sourceImagePromptItRef.current || "",
+          sourcePromptEN: sourceMetaForReflection?.promptEN || preparedEnRef.current?.en || "",
+          editTextIT: prompt.trim(),
+          editTextEN: editTextEN,
+        });
+
+        const riskyStyleInfo = detectRiskyStyles(selectedStyles);
+        const updateIdentityCtx = detectIdentitySensitiveContext({
+          selectedCharacter,
+          humanType: detectHumanSubject(prompt + " " + editTextEN),
+          promptTextEN: editTextEN,
+          promptTextIT: prompt.trim(),
+          isUpdateMode: true,
+          reflectionCtx,
+          riskyStyleIds: riskyStyleInfo.riskyIds,
+          appearanceDiff: appearanceDiffObj,
+        });
+        const updateHumanType = detectHumanSubject(prompt + " " + editTextEN);
+        const updateCharAnchoring = buildCharacterAnchoringClauses(
+          selectedCharacter, updateHumanType, prompt.trim(), editTextEN, riskyStyleInfo.riskyIds,
+        );
+        const updateVisualSigClause = buildCharacterVisualSignatureClause(selectedCharacter);
+        const updatePromptEN = buildProjectImageUpdatePrompt(appearanceDiffObj, editTextEN, reflectionCtx, selectedStyles, updateIdentityCtx, updateCharAnchoring, updateVisualSigClause);
+
+        const updateIdClause = buildIdentityPreservationClause(updateIdentityCtx);
+        const updateStyleClause = riskyStyleInfo.hasRiskyStyle ? buildStylePreservationClause(riskyStyleInfo.riskyIds) : null;
 
         console.log("[PROJECT IMAGE UPDATE]", {
+          projectImageMode: "update",
           updatePromptEn: updatePromptEN,
           payloadModel: "fal-ai/flux-pro/kontext/max",
           sourceImageUrl: projectSourceImageUrl?.slice(0, 80),
+          selectedCharacterId: selectedCharacter?.id || null,
+          characterSubjectLockUsed: updateCharAnchoring.subjectLockClause || null,
+          characterVisualSignatureClauseUsed: updateVisualSigClause || null,
+          roleBindingClauseUsed: updateCharAnchoring.roleBindingClause || null,
+          antiAnimalOverrideUsed: updateCharAnchoring.antiAnimalClause || null,
+          hasReflectionContext: reflectionCtx.hasReflectionContext,
+          reflectionType: reflectionCtx.reflectionType,
+          reflectionClauseUsed: reflectionCtx.hasReflectionContext ? buildReflectionConsistencyClause(appearanceDiffObj, editTextEN) : null,
+          identitySensitiveContext: updateIdentityCtx,
+          identityClauseUsed: updateIdClause || null,
+          stylePreservationClauseUsed: updateStyleClause || null,
+          hasRiskyStyle: riskyStyleInfo.hasRiskyStyle,
+          riskyIds: riskyStyleInfo.riskyIds,
+          appearanceDiff: appearanceDiffObj,
         });
 
         setImageStatus && setImageStatus("⏳ Aggiornamento immagine...");
@@ -5541,11 +6509,6 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
         </button>
       </div>
 
-      {isImageUpdateMode && (
-        <div style={{ fontSize: 11, color: AX.orange, marginTop: -6, marginBottom: 10, fontStyle: "italic", display: "flex", alignItems: "center", gap: 5, flexShrink: 0 }}>
-          <span>🔄</span> Modifica da immagine esistente — le modifiche verranno applicate preservando composizione e posa
-        </div>
-      )}
 
       {previewImg && (
         <div onClick={() => setPreviewImg(null)} style={{ position: "fixed", inset: 0, background: "rgba(10,10,15,0.88)", backdropFilter: "blur(12px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 2000, cursor: "zoom-out" }}>
@@ -5569,12 +6532,11 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
 }
 
 // ── Video Generator ──
-function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, videoResolution, setVideoResolution, generating, setGenerating, selectedCharacter, vidTemplates, onSaveVideo, generatedVideos: _gv, setGeneratedVideos, previewVideo, setPreviewVideo, layoutFill, history, diskMediaEntries, generatedImages, controlledSourceImg, setControlledSourceImg, freeSourceImg, setFreeSourceImg, proposalResetNonce = 0, pickerImageEntries, pickerSelectedEntryId, onPickerImageChange, selectedVideoStyles, setSelectedVideoStyles, selectedDirectionStyles, setSelectedDirectionStyles, vidAspect, setVidAspect, vidSteps, setVidSteps, recallVideoUrl, setRecallVideoUrl }) {
+function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, videoResolution, setVideoResolution, generating, setGenerating, selectedCharacter, vidTemplates, onSaveVideo, generatedVideos: _gv, setGeneratedVideos, previewVideo, setPreviewVideo, layoutFill, history, diskMediaEntries, generatedImages, controlledSourceImg, setControlledSourceImg, freeSourceImg, setFreeSourceImg, proposalResetNonce = 0, pickerImageEntries, pickerSelectedEntryId, onPickerImageChange, selectedVideoStyles, setSelectedVideoStyles, selectedDirectionStyles, setSelectedDirectionStyles, vidAspect, setVidAspect, vidSteps, setVidSteps, recallVideoUrl, setRecallVideoUrl, videoStatus, setVideoStatus, directionRecommendation, setDirectionRecommendation, directionRecLoading, setDirectionRecLoading, imgSessionPromptMap }) {
   const [tmpl, setTmpl] = useState(null);
   const sourceIsControlled = typeof setControlledSourceImg === "function";
   const sourceImg = sourceIsControlled ? (controlledSourceImg ?? null) : (freeSourceImg ?? null);
   const setSourceImg = sourceIsControlled ? setControlledSourceImg : (setFreeSourceImg ?? (() => {}));
-  const [videoStatus, setVideoStatus] = useState("");
   const [videoLibraryOpen, setVideoLibraryOpen] = useState(false);
   const [internalPickerEntryId, setInternalPickerEntryId] = useState(null);
   const useProjectImagePicker = typeof onPickerImageChange === "function";
@@ -5589,6 +6551,9 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
   const [visualSectionOpen, setVisualSectionOpen] = useState(true);
   const [directionSectionOpen, setDirectionSectionOpen] = useState(false);
   const [recallVideoFeedback, setRecallVideoFeedback] = useState(null);
+  const [visualStyleSuggestion, setVisualStyleSuggestion] = useState(null);
+  const [vidStyleSelectionMode, setVidStyleSelectionMode] = useState("auto");
+  const vidStyleManualOverrideForSourceRef = useRef(null);
   const historyVidRef = useRef(history);
   historyVidRef.current = history;
   const fileRef = useRef(null);
@@ -5599,6 +6564,39 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
   const vidEnIsStaleRef = useRef(true);        // true quando il testo IT è cambiato dopo l'ultima preparazione
   const vidScreenplayCtxRef = useRef(null);    // { screenplayId, screenplayName, clipIndex, clipTotal } — set by handleGenerateAllClips
   const proposalResetSeenRef = useRef(0);
+  const dirRecAbortRef = useRef(0);
+  const dirRecLastInputRef = useRef("");
+  const dirRecDebounceRef = useRef(null);
+
+  const fetchDirectionRecommendation = useCallback(async (promptIT, promptEN = "") => {
+    if (!promptIT?.trim()) return;
+    const ticket = ++dirRecAbortRef.current;
+    setDirectionRecLoading(true);
+    try {
+      const result = await suggestDirectionStyle(promptIT.trim(), promptEN, selectedVideoStyles || [], videoDuration);
+      if (ticket !== dirRecAbortRef.current) return;
+      setDirectionRecommendation(result);
+    } catch (e) {
+      console.warn("[DIRECTION REC] Error:", e.message);
+      if (ticket === dirRecAbortRef.current) setDirectionRecommendation(null);
+    } finally {
+      if (ticket === dirRecAbortRef.current) setDirectionRecLoading(false);
+    }
+  }, [selectedVideoStyles, videoDuration, setDirectionRecommendation, setDirectionRecLoading]);
+
+  // ── Auto-trigger debounced direction recommendation ──
+  useEffect(() => {
+    if (dirRecDebounceRef.current) clearTimeout(dirRecDebounceRef.current);
+    const trimmed = (videoPrompt || "").trim();
+    if (trimmed.length < 8) return;
+    const inputKey = `${trimmed}|${(selectedVideoStyles || []).join(",")}|${videoDuration}`;
+    if (inputKey === dirRecLastInputRef.current) return;
+    dirRecDebounceRef.current = setTimeout(() => {
+      dirRecLastInputRef.current = inputKey;
+      void fetchDirectionRecommendation(trimmed);
+    }, 900);
+    return () => { if (dirRecDebounceRef.current) clearTimeout(dirRecDebounceRef.current); };
+  }, [videoPrompt, selectedVideoStyles, videoDuration, fetchDirectionRecommendation]);
 
   useEffect(() => {
     if (!proposalResetNonce || proposalResetNonce <= proposalResetSeenRef.current) return;
@@ -5608,6 +6606,70 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
     setTranslateVideoErr("");
     setEditableClips([]);
   }, [proposalResetNonce]);
+
+  // ── Helper: recupera metadata immagine sorgente (history → sessionPromptMap) ──
+  const getVideoSourceImageMeta = useCallback((srcUrl) => {
+    if (!srcUrl) return null;
+
+    // 1. History su disco
+    const liveHistory = historyVidRef.current || [];
+    const fp = filePathFromAxstudioMediaUrl(srcUrl);
+    const record = liveHistory.find(h => {
+      if (h.type !== "image") return false;
+      if (fp && h.filePath && h.filePath === fp) return true;
+      if (h.fileName && srcUrl.includes(h.fileName)) return true;
+      return false;
+    });
+    if (record) {
+      return {
+        selectedStyles: record.params?.selectedStyles,
+        prompt: record.params?.promptEN || record.prompt,
+        userIdea: record.params?.userIdea,
+      };
+    }
+
+    // 2. SessionPromptMap (immagini live/sessione non ancora salvate o appena salvate)
+    const sessionMeta = imgSessionPromptMap?.current?.get(srcUrl);
+    if (sessionMeta) {
+      return {
+        selectedStyles: sessionMeta.savedStyles,
+        prompt: sessionMeta.promptEN,
+        userIdea: sessionMeta.userIdea,
+      };
+    }
+
+    return null;
+  }, [imgSessionPromptMap]);
+
+  // ── Suggerimento Aspetto da metadata immagine sorgente ──
+  const prevSourceImgRef = useRef(null);
+  useEffect(() => {
+    if (sourceImg === prevSourceImgRef.current) return;
+    prevSourceImgRef.current = sourceImg;
+
+    if (!sourceImg) {
+      setVisualStyleSuggestion(null);
+      return;
+    }
+
+    // Se l'immagine e diversa da quella con override manuale, resetta a auto
+    const isNewImage = sourceImg !== vidStyleManualOverrideForSourceRef.current;
+    if (isNewImage && vidStyleSelectionMode === "manual") {
+      setVidStyleSelectionMode("auto");
+      vidStyleManualOverrideForSourceRef.current = null;
+    }
+
+    const effectiveMode = isNewImage ? "auto" : vidStyleSelectionMode;
+
+    const meta = getVideoSourceImageMeta(sourceImg);
+    const result = meta ? resolveVideoPresetFromImageMeta(meta) : null;
+    setVisualStyleSuggestion(result);
+
+    if (result && effectiveMode === "auto") {
+      setSelectedVideoStyles([result.presetId]);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sourceImg, getVideoSourceImageMeta]);
 
   // Recall prompt video: click su thumbnail video nella sidebar
   useEffect(() => {
@@ -5789,22 +6851,92 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
       const vidHumanType = detectHumanSubject(vidRawText);
       const subjectLock = vidHumanType ? getHumanVideoLock(vidHumanType) : null;
 
+      // ── SCENE PLANNING ────────────────────────────────────────────────────
+      const hasReferenceImage = Boolean(sourceImg || selectedCharacter?.image);
+      let scenePlan = null;
+      if (hasReferenceImage) {
+        try {
+          setVideoStatus("Analisi scena…");
+          const charAppDesc = selectedCharacter ? appearanceToPrompt(selectedCharacter.appearance) : "";
+          const charVisSig = selectedCharacter?.visualSignature?.trim() || "";
+          const refCtx = selectedCharacter
+            ? `Character "${selectedCharacter.name}" reference photo. Use only for identity/appearance.${charAppDesc ? ` Character traits: ${charAppDesc}.` : ""}${charVisSig ? ` Visual signature: ${charVisSig}.` : ""}`
+            : "User-selected reference image. Use only for identity/appearance, NOT as the opening frame.";
+          const visLabels = resolvedVisualStyles.map(s => s.label).join(", ");
+          const dirLabels = resolvedDirectionStyles.map(s => s.label).join(", ");
+          scenePlan = await buildScenePlan(
+            currentVideoIT, scenePrompt,
+            Math.min(Math.max(vidDurationOverrideRef.current ?? videoDuration, 3), 15),
+            refCtx, visLabels, dirLabels,
+          );
+        } catch (e) {
+          console.warn("[SCENE PLAN] Failed, falling back to standard flow:", e.message);
+        }
+      }
+
       // ── ACTION NORMALIZATION PIPELINE ──────────────────────────────────────
       // Rileva azione dal testo italiano (più affidabile per keyword matching)
       const actionIntent = detectActionIntent(currentVideoIT + " " + scenePrompt);
       const actionGuidance = buildActionGuidance(actionIntent);
       const normalizedScenePrompt = normalizeVideoActionPrompt(scenePrompt, actionGuidance);
-      const { finalPrompt: fp, framePrompt: composedFramePrompt, negativeAddition } = composeVideoPrompt({
+
+      // ── Video identity preservation layer ──
+      const vidVisualStyleIds = selectedVideoStyles || [];
+      const vidDirectionStyleIds = (selectedDirectionStyles || []);
+      const vidRiskyVisualInfo = detectRiskyStyles(vidVisualStyleIds);
+      const vidRiskyDirInfo = detectRiskyVideoDirections(vidDirectionStyleIds);
+      const vidReflectionCtx = detectReflectionContext({ sourcePromptIT: currentVideoIT, sourcePromptEN: scenePrompt });
+      const vidIdentityCtx = detectIdentitySensitiveContext({
+        selectedCharacter,
+        humanType: vidHumanType,
+        promptTextEN: scenePrompt,
+        promptTextIT: currentVideoIT,
+        isUpdateMode: false,
+        reflectionCtx: vidReflectionCtx,
+        riskyStyleIds: [...vidRiskyVisualInfo.riskyIds, ...vidRiskyDirInfo.riskyIds],
+      });
+      vidIdentityCtx.needsFrameConsistency = vidIdentityCtx.hasIdentitySensitiveContext;
+
+      const videoIdentityClause = buildVideoIdentityPreservationClause(vidIdentityCtx, Boolean(selectedCharacter));
+      const allVidRiskyIds = [...vidRiskyVisualInfo.riskyIds, ...vidRiskyDirInfo.riskyIds];
+      const videoStyleClause = allVidRiskyIds.length > 0 ? buildStylePreservationClause(allVidRiskyIds) : null;
+      const videoReflectionClause = vidReflectionCtx.hasReflectionContext ? VIDEO_REFLECTION_CLAUSE : null;
+
+      // ── Character signature clauses (physical + visual/iconic) ──
+      const characterSignatureClause = buildCharacterSignatureClause(selectedCharacter);
+      const characterVisualSignatureClause = buildCharacterVisualSignatureClause(selectedCharacter);
+
+      const { finalPrompt: fpRaw, framePrompt: composedFramePrompt, negativeAddition } = composeVideoPrompt({
         subjectLock,
+        characterSignatureClause,
+        characterVisualSignatureClause,
         scenePromptEn: normalizedScenePrompt,
         guidance: actionGuidance,
         visualStylePrompt,
         visualMotionPrompt,
         directionStylePrompt,
         directionMotionPrompt,
+        videoIdentityClause,
+        videoStyleClause,
+        videoReflectionClause,
       });
 
-      if (process.env.NODE_ENV === "development" || true) {
+      // ── Inject scene plan action emphasis into video prompt ──
+      const actionEmphasis = scenePlan?.action_emphasis_prompt || "";
+      const fp = actionEmphasis ? `${fpRaw}, ${actionEmphasis}` : fpRaw;
+
+      // ── Build opening frame prompt from scene plan ──
+      const openingFramePrompt = scenePlan
+        ? buildOpeningFramePrompt(scenePlan, "", visualStylePrompt, videoIdentityClause, characterSignatureClause, characterVisualSignatureClause)
+        : null;
+
+      // ── Scene-plan avoid_actions → extra negatives ──
+      const scenePlanNegative = buildAvoidActionsNegative(scenePlan);
+
+      // ── Reference image context tracking ──
+      let referenceImageUsedAs = "none";
+
+      if (process.env.NODE_ENV === "development") {
         console.log("[VIDEO TWO-LEVEL PIPELINE]", {
           userPromptIT: currentVideoIT,
           preparedPromptEn: scenePrompt,
@@ -5813,31 +6945,61 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
           actionGuidance,
           selectedVideoVisualStyle: selectedVideoStyles,
           selectedVideoDirectionStyle: selectedDirectionStyles,
+          identitySensitiveContext: vidIdentityCtx,
+          riskyStyleContext: { visual: vidRiskyVisualInfo, direction: vidRiskyDirInfo },
+          characterPhysicalSignatureClauseUsed: characterSignatureClause || null,
+          characterVisualSignatureClauseUsed: characterVisualSignatureClause || null,
+          videoIdentityClauseUsed: videoIdentityClause || null,
+          stylePreservationClauseUsed: videoStyleClause || null,
+          reflectionClauseUsed: videoReflectionClause || null,
+          scenePlan,
+          openingFramePrompt: openingFramePrompt || null,
+          actionEmphasis: actionEmphasis || null,
+          scenePlanNegative: scenePlanNegative || null,
           finalFramePrompt: composedFramePrompt,
           finalVideoPrompt: fp,
           finalNegativePrompt: videoStyleNegative,
           negativeAddition,
         });
-        console.log("[VIDEO EN CHECK]", {
-          currentVideoIT,
-          scenePrompt,
-          finalFramePrompt: composedFramePrompt,
-          finalVideoPrompt: fp,
-          translationFallbackUsed,
-        });
       }
 
       const [vw, vh] = videoResolution.split("x").map(Number);
       const aspect_ratio = vw === vh ? "1:1" : vw > vh ? "16:9" : "9:16";
-      // Usa la ref sincrona se impostata da handleGenerateAllClips (evita il problema di closure React)
       const resolvedDuration = vidDurationOverrideRef.current ?? videoDuration;
       vidDurationOverrideRef.current = null;
       const duration = Math.min(Math.max(resolvedDuration, 3), 15);
+      const [vrw, vrh] = (videoResolution || "1280x720").split("x").map(Number);
+      const frameAspect = vrw === vrh ? "1:1" : vrw > vrh ? "16:9" : "9:16";
 
       let imageUrl = null;
 
-      // Risolvi immagine di partenza
-      if (sourceImg) {
+      // ── Risolvi immagine di partenza ──
+      // Se c'è un scene plan con opening frame, generiamo un frame iniziale scene-coherent
+      // invece di usare la reference come primo frame del video.
+      if (scenePlan && openingFramePrompt && hasReferenceImage) {
+        referenceImageUsedAs = "identity_reference_only";
+        setVideoStatus("Generazione frame d'apertura…");
+        try {
+          const frameResult = await falRequest("fal-ai/flux-pro/v1.1-ultra", {
+            prompt: openingFramePrompt,
+            aspect_ratio: frameAspect,
+            num_images: 1,
+            enable_safety_checker: false,
+            safety_tolerance: "6",
+          });
+          imageUrl = frameResult?.images?.[0]?.url || frameResult?.image?.url || null;
+          if (!imageUrl) throw new Error("Nessun frame d'apertura generato");
+          setVideoStatus("Frame d'apertura pronto. Generazione video…");
+        } catch (e) {
+          console.warn("[SCENE PLAN] Opening frame generation failed, falling back to reference image:", e.message);
+          referenceImageUsedAs = "direct_start_frame_fallback";
+          imageUrl = null;
+        }
+      }
+
+      // Fallback: usa la reference image direttamente (comportamento precedente)
+      if (!imageUrl && sourceImg) {
+        referenceImageUsedAs = imageUrl === null && scenePlan ? "direct_start_frame_fallback" : "direct_start_frame";
         if (sourceImg.startsWith("http")) {
           imageUrl = sourceImg;
         } else {
@@ -5853,7 +7015,9 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
             return;
           }
         }
-      } else if (selectedCharacter?.image) {
+      }
+      if (!imageUrl && selectedCharacter?.image) {
+        referenceImageUsedAs = scenePlan ? "direct_start_frame_fallback" : "direct_start_frame";
         const charImg = selectedCharacter.image;
         if (charImg.startsWith("http")) {
           imageUrl = charImg;
@@ -5861,13 +7025,13 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
           setVideoStatus("Upload immagine personaggio…");
           imageUrl = await uploadBase64ToFal(charImg.startsWith("data:") ? charImg : `data:image/png;base64,${charImg}`).catch(() => null);
         }
-      } else {
+      }
+      if (!imageUrl) {
         // Text-to-video: genera frame iniziale con FLUX poi lo usa per il video
+        referenceImageUsedAs = "generated_frame";
         setVideoStatus("Generazione frame iniziale…");
         try {
-          const [vrw, vrh] = (videoResolution || "1280x720").split("x").map(Number);
-          const frameAspect = vrw === vrh ? "1:1" : vrw > vrh ? "16:9" : "9:16";
-          const framePrompt = `${composedFramePrompt}, masterpiece, best quality, highly detailed, 8K`;
+          const framePrompt = openingFramePrompt || `${composedFramePrompt}, masterpiece, best quality, highly detailed, 8K`;
           const frameResult = await falRequest("fal-ai/flux-pro/v1.1-ultra", {
             prompt: framePrompt,
             aspect_ratio: frameAspect,
@@ -5875,7 +7039,6 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
             enable_safety_checker: false,
             safety_tolerance: "6",
           });
-          console.log("[FAL] Full response:", JSON.stringify(frameResult).substring(0, 500));
           imageUrl = frameResult?.images?.[0]?.url || frameResult?.image?.url || null;
           if (!imageUrl) throw new Error("Nessun frame generato");
           setVideoStatus("Frame pronto. Generazione video…");
@@ -5888,11 +7051,22 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
         }
       }
 
+      if (process.env.NODE_ENV === "development") {
+        console.log("[VIDEO SCENE PLAN]", {
+          userPromptIT: currentVideoIT,
+          preparedPromptEn: scenePrompt,
+          scenePlan,
+          openingFramePrompt: openingFramePrompt || null,
+          referenceImageUsedAs,
+          finalVideoPrompt: fp,
+        });
+      }
+
       setVideoStatus("Generazione video in corso…");
 
-      // Merge negative prompt: stile + action placement hints
+      // Merge negative prompt: stile + action placement hints + scene plan avoids
       const finalNegativeVideo = [...new Set(
-        [videoStyleNegative, negativeAddition]
+        [videoStyleNegative, negativeAddition, scenePlanNegative]
           .filter(Boolean)
           .join(", ")
           .split(",")
@@ -5974,6 +7148,9 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
         setProposedVideoPrompt(out);
         setEditableVideoIT(out.prompt_it);
         setVideoPromptManuallyEdited(false);
+        if (dirRecDebounceRef.current) { clearTimeout(dirRecDebounceRef.current); dirRecDebounceRef.current = null; }
+        dirRecLastInputRef.current = `${videoPrompt.trim()}|${(selectedVideoStyles || []).join(",")}|${videoDuration}`;
+        void fetchDirectionRecommendation(videoPrompt.trim(), out.prompt_en);
       } else {
         setTranslateVideoErr("Tutti i modelli LLM non disponibili. Puoi generare direttamente con il tuo prompt.");
       }
@@ -5997,6 +7174,9 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
         setProposedVideoPrompt(out);
         setEditableVideoIT(out.prompt_it);
         setVideoPromptManuallyEdited(false);
+        if (dirRecDebounceRef.current) { clearTimeout(dirRecDebounceRef.current); dirRecDebounceRef.current = null; }
+        dirRecLastInputRef.current = `${videoPrompt.trim()}|${(selectedVideoStyles || []).join(",")}|${videoDuration}`;
+        void fetchDirectionRecommendation(editableVideoIT.trim(), out.prompt_en);
       } else {
         setTranslateVideoErr("Tutti i modelli LLM non disponibili. Riprova più tardi.");
       }
@@ -6145,19 +7325,54 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
             {selectedVideoStyles.length > 0 && (
               <span style={{ fontSize: 9, fontWeight: 700, color: AX.magenta, background: "rgba(255,79,163,0.15)", borderRadius: 6, padding: "2px 6px" }}>1</span>
             )}
+            {!visualSectionOpen && visualStyleSuggestion && selectedVideoStyles.length === 0 && (
+              <span style={{ fontSize: 9, fontWeight: 600, color: AX.gold, background: "rgba(255,179,71,0.12)", borderRadius: 6, padding: "2px 6px" }}>AI</span>
+            )}
           </div>
           {selectedVideoStyles.length > 0 && (
             <span
               role="button"
               tabIndex={0}
-              onClick={e => { e.stopPropagation(); setSelectedVideoStyles([]); }}
-              onKeyDown={e => { if (e.key === "Enter") { e.stopPropagation(); setSelectedVideoStyles([]); } }}
+              onClick={e => { e.stopPropagation(); setSelectedVideoStyles([]); setVidStyleSelectionMode("auto"); vidStyleManualOverrideForSourceRef.current = null; }}
+              onKeyDown={e => { if (e.key === "Enter") { e.stopPropagation(); setSelectedVideoStyles([]); setVidStyleSelectionMode("auto"); vidStyleManualOverrideForSourceRef.current = null; } }}
               style={{ fontSize: 10, color: AX.muted, cursor: "pointer", padding: "2px 4px" }}
             >Rimuovi</span>
           )}
         </button>
         {visualSectionOpen && (
           <div style={{ padding: "4px 12px 12px" }}>
+            {/* ── Box Aspetto suggerito dall'immagine ── */}
+            {visualStyleSuggestion && (() => {
+              const suggId = visualStyleSuggestion.presetId;
+              const alreadySelected = selectedVideoStyles.includes(suggId);
+              const suggPreset = VIDEO_VISUAL_STYLE_PRESETS.find(p => p.id === suggId);
+              if (!suggPreset) return null;
+              return (
+                <div style={{ marginBottom: 12, padding: "10px 14px", borderRadius: 10, background: "rgba(255,179,71,0.06)", border: "1px solid rgba(255,179,71,0.18)" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: alreadySelected ? 0 : 8 }}>
+                    <span style={{ fontSize: 10, fontWeight: 700, color: AX.gold, textTransform: "uppercase", letterSpacing: "0.06em" }}>Aspetto suggerito dall'immagine</span>
+                  </div>
+                  {!alreadySelected && (
+                    <>
+                      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 6 }}>
+                        <button type="button" onClick={() => { setSelectedVideoStyles([suggId]); setVidStyleSelectionMode("auto"); vidStyleManualOverrideForSourceRef.current = null; }} style={{ padding: "5px 12px", borderRadius: 8, border: "1.5px solid rgba(255,179,71,0.35)", background: "rgba(255,179,71,0.08)", color: AX.text2, fontSize: 12, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", gap: 5, transition: "all 0.15s ease" }}>
+                          <span>{suggPreset.icon}</span>
+                          <span>{suggPreset.label}</span>
+                        </button>
+                      </div>
+                      <p style={{ margin: 0, fontSize: 11, color: AX.muted, lineHeight: 1.5, fontStyle: "italic" }}>
+                        L'immagine sorgente è stata creata con questo stile.
+                      </p>
+                    </>
+                  )}
+                  {alreadySelected && (
+                    <p style={{ margin: "6px 0 0", fontSize: 11, color: AX.muted, lineHeight: 1.4 }}>
+                      <span style={{ color: AX.gold }}>✓</span> <strong>{suggPreset.label}</strong> — applicato
+                    </p>
+                  )}
+                </div>
+              );
+            })()}
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(100px, 1fr))", gap: 8 }}>
               {VIDEO_VISUAL_STYLE_PRESETS.map(s => {
                 const isActive = selectedVideoStyles.includes(s.id);
@@ -6167,7 +7382,7 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
                     key={s.id}
                     type="button"
                     title={s.label}
-                    onClick={() => setSelectedVideoStyles(prev => prev.includes(s.id) ? [] : [s.id])}
+                    onClick={() => { setVidStyleSelectionMode("manual"); vidStyleManualOverrideForSourceRef.current = sourceImg; setSelectedVideoStyles(prev => prev.includes(s.id) ? [] : [s.id]); }}
                     style={{
                       width: "100%", aspectRatio: "1 / 1", padding: 0,
                       border: `2px solid ${isActive ? AX.magenta : "transparent"}`,
@@ -6219,6 +7434,9 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
             {(selectedDirectionStyles || []).length > 0 && (
               <span style={{ fontSize: 9, fontWeight: 700, color: AX.electric, background: "rgba(79,216,255,0.15)", borderRadius: 6, padding: "2px 6px" }}>1</span>
             )}
+            {!directionSectionOpen && directionRecommendation && (selectedDirectionStyles || []).length === 0 && (
+              <span style={{ fontSize: 9, fontWeight: 600, color: AX.gold, background: "rgba(255,179,71,0.12)", borderRadius: 6, padding: "2px 6px" }}>AI</span>
+            )}
           </div>
           {(selectedDirectionStyles || []).length > 0 && (
             <span
@@ -6232,6 +7450,54 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
         </button>
         {directionSectionOpen && (
           <div style={{ padding: "4px 12px 12px" }}>
+            {/* ── Box Regia consigliata dall'AI ── */}
+            {(directionRecommendation || directionRecLoading) && (
+              <div style={{ marginBottom: 12, padding: "10px 14px", borderRadius: 10, background: "rgba(79,216,255,0.06)", border: `1px solid rgba(79,216,255,0.18)` }}>
+                {directionRecLoading ? (
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <div style={{ width: 12, height: 12, border: "2px solid rgba(79,216,255,0.2)", borderTopColor: AX.electric, borderRadius: "50%", animation: "spin 0.8s linear infinite", flexShrink: 0 }} />
+                    <span style={{ fontSize: 11, color: AX.muted }}>Analisi regia in corso…</span>
+                  </div>
+                ) : directionRecommendation && (() => {
+                  const rec = directionRecommendation;
+                  const recPreset = VIDEO_DIRECTION_STYLE_PRESETS.find(p => p.id === rec.recommended_direction_style);
+                  const altPresets = (rec.alternative_direction_styles || []).map(id => VIDEO_DIRECTION_STYLE_PRESETS.find(p => p.id === id)).filter(Boolean);
+                  const isRecActive = (selectedDirectionStyles || []).includes(rec.recommended_direction_style);
+                  return (
+                    <>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
+                        <span style={{ fontSize: 10, fontWeight: 700, color: AX.electric, textTransform: "uppercase", letterSpacing: "0.06em" }}>Regia consigliata dalla scena</span>
+                        {rec.confidence >= 0.8 && <span style={{ fontSize: 9, color: AX.muted, opacity: 0.7 }}>({Math.round(rec.confidence * 100)}%)</span>}
+                      </div>
+                      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+                        {recPreset && (
+                          <button type="button" onClick={() => setSelectedDirectionStyles([rec.recommended_direction_style])} style={{ padding: "5px 12px", borderRadius: 8, border: `1.5px solid ${isRecActive ? AX.electric : "rgba(79,216,255,0.35)"}`, background: isRecActive ? "rgba(79,216,255,0.18)" : "rgba(79,216,255,0.08)", color: isRecActive ? AX.electric : AX.text2, fontSize: 12, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", gap: 5, transition: "all 0.15s ease" }}>
+                            <span>{recPreset.icon}</span>
+                            <span>{recPreset.label}</span>
+                            {isRecActive && <span style={{ fontSize: 10 }}>✓</span>}
+                          </button>
+                        )}
+                        {altPresets.map(alt => {
+                          const isAltActive = (selectedDirectionStyles || []).includes(alt.id);
+                          return (
+                            <button key={alt.id} type="button" onClick={() => setSelectedDirectionStyles([alt.id])} style={{ padding: "4px 10px", borderRadius: 8, border: `1px solid ${isAltActive ? "rgba(79,216,255,0.4)" : AX.border}`, background: isAltActive ? "rgba(79,216,255,0.12)" : "transparent", color: isAltActive ? AX.electric : AX.muted, fontSize: 11, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", gap: 4, transition: "all 0.15s ease" }}>
+                              <span style={{ fontSize: 13 }}>{alt.icon}</span>
+                              <span>{alt.label}</span>
+                              {isAltActive && <span style={{ fontSize: 9 }}>✓</span>}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      {rec.reason_it && (
+                        <p style={{ margin: 0, fontSize: 11, color: AX.muted, lineHeight: 1.5, fontStyle: "italic" }}>
+                          {rec.reason_it}
+                        </p>
+                      )}
+                    </>
+                  );
+                })()}
+              </div>
+            )}
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(100px, 1fr))", gap: 8 }}>
               {VIDEO_DIRECTION_STYLE_PRESETS.map(s => {
                 const isActive = (selectedDirectionStyles || []).includes(s.id);
@@ -6374,20 +7640,6 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
             ⚠️ {recallVideoFeedback}
           </div>
         )}
-        {/* Warning parole — solo in modalità clip singolo */}
-        {videoMode === "single" && (() => {
-          const maxWords = { "3": 12, "5": 20, "7": 35, "10": 50, "15": 70 };
-          const limit = maxWords[String(videoDuration)] || 25;
-          const count = (videoPrompt || "").trim().split(/\s+/).filter(Boolean).length;
-          if (count > limit) {
-            return (
-              <div style={{ fontSize: 11, color: AX.orange, marginTop: 6, lineHeight: 1.45 }}>
-                ⚠️ Prompt lungo ({count} parole) per {videoDuration}s — usa "Prepara Prompt" per adattarlo e vedere come dividerlo in più clip.
-              </div>
-            );
-          }
-          return null;
-        })()}
       </div>
 
       {translateVideoErr ? (
