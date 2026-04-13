@@ -1,0 +1,20 @@
+{
+  "input": {
+    "source_image": "<BASE64_ENCODED_SOURCE_FACE>",
+    "target_image": "<BASE64_ENCODED_TARGET_IMAGE>",
+    "body_reference": "<BASE64_ENCODED_BODY_REFERENCE_OR_NULL>",
+    "source_indexes": "0",
+    "target_indexes": "0",
+    "face_restore": true,
+    "face_restore_model": "CodeFormer",
+    "codeformer_fidelity": 0.7,
+    "skin_color_match": true,
+    "lighting_match": true,
+    "hair_transfer": true,
+    "blend_method": "poisson",
+    "blend_radius": 15,
+    "body_match": true,
+    "output_format": "PNG",
+    "upscale": 1
+  }
+}

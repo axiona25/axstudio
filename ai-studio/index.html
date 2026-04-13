@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Studio</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=Playfair+Display:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+:root{--bg:#09090b;--s1:#131316;--s2:#1a1a1f;--s3:#222228;--border:#27272a;--bh:#3f3f46;--t1:#fafafa;--t2:#a1a1aa;--t3:#71717a;--amber:#f59e0b;--amber-d:#f59e0b20;--blue:#3b82f6;--blue-d:#3b82f620;--red:#ef4444;--r:10px;--rs:6px;--font:'DM Sans',sans-serif;--display:'Playfair Display',serif}
+body{background:var(--bg);color:var(--t1);font-family:var(--font);-webkit-font-smoothing:antialiased}
+.shell{max-width:900px;margin:0 auto;padding:32px 20px 80px;animation:fadeIn .4s ease}
+.header{text-align:center;margin-bottom:28px}
+.header h1{font-family:var(--display);font-size:36px;font-weight:500;letter-spacing:-.5px}
+.header-sub{font-size:13px;color:var(--t3);margin-top:4px}
+.header-sub b{color:var(--t2);font-weight:500}
+.status{display:inline-flex;align-items:center;gap:6px;font-size:11px;margin-top:8px;padding:4px 12px;border-radius:20px;background:var(--s1);border:1px solid var(--border)}
+.status-dot{width:6px;height:6px;border-radius:50%;display:inline-block}
+.status-dot.ok{background:#22c55e}
+.status-dot.off{background:var(--red)}
+.tabs{display:flex;gap:4px;background:var(--s1);border-radius:var(--r);padding:4px;margin-bottom:24px;border:1px solid var(--border)}
+.tab{flex:1;display:flex;align-items:center;justify-content:center;gap:8px;padding:12px;border:none;border-radius:var(--rs);background:transparent;color:var(--t3);font-family:var(--font);font-size:13px;font-weight:500;cursor:pointer;transition:.2s}
+.tab:hover{color:var(--t2);background:var(--s2)}
+.tab.active-img{background:var(--amber-d);color:var(--amber);border:1px solid var(--amber)}
+.tab.active-vid{background:var(--blue-d);color:var(--blue);border:1px solid var(--blue)}
+.tab-model{font-size:10px;opacity:.5;font-weight:400;margin-left:4px}
+.section-label{font-size:13px;font-weight:500;color:var(--t2);margin-bottom:10px}
+.opt{font-weight:400;color:var(--t3);font-size:11px}
+.tpl-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:8px;margin-bottom:20px}
+.tpl-card{display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--border);border-radius:var(--rs);background:var(--s1);cursor:pointer;transition:.2s;text-align:left}
+.tpl-card:hover{border-color:var(--bh);background:var(--s2)}
+.tpl-card.selected{border-color:var(--amber)!important;background:var(--amber-d)!important}
+.tpl-icon{font-size:22px;flex-shrink:0}
+.tpl-name{font-size:12px;font-weight:600;color:var(--t1);display:block}
+.tpl-desc{font-size:10px;color:var(--t3);display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:140px}
+.prompt-box{width:100%;background:var(--s1);border:1.5px solid var(--border);border-radius:var(--r);padding:12px 14px;color:var(--t1);font-family:var(--font);font-size:14px;line-height:1.5;resize:vertical;outline:none;transition:.2s}
+.prompt-box::placeholder{color:var(--t3)}
+.prompt-box:focus{border-color:var(--amber)}
+.opts-row{display:flex;gap:16px;margin-top:12px;flex-wrap:wrap}
+.opt-label{font-size:11px;color:var(--t3);margin-bottom:4px;display:block}
+.qty-row{display:flex;gap:3px;background:var(--s1);border-radius:var(--rs);padding:2px;border:1px solid var(--border)}
+.qty-btn{padding:6px 12px;border:none;border-radius:4px;background:transparent;color:var(--t3);font-family:var(--font);font-size:11px;font-weight:500;cursor:pointer;transition:.2s;white-space:nowrap}
+.qty-btn:hover{color:var(--t2);background:var(--s2)}
+.qty-btn.active{background:var(--amber);color:var(--bg)}
+.gen-btn{width:100%;margin-top:14px;padding:14px;border:none;border-radius:var(--r);font-family:var(--font);font-size:14px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;transition:.2s;letter-spacing:.2px}
+.gen-btn.img{background:var(--amber);color:var(--bg)}
+.gen-btn.vid{background:var(--blue);color:white}
+.gen-btn:hover:not(:disabled){filter:brightness(1.1);transform:translateY(-1px)}
+.gen-btn:disabled{opacity:.35;cursor:not-allowed}
+.loading-box{text-align:center;padding:28px;margin-top:20px;background:var(--s1);border:1px solid var(--border);border-radius:var(--r)}
+.loading-box p{font-size:14px;font-weight:500;margin-top:12px}
+.loading-hint{font-size:11px!important;color:var(--t3)!important;font-weight:400!important;margin-top:4px!important}
+.spinner{width:28px;height:28px;border:3px solid var(--border);border-top-color:var(--amber);border-radius:50%;animation:spin 1s linear infinite;margin:0 auto}
+.error-box{margin-top:12px;padding:10px 14px;background:#ef444420;border:1px solid var(--red);border-radius:var(--rs);font-size:12px;color:#fca5a5}
+.results{margin-top:24px;animation:fadeIn .4s ease}
+.results-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px}
+.result-card{background:var(--s1);border:1px solid var(--border);border-radius:var(--r);overflow:hidden;transition:.2s}
+.result-card:hover{border-color:var(--bh)}
+.result-img{width:100%;display:block;aspect-ratio:1;object-fit:cover}
+.result-bar{padding:8px 12px;display:flex;align-items:center;justify-content:space-between}
+.dl-btn{display:flex;align-items:center;gap:5px;font-size:11px;color:var(--amber);text-decoration:none;font-weight:500}
+.result-meta{font-size:10px;color:var(--t3)}
+.footer{margin-top:48px;text-align:center;padding:16px;border-top:1px solid var(--border)}
+.footer p{font-size:11px;color:var(--t3)}
+.video-section{display:grid;grid-template-columns:220px 1fr;gap:16px}
+@media(max-width:640px){.video-section{grid-template-columns:1fr}}
+.drop-zone{border:1.5px dashed var(--border);border-radius:var(--r);padding:24px 12px;text-align:center;cursor:pointer;transition:.2s;background:var(--s1);min-height:180px;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:8px}
+.drop-zone:hover{border-color:var(--blue);background:var(--blue-d)}
+.drop-zone.has-file{padding:6px;border-style:solid}
+.drop-zone .label{font-size:12px;color:var(--t2)}
+.drop-zone .hint{font-size:10px;color:var(--t3)}
+.preview-img{width:100%;border-radius:var(--rs);max-height:200px;object-fit:cover}
+.range-input{width:100%;margin-top:4px;accent-color:var(--blue)}
+.range-labels{display:flex;justify-content:space-between;font-size:10px;color:var(--t3)}
+.time-hint{margin-top:8px;padding:8px 12px;background:var(--s2);border-radius:var(--rs);font-size:11px;color:var(--t2);border:1px solid var(--border)}
+#image-tab,#video-tab{display:none}
+#image-tab.active,#video-tab.active{display:block;animation:fadeIn .3s ease}
+</style>
+</head>
+<body>
+<div class="shell">
+  <header class="header">
+    <h1>AI Studio</h1>
+    <p class="header-sub">Powered by <b>FLUX.1 schnell</b> & <b>Wan 2.1</b></p>
+    <div class="status"><span class="status-dot" id="statusDot"></span><span id="statusText">Connessione...</span></div>
+  </header>
+
+  <div class="tabs">
+    <button class="tab active-img" id="tabImg" onclick="switchTab('image')">🖼️ Crea Immagine <span class="tab-model">FLUX.1</span></button>
+    <button class="tab" id="tabVid" onclick="switchTab('video')">🎬 Crea Video <span class="tab-model">Wan 2.1</span></button>
+  </div>
+
+  <!-- IMAGE TAB -->
+  <div id="image-tab" class="active">
+    <p class="section-label">Scegli uno stile <span class="opt">(opzionale)</span></p>
+    <div class="tpl-grid" id="imgTemplates"></div>
+    
+    <p class="section-label">Descrivi cosa vuoi generare</p>
+    <textarea class="prompt-box" id="imgPrompt" rows="4" placeholder="Descrivi l'immagine che vuoi creare..."></textarea>
+    
+    <div class="opts-row">
+      <div>
+        <label class="opt-label">Immagini</label>
+        <div class="qty-row" id="qtyBtns">
+          <button class="qty-btn active" onclick="setQty(1)">1</button>
+          <button class="qty-btn" onclick="setQty(3)">3</button>
+          <button class="qty-btn" onclick="setQty(5)">5</button>
+        </div>
+      </div>
+      <div>
+        <label class="opt-label">Risoluzione</label>
+        <div class="qty-row" id="resBtns">
+          <button class="qty-btn" onclick="setRes('512x512')">512x512</button>
+          <button class="qty-btn active" onclick="setRes('768x768')">768x768</button>
+          <button class="qty-btn" onclick="setRes('1024x1024')">1024x1024</button>
+        </div>
+      </div>
+    </div>
+
+    <button class="gen-btn img" id="genImgBtn" onclick="generateImage()">✨ Genera immagini</button>
+    
+    <div id="imgLoading" style="display:none">
+      <div class="loading-box">
+        <div class="spinner"></div>
+        <p>FLUX.1 sta generando sulla tua GPU M4 Pro...</p>
+        <p class="loading-hint">Circa 4-5 minuti per immagine</p>
+      </div>
+    </div>
+    
+    <div id="imgError" style="display:none" class="error-box"></div>
+    <div id="imgResults" class="results" style="display:none">
+      <p class="section-label">Risultati</p>
+      <div class="results-grid" id="imgGrid"></div>
+    </div>
+  </div>
+
+  <!-- VIDEO TAB -->
+  <div id="video-tab">
+    <p class="section-label">Scegli uno stile <span class="opt">(opzionale)</span></p>
+    <div class="tpl-grid" id="vidTemplates"></div>
+
+    <div class="video-section">
+      <div>
+        <p class="section-label">Immagine iniziale <span class="opt">(opzionale)</span></p>
+        <div class="drop-zone" id="dropZone" onclick="document.getElementById('fileInput').click()">
+          <span style="font-size:28px;color:var(--t3)">⬆️</span>
+          <span class="label">Carica immagine</span>
+          <span class="hint">Trascina qui o clicca</span>
+        </div>
+        <input type="file" id="fileInput" accept="image/*" style="display:none" onchange="handleFile(this)">
+      </div>
+      <div>
+        <p class="section-label">Descrivi il video</p>
+        <textarea class="prompt-box" id="vidPrompt" rows="4" placeholder="Descrivi il movimento, la scena, l'atmosfera..."></textarea>
+        
+        <div style="margin-top:12px">
+          <label class="opt-label">Durata: <span id="durVal">4</span> secondi</label>
+          <input type="range" class="range-input" min="2" max="15" value="4" oninput="document.getElementById('durVal').textContent=this.value;updateTimeHint(this.value)">
+          <div class="range-labels"><span>2s</span><span>15s</span></div>
+        </div>
+        
+        <div class="time-hint" id="timeHint">⚡ ~2-3 min sul tuo M4 Pro</div>
+        
+        <button class="gen-btn vid" onclick="alert('Video: installa prima i nodi Wan 2.1 da ComfyUI Manager')">🎬 Genera video</button>
+      </div>
+    </div>
+  </div>
+
+  <footer class="footer">
+    <p>Tutto gira in locale sul tuo Mac · Nessun dato inviato al cloud</p>
+  </footer>
+</div>
+
+<script>
+const API = "http://127.0.0.1:3001";
+let selectedTpl = null;
+let qty = 1;
+let res = "768x768";
+
+// Check health
+fetch(API + "/api/health").then(r=>r.json()).then(d => {
+  document.getElementById("statusDot").className = "status-dot " + (d.status==="ok"?"ok":"off");
+  document.getElementById("statusText").textContent = d.status==="ok" ? "ComfyUI connesso" : "ComfyUI offline";
+}).catch(() => {
+  document.getElementById("statusDot").className = "status-dot off";
+  document.getElementById("statusText").textContent = "Backend offline — avvia server.py";
+});
+
+// Load templates
+fetch(API + "/api/templates").then(r=>r.json()).then(data => {
+  renderTemplates("imgTemplates", data.image_templates, "image");
+  renderTemplates("vidTemplates", data.video_templates, "video");
+}).catch(()=>{});
+
+function renderTemplates(containerId, templates, type) {
+  const c = document.getElementById(containerId);
+  c.innerHTML = templates.map(t => `
+    <div class="tpl-card" data-id="${t.id}" data-prefix="${t.prefix}" data-example="${t.example}" onclick="selectTemplate(this, '${type}')">
+      <span class="tpl-icon">${t.icon}</span>
+      <div><span class="tpl-name">${t.name}</span><span class="tpl-desc">${t.description}</span></div>
+    </div>`).join("");
+}
+
+function selectTemplate(el, type) {
+  const cards = el.parentElement.querySelectorAll(".tpl-card");
+  const wasSelected = el.classList.contains("selected");
+  cards.forEach(c => c.classList.remove("selected"));
+  
+  if (wasSelected) {
+    selectedTpl = null;
+    document.getElementById(type === "image" ? "imgPrompt" : "vidPrompt").placeholder = "Descrivi cosa vuoi creare...";
+  } else {
+    el.classList.add("selected");
+    selectedTpl = { prefix: el.dataset.prefix, example: el.dataset.example };
+    const promptEl = document.getElementById(type === "image" ? "imgPrompt" : "vidPrompt");
+    promptEl.value = el.dataset.example;
+    promptEl.placeholder = "Es: " + el.dataset.example;
+  }
+}
+
+function switchTab(tab) {
+  document.getElementById("image-tab").classList.toggle("active", tab === "image");
+  document.getElementById("video-tab").classList.toggle("active", tab === "video");
+  document.getElementById("tabImg").className = "tab " + (tab === "image" ? "active-img" : "");
+  document.getElementById("tabVid").className = "tab " + (tab === "video" ? "active-vid" : "");
+  selectedTpl = null;
+}
+
+function setQty(n) {
+  qty = n;
+  document.querySelectorAll("#qtyBtns .qty-btn").forEach((b,i) => b.classList.toggle("active", [1,3,5][i]===n));
+}
+
+function setRes(r) {
+  res = r;
+  document.querySelectorAll("#resBtns .qty-btn").forEach(b => b.classList.toggle("active", b.textContent===r));
+}
+
+function updateTimeHint(val) {
+  const hints = {2:"~2-3 min",4:"~2-3 min",6:"~5-8 min",8:"~5-8 min",10:"~10-15 min",12:"~10-15 min",15:"~10-15 min"};
+  const closest = Object.keys(hints).reduce((a,b) => Math.abs(b-val) < Math.abs(a-val) ? b : a);
+  document.getElementById("timeHint").textContent = "⚡ " + hints[closest] + " sul tuo M4 Pro";
+}
+
+function handleFile(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const dz = document.getElementById("dropZone");
+  const url = URL.createObjectURL(file);
+  dz.classList.add("has-file");
+  dz.innerHTML = `<img src="${url}" class="preview-img">`;
+}
+
+async function generateImage() {
+  const prompt = document.getElementById("imgPrompt").value.trim();
+  if (!prompt) return;
+  
+  const btn = document.getElementById("genImgBtn");
+  const loading = document.getElementById("imgLoading");
+  const errorDiv = document.getElementById("imgError");
+  const resultsDiv = document.getElementById("imgResults");
+  const grid = document.getElementById("imgGrid");
+  
+  btn.disabled = true;
+  btn.textContent = "⏳ Generazione in corso...";
+  loading.style.display = "block";
+  errorDiv.style.display = "none";
+  resultsDiv.style.display = "none";
+  
+  const [w, h] = res.split("x").map(Number);
+  const body = new FormData();
+  body.append("prompt", prompt);
+  body.append("width", w);
+  body.append("height", h);
+  body.append("batch_size", qty);
+  body.append("template_prefix", selectedTpl?.prefix || "");
+  
+  try {
+    const r = await fetch(API + "/api/generate-image", { method: "POST", body });
+    if (!r.ok) throw new Error("Errore " + r.status);
+    const data = await r.json();
+    
+    grid.innerHTML = data.images.map(img => `
+      <div class="result-card">
+        <img src="${API}${img.url}" class="result-img" onclick="window.open('${API}${img.url}')">
+        <div class="result-bar">
+          <a href="${API}${img.url}" download class="dl-btn">⬇️ Scarica</a>
+          <span class="result-meta">${res} · FLUX.1</span>
+        </div>
+      </div>`).join("");
+    
+    resultsDiv.style.display = "block";
+  } catch(e) {
+    errorDiv.textContent = "Errore: " + e.message;
+    errorDiv.style.display = "block";
+  }
+  
+  loading.style.display = "none";
+  btn.disabled = false;
+  btn.textContent = "✨ Genera immagini";
+}
+</script>
+</body>
+</html>

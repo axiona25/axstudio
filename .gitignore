@@ -1,0 +1,51 @@
+# Dipendenze
+node_modules/
+**/venv/
+
+# Build output
+ai-studio-app/build/
+
+# ComfyUI (troppo pesante, 43GB+)
+ComfyUI/
+
+# File sensibili con API key e credenziali
+Connettori.txt
+.env
+.env.local
+.env.*.local
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# File binari pesanti non necessari nel repo
+*.mp4
+*.zip
+*.png
+*.jpg
+!ai-studio-app/public/**/*.png
+!ai-studio-app/public/**/*.jpg
+!ai-studio-app/public/**/*.ico
+!ai-studio-app/public/**/*.svg
+
+# Electron output
+dist/
+out/
+
+# Log
+*.log
+logs-*.txt
+
+# Facefusion (contiene modelli pesanti)
+Facefusion/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Python
+__pycache__/
+*.pyc
