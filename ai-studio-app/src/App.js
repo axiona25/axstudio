@@ -2169,11 +2169,20 @@ const SCREENPLAY_SYSTEM_PROMPT =
   "\n\nAUDIO FIELDS — For each clip, ALSO generate optional audio fields:" +
   "\n- 'dialogue_idea': suggested dialogue for the character in Italian (empty string if no dialogue needed)" +
   "\n- 'ambient_idea': suggested ambient sounds in Italian (always provide something appropriate for the scene)" +
+  "\n\nSET/ENVIRONMENT — For each clip, specify the environment:" +
+  "\n- 'set_name': a short name for the environment/location of this scene (e.g., 'Studio Conte', 'Strada Roma', 'Ufficio')" +
+  "\n- If two clips share the same location, they MUST have the same set_name" +
+  "\n- This ensures visual consistency: same set_name = same background reused across clips" +
+  "\n- Example:" +
+  "\n  Clip 1: set_name: 'Studio Conte' (Conte speaks at his desk)" +
+  "\n  Clip 2: set_name: 'Studio Conte' (continues in the same room)" +
+  "\n  Clip 3: set_name: 'Vista Roma' (exterior shot)" +
+  "\n  Clip 4: set_name: 'Studio Conte' (back to the office)" +
   "\n\nRETURN FORMAT — ONLY valid JSON (no markdown, no backticks): " +
   '{"summary_it": "Brief Italian summary of the full video project",' +
   ' "total_duration": 0,' +
   ' "clips": [' +
-  '   {"scene": 1, "duration": "5", "prompt_en": "detailed English prompt for this clip", "prompt_it": "Italian description", "camera": "camera direction note", "notes": "continuity/transition notes", "dialogue_idea": "Il supereroe dice: Questa città ha bisogno di me!", "ambient_idea": "Traffico cittadino, vento tra i palazzi, passi sulla strada"}' +
+  '   {"scene": 1, "duration": "5", "prompt_en": "detailed English prompt for this clip", "prompt_it": "Italian description", "camera": "camera direction note", "notes": "continuity/transition notes", "dialogue_idea": "...", "ambient_idea": "...", "set_name": "Studio Conte"}' +
   ' ]}' +
   "\n\nGroup related actions into single clips. Split when there's a clear scene change, location change, or time jump. " +
   "Think like a film editor: where would you make a CUT?";
@@ -2198,6 +2207,7 @@ async function analyzeScreenplay(screenplayIT, styleContext = "") {
             notes: c.notes || "",
             dialogueIdea: c.dialogue_idea || "",
             ambientIdea: c.ambient_idea || "",
+            setName: c.set_name || "",
           })),
         };
       }
@@ -4972,6 +4982,9 @@ export default function AIStudio() {
   const [charMenuOpen, setCharMenuOpen] = useState(null);
   const [sceneMode, setSceneMode] = useState(1);
   const [selectedCharacterIds, setSelectedCharacterIds] = useState(new Set());
+  const [selectedSet, setSelectedSet] = useState(null);
+  const [showSaveSetModal, setShowSaveSetModal] = useState(false);
+  const [saveSetImageUrl, setSaveSetImageUrl] = useState(null);
   const [myImagesModalOpen, setMyImagesModalOpen] = useState(false);
   const [myImagesPickedUrl, setMyImagesPickedUrl] = useState(null);
   const [activeTab, setActiveTab] = useState("image");
@@ -5430,6 +5443,21 @@ export default function AIStudio() {
     setProjects(p => p.map(x => x.id === u.id ? u : x));
     setCurrentProject(u);
   };
+
+  const projectSets = useMemo(() => currentProject?.sets || [], [currentProject]);
+
+  const addSetToProject = useCallback(async (setData) => {
+    if (!currentProject) return;
+    const updated = { ...currentProject, sets: [...(currentProject.sets || []), setData] };
+    updateProject(updated);
+  }, [currentProject]);
+
+  const deleteSetFromProject = useCallback((setId) => {
+    if (!currentProject) return;
+    const updated = { ...currentProject, sets: (currentProject.sets || []).filter(s => s.id !== setId) };
+    updateProject(updated);
+    if (selectedSet?.id === setId) setSelectedSet(null);
+  }, [currentProject, selectedSet]);
 
   const deleteCharacter = (cid) => {
     if (!currentProject) return;
@@ -6315,6 +6343,155 @@ export default function AIStudio() {
               </div>
           </div>
 
+          {/* Set / Ambienti */}
+          <div style={{ marginBottom: studioSplitView ? 10 : 20, flexShrink: 0 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+              <h3 style={{ fontFamily: "'Playfair Display', serif", fontSize: 14, fontWeight: 600, color: "#f59e0b", margin: 0, display: "flex", alignItems: "center", gap: 6 }}>
+                <HiFilm size={16} /> Set / Ambienti
+              </h3>
+              <button type="button" onClick={() => { setSaveSetImageUrl(null); setShowSaveSetModal(true); }}
+                style={{ fontSize: 11, fontWeight: 600, color: "#f59e0b", background: "rgba(245,158,11,0.1)", border: "1px solid rgba(245,158,11,0.25)", borderRadius: 8, padding: "4px 10px", cursor: "pointer" }}>
+                + Crea Set
+              </button>
+            </div>
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+              {projectSets.map(set => {
+                const isSel = selectedSet?.id === set.id;
+                return (
+                  <div key={set.id}
+                    onClick={() => setSelectedSet(isSel ? null : set)}
+                    style={{
+                      width: 120, borderRadius: 10, overflow: "hidden", cursor: "pointer", position: "relative",
+                      border: isSel ? "2px solid #f59e0b" : `1px solid ${AX.border}`,
+                      background: isSel ? "rgba(245,158,11,0.08)" : AX.surface,
+                      transition: "all 0.15s",
+                    }}
+                    onMouseEnter={e => { if (!isSel) e.currentTarget.style.borderColor = "rgba(245,158,11,0.5)"; }}
+                    onMouseLeave={e => { if (!isSel) e.currentTarget.style.borderColor = AX.border; }}
+                  >
+                    <button type="button" onClick={e => { e.stopPropagation(); deleteSetFromProject(set.id); }}
+                      style={{ position: "absolute", top: 3, right: 3, background: "rgba(0,0,0,0.6)", border: "none", borderRadius: "50%", width: 18, height: 18, cursor: "pointer", color: "#ef4444", fontSize: 11, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 2 }}
+                      title="Elimina Set">✕</button>
+                    <div style={{ width: "100%", height: 72, backgroundImage: `url(${set.imageUrl || mediaFileUrl(set.filePath) || ""})`, backgroundSize: "cover", backgroundPosition: "center", backgroundColor: "rgba(245,158,11,0.1)" }} />
+                    <div style={{ padding: "4px 6px" }}>
+                      <div style={{ fontSize: 10, fontWeight: 600, color: AX.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{set.name}</div>
+                      {set.description && <div style={{ fontSize: 9, color: AX.muted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{set.description}</div>}
+                    </div>
+                  </div>
+                );
+              })}
+              {projectSets.length === 0 && (
+                <div style={{ fontSize: 11, color: AX.muted, padding: "8px 0" }}>Nessun set creato. Genera un'immagine e salvala come set, oppure clicca "+ Crea Set".</div>
+              )}
+            </div>
+          </div>
+
+          {/* Save Set Modal */}
+          {showSaveSetModal && (() => {
+            const SaveSetModalInner = () => {
+              const [setName, setSetName] = useState("");
+              const [setDesc, setSetDesc] = useState("");
+              const [saving, setSaving] = useState(false);
+              const [uploadImg, setUploadImg] = useState(saveSetImageUrl || null);
+              const fileRef = useRef(null);
+
+              const handleSave = async () => {
+                if (!setName.trim()) return;
+                setSaving(true);
+                try {
+                  let imageUrl = uploadImg;
+                  let filePath = null;
+                  let remoteUrl = null;
+
+                  if (imageUrl) {
+                    if (imageUrl.startsWith("http")) {
+                      remoteUrl = imageUrl;
+                      try {
+                        const dataUrl = await falImageUrlToBase64(imageUrl);
+                        if (isElectron && window.electronAPI?.saveFile) {
+                          const fname = `set_${Date.now()}.png`;
+                          const result = await window.electronAPI.saveFile(fname, dataUrl.split(",")[1] || dataUrl, "sets");
+                          if (result?.filePath) filePath = result.filePath;
+                        }
+                        imageUrl = filePath ? mediaFileUrl(filePath) : dataUrl;
+                      } catch { /* keep remote */ }
+                    } else if (imageUrl.startsWith("data:")) {
+                      remoteUrl = await uploadBase64ToFal(imageUrl).catch(() => null);
+                      if (isElectron && window.electronAPI?.saveFile) {
+                        const fname = `set_${Date.now()}.png`;
+                        const result = await window.electronAPI.saveFile(fname, imageUrl.split(",")[1] || imageUrl, "sets");
+                        if (result?.filePath) filePath = result.filePath;
+                        imageUrl = mediaFileUrl(filePath) || imageUrl;
+                      }
+                    } else if (imageUrl.startsWith("axstudio-local://")) {
+                      const fp = filePathFromAxstudioMediaUrl(imageUrl);
+                      filePath = fp;
+                      try {
+                        const loadRes = isElectron && window.electronAPI?.loadFile ? await window.electronAPI.loadFile(fp) : null;
+                        if (loadRes?.data) remoteUrl = await uploadBase64ToFal(`data:image/png;base64,${loadRes.data}`).catch(() => null);
+                      } catch { /* no remote */ }
+                    }
+                  }
+
+                  const newSet = {
+                    id: `set_${Date.now()}`,
+                    name: setName.trim(),
+                    description: setDesc.trim(),
+                    imageUrl: imageUrl || null,
+                    filePath: filePath || null,
+                    remoteUrl: remoteUrl || null,
+                    projectId: currentProject?.id,
+                    createdAt: new Date().toISOString(),
+                  };
+                  addSetToProject(newSet);
+                  setShowSaveSetModal(false);
+                  setSaveSetImageUrl(null);
+                } finally { setSaving(false); }
+              };
+
+              return (
+                <Modal onClose={() => { setShowSaveSetModal(false); setSaveSetImageUrl(null); }} title="🎬 Salva come Set">
+                  <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+                    {uploadImg && (
+                      <div style={{ width: "100%", height: 160, borderRadius: 10, overflow: "hidden", border: `1px solid ${AX.border}` }}>
+                        <img src={uploadImg} alt="Set preview" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                      </div>
+                    )}
+                    {!uploadImg && (
+                      <div
+                        onClick={() => fileRef.current?.click()}
+                        style={{ width: "100%", height: 120, borderRadius: 10, border: `2px dashed rgba(245,158,11,0.4)`, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "#f59e0b", fontSize: 12, background: "rgba(245,158,11,0.05)" }}>
+                        Clicca per caricare un'immagine
+                      </div>
+                    )}
+                    <input ref={fileRef} type="file" accept="image/*" style={{ display: "none" }} onChange={e => {
+                      const f = e.target.files?.[0];
+                      if (!f) return;
+                      const reader = new FileReader();
+                      reader.onload = () => setUploadImg(reader.result);
+                      reader.readAsDataURL(f);
+                    }} />
+                    <div>
+                      <label style={{ fontSize: 12, color: AX.text2, fontWeight: 600 }}>Nome Set *</label>
+                      <input value={setName} onChange={e => setSetName(e.target.value)} placeholder="es. Studio di Conte"
+                        style={{ width: "100%", marginTop: 4, padding: "10px 12px", background: "rgba(0,0,0,0.3)", color: "white", border: `1px solid ${AX.border}`, borderRadius: 8, fontSize: 13, boxSizing: "border-box" }} />
+                    </div>
+                    <div>
+                      <label style={{ fontSize: 12, color: AX.text2, fontWeight: 600 }}>Descrizione (opzionale)</label>
+                      <input value={setDesc} onChange={e => setSetDesc(e.target.value)} placeholder="es. Ufficio con scrivania, libreria, bandiera"
+                        style={{ width: "100%", marginTop: 4, padding: "10px 12px", background: "rgba(0,0,0,0.3)", color: "white", border: `1px solid ${AX.border}`, borderRadius: 8, fontSize: 13, boxSizing: "border-box" }} />
+                    </div>
+                    <button type="button" onClick={handleSave} disabled={!setName.trim() || saving}
+                      style={{ width: "100%", padding: "12px", borderRadius: 10, border: "none", background: !setName.trim() || saving ? AX.surface : "linear-gradient(135deg, #f59e0b, #ef4444)", color: !setName.trim() || saving ? AX.muted : "#fff", fontWeight: 700, fontSize: 14, cursor: !setName.trim() || saving ? "not-allowed" : "pointer" }}>
+                      {saving ? "Salvataggio..." : "💾 Salva Set"}
+                    </button>
+                  </div>
+                </Modal>
+              );
+            };
+            return <SaveSetModalInner />;
+          })()}
+
           {/* Character Creator Modal */}
           {showCharCreator && charCreatorTarget && (() => {
             const ap = charCreatorTarget.appearance || {};
@@ -6726,11 +6903,11 @@ export default function AIStudio() {
                 if (!currentProject) return;
                 const updChars = currentProject.characters.map(c => c.id === charId ? { ...c, appearance: { ...(c.appearance || {}), ...appearance } } : c);
                 updateProject({ ...currentProject, characters: updChars });
-              } }} />
+              }, onSaveAsSet: (imgUrl) => { setSaveSetImageUrl(imgUrl); setShowSaveSetModal(true); }, selectedSet }} />
             </>
           )}
           {activeTab === "video" && (
-            <VidGen {...{ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, videoResolution, setVideoResolution, generating, setGenerating, selectedCharacter, vidTemplates: videoStylePresets, onSaveVideo: saveGeneratedVideo, generatedVideos, setGeneratedVideos, previewVideo: genPreviewVideo, setPreviewVideo: setGenPreviewVideo, layoutFill: false, history, diskMediaEntries, generatedImages, controlledSourceImg: projectVideoSourceImg, setControlledSourceImg: setProjectVideoSourceImg, proposalResetNonce: projectVideoProposalResetNonce, pickerImageEntries: projectGalleryEntryList, pickerSelectedEntryId: projectGallerySelectedEntryId, onPickerImageChange: handleProjectGallerySelection, selectedVideoStyles: vidSelectedStyles, setSelectedVideoStyles: setVidSelectedStyles, selectedDirectionStyles: vidSelectedDirectionStyles, setSelectedDirectionStyles: setVidSelectedDirectionStyles, vidAspect, setVidAspect, vidSteps, setVidSteps, recallVideoUrl, setRecallVideoUrl, videoStatus, setVideoStatus, directionRecommendation: vidDirectionRecommendation, setDirectionRecommendation: setVidDirectionRecommendation, directionRecLoading: vidDirectionRecLoading, setDirectionRecLoading: setVidDirectionRecLoading, imgSessionPromptMap, videoSidebarMode, setVideoSidebarMode, expandedScreenplays, setExpandedScreenplays, voiceLibrary, elFavorites, myVoices }} />
+            <VidGen {...{ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, videoResolution, setVideoResolution, generating, setGenerating, selectedCharacter, vidTemplates: videoStylePresets, onSaveVideo: saveGeneratedVideo, generatedVideos, setGeneratedVideos, previewVideo: genPreviewVideo, setPreviewVideo: setGenPreviewVideo, layoutFill: false, history, diskMediaEntries, generatedImages, controlledSourceImg: projectVideoSourceImg, setControlledSourceImg: setProjectVideoSourceImg, proposalResetNonce: projectVideoProposalResetNonce, pickerImageEntries: projectGalleryEntryList, pickerSelectedEntryId: projectGallerySelectedEntryId, onPickerImageChange: handleProjectGallerySelection, selectedVideoStyles: vidSelectedStyles, setSelectedVideoStyles: setVidSelectedStyles, selectedDirectionStyles: vidSelectedDirectionStyles, setSelectedDirectionStyles: setVidSelectedDirectionStyles, vidAspect, setVidAspect, vidSteps, setVidSteps, recallVideoUrl, setRecallVideoUrl, videoStatus, setVideoStatus, directionRecommendation: vidDirectionRecommendation, setDirectionRecommendation: setVidDirectionRecommendation, directionRecLoading: vidDirectionRecLoading, setDirectionRecLoading: setVidDirectionRecLoading, imgSessionPromptMap, videoSidebarMode, setVideoSidebarMode, expandedScreenplays, setExpandedScreenplays, voiceLibrary, elFavorites, myVoices, projectSets }} />
           )}
 
           </div>
@@ -7236,7 +7413,7 @@ const VideoPreviewModal = React.memo(function VideoPreviewModal({ src, onClose, 
 });
 
 // ── Image Generator ──
-function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setResolution, generating, setGenerating, generatedImages, setGeneratedImages, selectedCharacter, setSelectedCharacter, projectCharacters, scenes, onSave, previewImg, setPreviewImg, layoutFill, history, recallImageUrl, setRecallImageUrl, selectedStyles, setSelectedStyles, aspect, setAspect, steps, setSteps, cfg, setCfg, adv, setAdv, projectSourceImageUrl, setProjectSourceImageUrl, currentProjectId, imgSessionPromptMap, imgPickerEntries, imgPickerSelectedId, onImgPickerChange, myImagesPickedUrl, onUpdateCharacterAppearance }) {
+function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setResolution, generating, setGenerating, generatedImages, setGeneratedImages, selectedCharacter, setSelectedCharacter, projectCharacters, scenes, onSave, previewImg, setPreviewImg, layoutFill, history, recallImageUrl, setRecallImageUrl, selectedStyles, setSelectedStyles, aspect, setAspect, steps, setSteps, cfg, setCfg, adv, setAdv, projectSourceImageUrl, setProjectSourceImageUrl, currentProjectId, imgSessionPromptMap, imgPickerEntries, imgPickerSelectedId, onImgPickerChange, myImagesPickedUrl, onUpdateCharacterAppearance, onSaveAsSet, selectedSet }) {
   const [tmpl, setTmpl] = useState(null);
   const [imgLibraryOpen, setImgLibraryOpen] = useState(false);
   const imgFileRef = useRef(null);
@@ -7990,6 +8167,105 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
           }
         })();
 
+      } else if (selectedSet && selectedCharacter) {
+        // ═══ RAMO SET + CHARACTER: Kontext inserisce personaggio nel Set ═══
+        setImageStatus && setImageStatus("🎬 Inserimento nel set...");
+
+        let setImgUrl = selectedSet.remoteUrl || null;
+        if (!setImgUrl && selectedSet.filePath && isElectron && window.electronAPI?.loadFile) {
+          try {
+            const lr = await window.electronAPI.loadFile(selectedSet.filePath);
+            if (lr?.data) setImgUrl = await uploadBase64ToFal(`data:image/png;base64,${lr.data}`).catch(() => null);
+          } catch { /* noop */ }
+        }
+        if (!setImgUrl && selectedSet.imageUrl) {
+          if (selectedSet.imageUrl.startsWith("http")) setImgUrl = selectedSet.imageUrl;
+          else if (selectedSet.imageUrl.startsWith("data:")) setImgUrl = await uploadBase64ToFal(selectedSet.imageUrl).catch(() => null);
+          else if (selectedSet.imageUrl.startsWith("axstudio-local://")) {
+            const fp = filePathFromAxstudioMediaUrl(selectedSet.imageUrl);
+            if (fp && isElectron && window.electronAPI?.loadFile) {
+              const lr = await window.electronAPI.loadFile(fp);
+              if (lr?.data) setImgUrl = await uploadBase64ToFal(`data:image/png;base64,${lr.data}`).catch(() => null);
+            }
+          }
+        }
+        if (!setImgUrl) throw new Error("Impossibile caricare l'immagine del Set");
+
+        const physDesc = appearanceToPrompt(selectedCharacter.appearance);
+        const insertPrompt = [
+          `Insert ${physDesc || "the character"} into this exact scene.`,
+          scenePrompt,
+          "Keep the background, furniture, lighting, and all environment details exactly the same.",
+          "Only add the character performing the described action. The environment must remain identical.",
+        ].filter(Boolean).join(" ");
+
+        console.log("[SET INSERT] prompt:", insertPrompt.slice(0, 200));
+
+        const insertResult = await falRequest("fal-ai/flux-pro/kontext/max", {
+          image_url: setImgUrl,
+          prompt: insertPrompt,
+          num_images: 1,
+          safety_tolerance: "6",
+        });
+        const insertedUrl = insertResult?.images?.[0]?.url || insertResult?.image?.url || null;
+        if (!insertedUrl) throw new Error("Kontext: nessuna immagine generata per l'inserimento nel Set");
+
+        imgUrl = insertedUrl;
+
+        if (useFaceSwap) {
+          try {
+            setImageStatus && setImageStatus("⏳ Applicazione volto...");
+            const faceDataUri = await characterImageToDataUri(charImg).catch(() => null);
+            if (faceDataUri) {
+              const faceUrl = await uploadBase64ToFal(faceDataUri);
+              const swap1 = await falRequest("fal-ai/face-swap", { base_image_url: imgUrl, swap_image_url: faceUrl });
+              let swappedUrl = swap1?.image?.url || swap1?.images?.[0]?.url || null;
+              if (swappedUrl) {
+                const swap2 = await falRequest("fal-ai/face-swap", { base_image_url: swappedUrl, swap_image_url: faceUrl });
+                if (swap2?.image?.url) swappedUrl = swap2.image.url;
+                else if (swap2?.images?.[0]?.url) swappedUrl = swap2.images[0].url;
+                console.log("[SET FACE-SWAP] Applied (2-pass):", swappedUrl.slice(0, 80));
+                imgUrl = swappedUrl;
+              }
+            }
+          } catch (faceErr) { console.warn("[SET FACE-SWAP] Failed:", faceErr.message); }
+
+          if (autoRefine && selectedCharacter?.appearance) {
+            setImageStatus && setImageStatus("✨ Rifinitura dettagli...");
+            imgUrl = await refineWithKontext(imgUrl, selectedCharacter.appearance);
+          }
+        }
+
+        setImageStatus && setImageStatus("✅ Completato!");
+        setTimeout(() => setImageStatus && setImageStatus(""), 2000);
+
+        setGeneratedImages(p => [imgUrl, ...p.filter(x => x !== STUDIO_IMAGE_GENERATING)]);
+
+        const resolvedPromptIT = promptManuallyEdited ? editableIT : (proposedPrompt?.prompt_it || currentIt);
+        sessionPromptMap.current.set(imgUrl, {
+          userIdea: currentIt, promptEN: resolvedEn, promptIT: resolvedPromptIT,
+          savedStyles: selectedStyles, appearanceSnapshot: { ...(selectedCharacter?.appearance || {}) },
+          characterId: selectedCharacter?.id || null, setId: selectedSet.id, projectImageMode: "set-insert",
+        });
+
+        void (async () => {
+          try {
+            if (onSave) {
+              const dataUrl = await falImageUrlToBase64(imgUrl);
+              const entry = await onSave(dataUrl, resolvedPromptIT, {
+                prompt_en: resolvedEn, prompt_it: resolvedPromptIT, selectedStyles, projectImageMode: "set-insert",
+                characterId: selectedCharacter?.id || null, setId: selectedSet.id,
+              });
+              if (entry?.filePath && isElectron) {
+                const nu = mediaFileUrl(entry.filePath);
+                setGeneratedImages(p => p.map(x => x === imgUrl ? nu : x));
+                if (typeof setPreviewImg === "function") setPreviewImg(prev => (prev === imgUrl ? nu : prev));
+                sessionPromptMap.current.set(nu, sessionPromptMap.current.get(imgUrl));
+              }
+            }
+          } catch (saveErr) { console.error("[SET-INSERT SAVE]", saveErr); }
+        })();
+
       } else {
         // ═══ RAMO CREATE: generazione normale FLUX Ultra ═══
         setImageStatus && setImageStatus("⏳ Generazione immagine...");
@@ -8511,7 +8787,6 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
               style={{ background: autoRefine ? AX.violet : "rgba(255,255,255,0.08)", border: "none", borderRadius: 10, padding: "3px 12px", color: autoRefine ? "#fff" : AX.muted, fontSize: 10, fontWeight: 700, cursor: "pointer", transition: "all 0.15s" }}>
               {autoRefine ? "ON" : "OFF"}
             </button>
-            <span style={{ fontSize: 10, color: AX.muted, opacity: 0.6 }}>{autoRefine ? "Corregge capelli, pelle e artefatti post face-swap" : "Solo face swap, più veloce"}</span>
           </div>
         )}
       </div>
@@ -8526,6 +8801,12 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
                 style={{ padding: "10px 22px", borderRadius: 12, background: AX.gradPrimary, color: AX.bg, fontWeight: 700, fontSize: 13, textDecoration: "none", cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}>
                 <HiArrowDownTray size={16} /> Scarica immagine
               </a>
+              {typeof onSaveAsSet === "function" && (
+                <button type="button" onClick={e => { e.stopPropagation(); onSaveAsSet(previewImg); }}
+                  style={{ padding: "10px 22px", borderRadius: 12, background: "rgba(245,158,11,0.15)", border: "1px solid rgba(245,158,11,0.4)", color: "#f59e0b", fontWeight: 700, fontSize: 13, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 6 }}>
+                  <HiFilm size={16} /> Salva come Set
+                </button>
+              )}
               <button type="button" onClick={() => setPreviewImg(null)}
                 style={{ padding: "10px 22px", borderRadius: 12, background: AX.surface, border: `1px solid ${AX.border}`, color: AX.text2, fontWeight: 600, fontSize: 13, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 6 }}>
                 <HiXMark size={16} /> Chiudi
@@ -8539,7 +8820,7 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
 }
 
 // ── Video Generator ──
-function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, videoResolution, setVideoResolution, generating, setGenerating, selectedCharacter, vidTemplates, onSaveVideo, generatedVideos: _gv, setGeneratedVideos, previewVideo, setPreviewVideo, layoutFill, history, diskMediaEntries, generatedImages, controlledSourceImg, setControlledSourceImg, freeSourceImg, setFreeSourceImg, proposalResetNonce = 0, pickerImageEntries, pickerSelectedEntryId, onPickerImageChange, selectedVideoStyles, setSelectedVideoStyles, selectedDirectionStyles, setSelectedDirectionStyles, vidAspect, setVidAspect, vidSteps, setVidSteps, recallVideoUrl, setRecallVideoUrl, videoStatus, setVideoStatus, directionRecommendation, setDirectionRecommendation, directionRecLoading, setDirectionRecLoading, imgSessionPromptMap, videoSidebarMode, setVideoSidebarMode, expandedScreenplays, setExpandedScreenplays, voiceLibrary = [], elFavorites = [], myVoices = [] }) {
+function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, videoResolution, setVideoResolution, generating, setGenerating, selectedCharacter, vidTemplates, onSaveVideo, generatedVideos: _gv, setGeneratedVideos, previewVideo, setPreviewVideo, layoutFill, history, diskMediaEntries, generatedImages, controlledSourceImg, setControlledSourceImg, freeSourceImg, setFreeSourceImg, proposalResetNonce = 0, pickerImageEntries, pickerSelectedEntryId, onPickerImageChange, selectedVideoStyles, setSelectedVideoStyles, selectedDirectionStyles, setSelectedDirectionStyles, vidAspect, setVidAspect, vidSteps, setVidSteps, recallVideoUrl, setRecallVideoUrl, videoStatus, setVideoStatus, directionRecommendation, setDirectionRecommendation, directionRecLoading, setDirectionRecLoading, imgSessionPromptMap, videoSidebarMode, setVideoSidebarMode, expandedScreenplays, setExpandedScreenplays, voiceLibrary = [], elFavorites = [], myVoices = [], projectSets = [] }) {
   const [tmpl, setTmpl] = useState(null);
   const sourceIsControlled = typeof setControlledSourceImg === "function";
   const sourceImg = sourceIsControlled ? (controlledSourceImg ?? null) : (freeSourceImg ?? null);
@@ -9736,17 +10017,26 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
       const styleContext = [...visualLabels, ...dirLabels].join(", ");
       const result = await analyzeScreenplay(videoPrompt.trim(), styleContext);
       if (result?.clips?.length) {
-        setEditableClips(result.clips.map(clip => ({
-          scene: clip.scene || 0,
-          duration: String(clip.duration || "5"),
-          _aiDuration: String(clip.duration || "5"),
-          prompt_en: clip.prompt_en || "",
-          prompt_it: clip.prompt_it || "",
-          camera: clip.camera || "",
-          notes: clip.notes || "",
-          _modified: false,
-          _durationModified: false,
-        })));
+        setEditableClips(result.clips.map(clip => {
+          let setId;
+          if (clip.setName && projectSets.length > 0) {
+            const matchedSet = projectSets.find(s => s.name.toLowerCase() === clip.setName.toLowerCase());
+            if (matchedSet) setId = matchedSet.id;
+          }
+          return {
+            scene: clip.scene || 0,
+            duration: String(clip.duration || "5"),
+            _aiDuration: String(clip.duration || "5"),
+            prompt_en: clip.prompt_en || "",
+            prompt_it: clip.prompt_it || "",
+            camera: clip.camera || "",
+            notes: clip.notes || "",
+            setName: clip.setName || "",
+            setId: setId || undefined,
+            _modified: false,
+            _durationModified: false,
+          };
+        }));
         setScreenplaySummary(result.summary_it || "");
       } else {
         setTranslateVideoErr("Non sono riuscito ad analizzare la sceneggiatura. Riprova con più dettagli.");
@@ -9826,6 +10116,33 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
       }
     }
 
+    // ── Set cache: genera/risolvi immagini Set per i clip che li usano ──
+    const setFrameCache = {};
+    const resolveSetFrameForClip = async (clip) => {
+      const setId = clip.setId;
+      const setName = clip.setName || "";
+      const cacheKey = setId || setName;
+      if (!cacheKey) return null;
+      if (setFrameCache[cacheKey]) return setFrameCache[cacheKey];
+
+      let setImgUrl = null;
+      if (setId) {
+        const set = projectSets.find(s => s.id === setId);
+        if (set) {
+          setImgUrl = set.remoteUrl || null;
+          if (!setImgUrl && set.filePath && isElectron && window.electronAPI?.loadFile) {
+            try { const lr = await window.electronAPI.loadFile(set.filePath); if (lr?.data) setImgUrl = await uploadBase64ToFal(`data:image/png;base64,${lr.data}`).catch(() => null); } catch { /* noop */ }
+          }
+          if (!setImgUrl && set.imageUrl?.startsWith("http")) setImgUrl = set.imageUrl;
+        }
+      }
+      if (setImgUrl) {
+        setFrameCache[cacheKey] = setImgUrl;
+        return setImgUrl;
+      }
+      return null;
+    };
+
     // Pre-inserisci N placeholder per tutti i clip in attesa
     const placeholders = clips.map((_, idx) => `${STUDIO_CLIP_GENERATING_PREFIX}${idx}`);
     setGeneratedVideos(prev => [...placeholders, ...prev.filter(x => !isClipPlaceholder(x))]);
@@ -9867,6 +10184,53 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
       vidDialogueOverrideRef.current = clip.dialogue || null;
       vidAmbientOverrideRef.current = clip.ambient || null;
       vidVoiceIdOverrideRef.current = clip.voiceId || null;
+
+      // ── Set-based start frame: se il clip ha un Set, genera frame con Kontext ──
+      if ((clip.setId || clip.setName) && !vidStartImageOverrideRef.current) {
+        try {
+          const setUrl = await resolveSetFrameForClip(clip);
+          if (setUrl) {
+            setVideoStatus(`🎬 Inserimento nel set (clip ${i + 1})…`);
+            const charImg = selectedCharacter?.image || selectedCharacter?.imagePath || selectedCharacter?.imageUrl || null;
+            const physDesc = selectedCharacter?.appearance ? appearanceToPrompt(selectedCharacter.appearance) : "";
+            const insertPrompt = [
+              `Insert ${physDesc || "the character"} into this exact scene.`,
+              promptEN,
+              "Keep the background, furniture, lighting, and all environment details exactly the same. Only add the character.",
+            ].filter(Boolean).join(" ");
+
+            const insertResult = await falRequest("fal-ai/flux-pro/kontext/max", {
+              image_url: setUrl,
+              prompt: insertPrompt,
+              num_images: 1,
+              safety_tolerance: "6",
+            });
+            let setFrame = insertResult?.images?.[0]?.url || insertResult?.image?.url || null;
+
+            if (setFrame && charImg) {
+              const faceDataUri = await characterImageToDataUri(charImg).catch(() => null);
+              if (faceDataUri) {
+                const faceUrl = await uploadBase64ToFal(faceDataUri);
+                const sw1 = await falRequest("fal-ai/face-swap", { base_image_url: setFrame, swap_image_url: faceUrl });
+                let swUrl = sw1?.image?.url || sw1?.images?.[0]?.url || null;
+                if (swUrl) {
+                  const sw2 = await falRequest("fal-ai/face-swap", { base_image_url: swUrl, swap_image_url: faceUrl });
+                  if (sw2?.image?.url) swUrl = sw2.image.url;
+                  else if (sw2?.images?.[0]?.url) swUrl = sw2.images[0].url;
+                  setFrame = swUrl;
+                }
+              }
+            }
+            if (setFrame) {
+              vidStartImageOverrideRef.current = setFrame;
+              vidFaceSwappedFrameRef.current = null;
+              console.log(`[SET CLIP ${i + 1}] Generated set frame:`, setFrame.slice(0, 80));
+            }
+          }
+        } catch (setErr) {
+          console.warn(`[SET CLIP ${i + 1}] Failed to generate set frame:`, setErr.message);
+        }
+      }
 
       try {
         const clipResult = await generateVideo();
@@ -10723,6 +11087,26 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
               />
               {clip._modified && (
                 <div style={{ fontSize: 10, color: AX.gold, marginTop: 3 }}>⚠ Verrà ritradotto automaticamente prima della generazione</div>
+              )}
+
+              {/* Set / Ambiente */}
+              {(projectSets.length > 0 || clip.setName) && (
+                <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6 }}>
+                  <label style={{ fontSize: 10, color: "#f59e0b", fontWeight: 600, flexShrink: 0 }}>🎬 Set:</label>
+                  {projectSets.length > 0 ? (
+                    <select
+                      value={clip.setId || ""}
+                      onChange={e => setEditableClips(prev => prev.map((c, j) => j === i ? { ...c, setId: e.target.value || undefined } : c))}
+                      style={{ flex: 1, background: AX.bg, color: AX.text, border: `1px solid ${clip.setId ? "rgba(245,158,11,0.5)" : AX.border}`, borderRadius: 6, padding: "3px 8px", fontSize: 10, cursor: "pointer" }}>
+                      <option value="">{clip.setName ? `${clip.setName} (auto)` : "Genera automatico"}</option>
+                      {projectSets.map(set => (
+                        <option key={set.id} value={set.id}>🎬 {set.name}</option>
+                      ))}
+                    </select>
+                  ) : (
+                    <span style={{ fontSize: 10, color: AX.muted, fontStyle: "italic" }}>{clip.setName}</span>
+                  )}
+                </div>
               )}
 
               {/* Pulsanti Dialoghi e Ambient */}
