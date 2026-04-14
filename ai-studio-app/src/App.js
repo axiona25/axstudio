@@ -1079,15 +1079,16 @@ function inferGenderFromAppearance(appearance) {
   return "male";
 }
 
-async function applyFaceIdentity(imageUrl, faceUrl, appearance, autoRefine, finalPrompt) {
-  const identityPrompt = appearance?.detailedDescription
-    ? `${finalPrompt}. The person has: ${appearance.detailedDescription}`
-    : finalPrompt;
+async function applyFaceIdentity(imageUrl, faceUrl, appearance, autoRefine, finalPrompt, sceneHint) {
+  // flux-pulid prompt: ONLY appearance + scene + style — NO anchoring/lock clauses
+  const physDesc = appearance?.detailedDescription || "";
+  const pulidPrompt = [physDesc, sceneHint || ""].filter(Boolean).join(", ").slice(0, 500);
+  console.log("[PULID PROMPT]", pulidPrompt.slice(0, 200));
 
   // STEP 1: identity-first generation with fal-ai/flux-pulid
   try {
     const pulIdResult = await falQueueRequest("fal-ai/flux-pulid", {
-      prompt: identityPrompt,
+      prompt: pulidPrompt,
       reference_image_url: faceUrl,
       image_size: "portrait_4_3",
       num_inference_steps: 28,
@@ -7538,7 +7539,7 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
       const faceUrl = await uploadBase64ToFal(faceDataUri);
 
       setImageStatus("🧬 Applicazione identità facciale...");
-      let imgUrl = await applyFaceIdentity(sourceUrl, faceUrl, selectedCharacter?.appearance, autoRefine, prompt);
+      let imgUrl = await applyFaceIdentity(sourceUrl, faceUrl, selectedCharacter?.appearance, autoRefine, prompt, prompt);
 
       // LEGACY: doppio face swap
       // const swap1 = await falRequest("fal-ai/face-swap", { base_image_url: sourceUrl, swap_image_url: faceUrl });
@@ -8127,7 +8128,7 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
             const faceDataUri = await characterImageToDataUri(charImg).catch(() => null);
             if (faceDataUri) {
               const faceUrl = await uploadBase64ToFal(faceDataUri);
-              imgUrl = await applyFaceIdentity(imgUrl, faceUrl, selectedCharacter?.appearance, autoRefine, prompt);
+              imgUrl = await applyFaceIdentity(imgUrl, faceUrl, selectedCharacter?.appearance, autoRefine, prompt, prompt);
               console.log("[UPDATE FACE-ID] Applied:", imgUrl.slice(0, 80));
 
               // LEGACY: doppio face swap
@@ -8247,7 +8248,7 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
             const faceDataUri = await characterImageToDataUri(charImg).catch(() => null);
             if (faceDataUri) {
               const faceUrl = await uploadBase64ToFal(faceDataUri);
-              imgUrl = await applyFaceIdentity(imgUrl, faceUrl, selectedCharacter?.appearance, autoRefine, scenePrompt);
+              imgUrl = await applyFaceIdentity(imgUrl, faceUrl, selectedCharacter?.appearance, autoRefine, scenePrompt, scenePrompt);
               console.log("[SET FACE-ID] Applied:", imgUrl.slice(0, 80));
 
               // LEGACY: doppio face swap
@@ -8321,7 +8322,8 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
             const faceDataUri = await characterImageToDataUri(charImg).catch(() => null);
             if (faceDataUri) {
               const faceUrl = await uploadBase64ToFal(faceDataUri);
-              imgUrl = await applyFaceIdentity(imgUrl, faceUrl, selectedCharacter?.appearance, autoRefine, finalPrompt);
+              const pulidSceneHint = [scenePrompt, effectiveStylePrefix].filter(Boolean).join(", ");
+              imgUrl = await applyFaceIdentity(imgUrl, faceUrl, selectedCharacter?.appearance, autoRefine, finalPrompt, pulidSceneHint);
               console.log("[CREATE FACE-ID] Applied:", imgUrl.slice(0, 80));
             }
           } catch (faceErr) {
