@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useMemo, useId } from "react";
+import React, { useState, useEffect, useRef, useCallback, useMemo, useId, memo } from "react";
 import { resolveVideoPresetFromImageMeta, resolveVideoPresetFromFilename, VALID_VIDEO_PRESET_IDS } from "./imageStyleToVideoPreset";
 import {
   HiHome,
@@ -3349,7 +3349,7 @@ function StylePresetTile({ preset, selected, onClick, variant, large }) {
 }
 
 /** Miniatura catalogo Home: anteprima file salvato in locale (Electron). */
-function HomeGalleryTile({ entry, onRequestDelete, onOpenPreview }) {
+const HomeGalleryTile = React.memo(function HomeGalleryTile({ entry, onRequestDelete, onOpenPreview }) {
   const isVideo = entry.type === "video";
   const fileUrl = entry.filePath ? mediaFileUrl(entry.filePath) : null;
   const [displaySrc, setDisplaySrc] = useState(fileUrl);
@@ -3469,10 +3469,10 @@ function HomeGalleryTile({ entry, onRequestDelete, onOpenPreview }) {
       </button>
     </div>
   );
-}
+});
 
 /** Modale a tutto schermo: immagine o video sopra l’intera app (stile AXSTUDIO). */
-function GalleryPreviewModal({ entry, onClose }) {
+const GalleryPreviewModal = React.memo(function GalleryPreviewModal({ entry, onClose }) {
   const isVideo = entry.type === "video";
   const fileUrl = entry.filePath ? mediaFileUrl(entry.filePath) : null;
   const [displaySrc, setDisplaySrc] = useState(fileUrl);
@@ -3694,7 +3694,7 @@ function GalleryPreviewModal({ entry, onClose }) {
       </div>
     </div>
   );
-}
+});
 
 /** Anteprima card lista progetti: `heroCharacterId` se valido, altrimenti primo con immagine o primo in elenco. */
 function projectCoverCharacter(project) {
@@ -3926,7 +3926,7 @@ function ProjectListCard({ project, stats, onOpen, onDelete, onRename }) {
 }
 
 /** Griglia video singoli (usata sia in tab Video che dentro un gruppo sceneggiatura espanso). */
-function VideoThumbnailGrid({ videos, cfg, onVideoPreview, onVideoRecallPrompt, onRemoveVideo, indexOffset = 0 }) {
+const VideoThumbnailGrid = React.memo(function VideoThumbnailGrid({ videos, cfg, onVideoPreview, onVideoRecallPrompt, onRemoveVideo, indexOffset = 0 }) {
   return (
     <div style={{ display: "grid", gridTemplateColumns: `repeat(${cfg.cols}, minmax(0, 1fr))`, gap: cfg.gap }}>
       {videos.map((vid, i) => {
@@ -3936,7 +3936,7 @@ function VideoThumbnailGrid({ videos, cfg, onVideoPreview, onVideoRecallPrompt, 
         const clipNum = isClipGen ? parseInt(vid.split("_").pop(), 10) + 1 : null;
         return (
         <div
-          key={isGenerating ? "axstudio-vid-gen-slot" : isClipGen ? vid : `vid-${indexOffset + i}-${typeof vid === "string" ? vid.slice(0, 48) : i}`}
+          key={isGenerating ? "axstudio-vid-gen-slot" : isClipGen ? vid : (typeof vid === "string" ? vid : `vid-${indexOffset + i}`)}
           style={{
             position: "relative",
             aspectRatio: "16 / 11",
@@ -4023,10 +4023,10 @@ function VideoThumbnailGrid({ videos, cfg, onVideoPreview, onVideoRecallPrompt, 
       })}
     </div>
   );
-}
+});
 
 /** Sidebar fissa a destra: miniature sessione (immagini o video) con densità 2/3 colonne. */
-function StudioResultsSidebar({ kind, images, videos, density, onDensityChange, onImagePreview, onVideoPreview, onRemoveImage, onRemoveVideo, onImageRecallPrompt, onVideoRecallPrompt, videoSidebarMode, onVideoSidebarModeChange, videoHistory, expandedScreenplays, onExpandedScreenplaysChange }) {
+const StudioResultsSidebar = React.memo(function StudioResultsSidebar({ kind, images, videos, density, onDensityChange, onImagePreview, onVideoPreview, onRemoveImage, onRemoveVideo, onImageRecallPrompt, onVideoRecallPrompt, videoSidebarMode, onVideoSidebarModeChange, videoHistory, expandedScreenplays, onExpandedScreenplaysChange }) {
   const cfg = STUDIO_SIDEBAR_DENSITY[density] || STUDIO_SIDEBAR_DENSITY.medium;
   const nImg = images?.length ?? 0;
   const nVid = videos?.length ?? 0;
@@ -4328,7 +4328,7 @@ function StudioResultsSidebar({ kind, images, videos, density, onDensityChange, 
       </div>
     </aside>
   );
-}
+});
 
 // ── Storage helpers: Electron-native first, localStorage fallback ──
 const storage = {
@@ -4424,7 +4424,6 @@ export default function AIStudio() {
   const [vidDirectionRecLoading, setVidDirectionRecLoading] = useState(false);
 
   const [history, setHistory] = useState([]);
-  console.log("[AISTUDIO] history.length:", history.length);
   /** Home — galleria recenti: tutti | solo immagini | solo video */
   const [homeGalleryFilter, setHomeGalleryFilter] = useState("all");
   const [logoBroken, setLogoBroken] = useState(false);
@@ -4444,6 +4443,7 @@ export default function AIStudio() {
   const [galleryDeleteBusy, setGalleryDeleteBusy] = useState(false);
   /** Anteprima a schermo intero dalla galleria Home */
   const [galleryPreviewEntry, setGalleryPreviewEntry] = useState(null);
+  const closeGalleryPreview = useCallback(() => setGalleryPreviewEntry(null), []);
 
   // ── Load persisted data on mount ──
   const [storageReady, setStorageReady] = useState(false);
@@ -5744,7 +5744,7 @@ export default function AIStudio() {
       )}
 
       {galleryPreviewEntry ? (
-        <GalleryPreviewModal entry={galleryPreviewEntry} onClose={() => setGalleryPreviewEntry(null)} />
+        <GalleryPreviewModal entry={galleryPreviewEntry} onClose={closeGalleryPreview} />
       ) : null}
     </div>
   );
@@ -5775,16 +5775,28 @@ function HistoryList({ items }) {
 }
 
 // ── Video Preview Modal (streaming + buffering indicator + download) ──
-function VideoPreviewModal({ src, onClose, videoStatus, setVideoStatus }) {
+const VideoPreviewModal = React.memo(function VideoPreviewModal({ src, onClose, videoStatus, setVideoStatus }) {
   const [ready, setReady] = useState(false);
   const [buffering, setBuffering] = useState(false);
   const [downloadMsg, setDownloadMsg] = useState("");
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const videoContainerRef = useRef(null);
 
   useEffect(() => {
-    const onKey = e => { if (e.key === "Escape") onClose(); };
+    const onKey = e => { if (e.key === "Escape" && !document.fullscreenElement) onClose(); };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
+
+  useEffect(() => {
+    const onFsChange = () => setIsFullscreen(!!document.fullscreenElement);
+    document.addEventListener("fullscreenchange", onFsChange);
+    document.addEventListener("webkitfullscreenchange", onFsChange);
+    return () => {
+      document.removeEventListener("fullscreenchange", onFsChange);
+      document.removeEventListener("webkitfullscreenchange", onFsChange);
+    };
+  }, []);
 
   const handleDownload = async () => {
     if (!src) return;
@@ -5847,7 +5859,7 @@ function VideoPreviewModal({ src, onClose, videoStatus, setVideoStatus }) {
           <HiXMark size={18} />
         </button>
         {/* Player con buffering indicator */}
-        <div style={{ position: "relative", maxWidth: "100%", maxHeight: "80vh" }}>
+        <div ref={videoContainerRef} style={{ position: "relative", maxWidth: "100%", maxHeight: "80vh" }}>
           <video
             src={src}
             controls
@@ -5857,15 +5869,39 @@ function VideoPreviewModal({ src, onClose, videoStatus, setVideoStatus }) {
             onCanPlay={() => { setReady(true); setBuffering(false); }}
             onWaiting={() => setBuffering(true)}
             onPlaying={() => setBuffering(false)}
-            style={{ maxWidth: "100%", maxHeight: "80vh", borderRadius: 12, boxShadow: "0 24px 64px rgba(0,0,0,0.55)", border: "1px solid rgba(255,255,255,0.08)", display: "block" }}
+            style={{ maxWidth: "100%", maxHeight: isFullscreen ? "100vh" : "80vh", borderRadius: isFullscreen ? 0 : 12, boxShadow: isFullscreen ? "none" : "0 24px 64px rgba(0,0,0,0.55)", border: isFullscreen ? "none" : "1px solid rgba(255,255,255,0.08)", display: "block" }}
           />
           {(!ready || buffering) && (
-            <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.55)", borderRadius: 12, pointerEvents: "none" }}>
+            <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.55)", borderRadius: isFullscreen ? 0 : 12, pointerEvents: "none" }}>
               <div style={{ textAlign: "center" }}>
                 <div style={{ width: 28, height: 28, border: "3px solid rgba(255,255,255,0.2)", borderTopColor: "#fff", borderRadius: "50%", animation: "spin 0.8s linear infinite", margin: "0 auto 10px" }} />
                 <span style={{ fontSize: 12, color: "rgba(255,255,255,0.85)" }}>Caricamento video…</span>
               </div>
             </div>
+          )}
+          {isFullscreen && (
+            <button
+              type="button"
+              onClick={() => {
+                if (document.exitFullscreen) document.exitFullscreen();
+                else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
+                onClose();
+              }}
+              title="Chiudi player"
+              style={{
+                position: "absolute", top: 16, right: 16, zIndex: 2147483647,
+                width: 40, height: 40, borderRadius: "50%",
+                border: "1px solid rgba(255,255,255,0.2)", background: "rgba(10,10,15,0.8)",
+                color: "#fff", cursor: "pointer",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                boxShadow: "0 4px 20px rgba(0,0,0,0.6)", backdropFilter: "blur(8px)",
+                transition: "background 0.15s, transform 0.15s",
+              }}
+              onMouseEnter={e => { e.currentTarget.style.background = "rgba(239,68,68,0.85)"; e.currentTarget.style.transform = "scale(1.1)"; }}
+              onMouseLeave={e => { e.currentTarget.style.background = "rgba(10,10,15,0.8)"; e.currentTarget.style.transform = "scale(1)"; }}
+            >
+              <HiXMark size={20} />
+            </button>
           )}
         </div>
         {/* Azioni */}
@@ -5889,11 +5925,10 @@ function VideoPreviewModal({ src, onClose, videoStatus, setVideoStatus }) {
       </div>
     </div>
   );
-}
+});
 
 // ── Image Generator ──
 function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setResolution, generating, setGenerating, generatedImages, setGeneratedImages, selectedCharacter, setSelectedCharacter, projectCharacters, scenes, onSave, previewImg, setPreviewImg, layoutFill, history, recallImageUrl, setRecallImageUrl, selectedStyles, setSelectedStyles, aspect, setAspect, steps, setSteps, cfg, setCfg, adv, setAdv, projectSourceImageUrl, setProjectSourceImageUrl, currentProjectId, imgSessionPromptMap }) {
-  console.log("[IMGGEN] history prop length:", history?.length, "recallImageUrl:", recallImageUrl?.slice(0, 60));
   const [tmpl, setTmpl] = useState(null);
   const [translating, setTranslating] = useState(false);
   const [proposedPrompt, setProposedPrompt] = useState(null);
@@ -6994,6 +7029,8 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
   const dirRecAbortRef = useRef(0);
   const dirRecLastInputRef = useRef("");
   const dirRecDebounceRef = useRef(null);
+
+  const closePreviewVideo = useCallback(() => setPreviewVideo(null), [setPreviewVideo]);
 
   const fetchDirectionRecommendation = useCallback(async (promptIT, promptEN = "") => {
     if (!promptIT?.trim()) return;
@@ -8690,7 +8727,7 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
       {previewVideo ? (
         <VideoPreviewModal
           src={previewVideo}
-          onClose={() => setPreviewVideo(null)}
+          onClose={closePreviewVideo}
           videoStatus={videoStatus}
           setVideoStatus={setVideoStatus}
         />
