@@ -1173,29 +1173,50 @@ async function characterImageToDataUri(img) {
 /** Converte l'oggetto appearance del personaggio in una stringa prompt inglese per FLUX. */
 function appearanceToPrompt(appearance) {
   if (!appearance) return "";
+
+  if (appearance.detailedDescription) return appearance.detailedDescription;
+
   const genderMap = { "Uomo": "man", "Donna": "woman" };
   const bodyMap = { "Magra": "very thin skinny", "Snella": "slim slender", "Media": "average build", "Robusta": "thick sturdy build", "Grassa": "overweight chubby fat large body", "Muscolosa": "muscular athletic fit toned" };
   const heightMap = { "Bassa (~155cm)": "short petite", "Media (~170cm)": "average height", "Alta (~185cm)": "tall", "Molto alta (~195cm)": "very tall" };
   const ageMap = { "Giovane (18-25)": "young 20s", "Adulta (25-35)": "adult early 30s", "Matura (35-50)": "mature 40s", "Senior (50+)": "senior 50s" };
   const skinMap = { "Molto chiara": "very pale white skin", "Chiara": "fair light skin", "Olivastra": "olive tan skin", "Scura": "dark brown skin", "Molto scura": "very dark black skin" };
   const hairLenMap = { "Rasati": "shaved buzzcut", "Molto corti": "very short hair", "Corti": "short hair", "Medi": "medium length hair", "Lunghi": "long hair", "Molto lunghi": "very long flowing hair" };
-  const hairColMap = { "Neri": "black hair", "Castano scuro": "dark brown hair", "Castano chiaro": "light brown hair", "Biondo scuro": "dark blonde hair", "Biondo chiaro": "light blonde hair", "Rosso": "red ginger hair", "Bianco/Grigio": "white grey hair", "Colorati": "colorful dyed hair" };
+  const hairColMap = { "Neri": "black hair", "Castano scuro": "dark brown hair", "Castano medio": "medium brown hair", "Castano chiaro": "light brown hair", "Biondo scuro": "dark blonde hair", "Biondo chiaro": "light blonde hair", "Rosso": "red ginger hair", "Rosso/Ramato": "red auburn hair", "Brizzolato": "salt-and-pepper grey hair", "Grigio argento": "silver grey hair", "Bianco": "white hair", "Bianco/Grigio": "white grey hair", "Colorati": "colorful dyed hair" };
   const hairStyleMap = { "Lisci": "straight hair", "Mossi": "wavy hair", "Ricci": "curly hair", "Afro": "afro hair", "Raccolti": "hair up in bun", "Coda": "ponytail", "Trecce": "braided hair" };
   const eyeMap = { "Marroni": "brown eyes", "Nocciola": "hazel eyes", "Verdi": "green eyes", "Azzurri": "blue eyes", "Grigi": "grey eyes", "Neri": "dark black eyes" };
-  const beardMap = { "Nessuna": "", "Barba corta": "short stubble beard", "Barba media": "medium beard", "Barba lunga": "long full beard", "Pizzetto": "goatee", "Baffi": "mustache" };
+  const beardMap = { "Nessuna": "clean shaven", "Barba corta": "short stubble beard", "Barba media": "medium beard", "Barba lunga": "long full beard", "Pizzetto": "goatee", "Baffi": "mustache" };
+  const mustacheMap = { "none": "", "thin": "thin pencil mustache", "thick": "thick mustache", "handlebar": "handlebar mustache" };
+  const glassesMap = { "none": "", "thin_metal": "thin metal frame glasses", "thick_black": "thick black frame glasses", "rimless": "rimless glasses", "sunglasses": "sunglasses" };
   const breastMap = { "Piccolo": "small breasts", "Medio": "medium breasts", "Grande": "large breasts", "Molto grande": "very large heavy breasts" };
   const buttMap = { "Piccolo": "small butt", "Medio": "average butt", "Grande": "large round butt", "Molto grande": "very large thick butt" };
   const parts = [];
   if (appearance.gender) parts.push(genderMap[appearance.gender] || "person");
-  if (appearance.age) parts.push(ageMap[appearance.age] || "");
+  if (appearance.ageEstimate) parts.push(`approximately ${appearance.ageEstimate} years old`);
+  else if (appearance.age) parts.push(ageMap[appearance.age] || "");
   if (appearance.bodyType) parts.push(bodyMap[appearance.bodyType] || "");
   if (appearance.height) parts.push(heightMap[appearance.height] || "");
-  if (appearance.skinColor) parts.push(skinMap[appearance.skinColor] || "");
+  if (appearance.skinDetail) parts.push(appearance.skinDetail);
+  else if (appearance.skinColor) parts.push(skinMap[appearance.skinColor] || "");
   if (appearance.hairLength) parts.push(hairLenMap[appearance.hairLength] || "");
-  if (appearance.hairColor) parts.push(hairColMap[appearance.hairColor] || "");
-  if (appearance.hairStyle) parts.push(hairStyleMap[appearance.hairStyle] || "");
+  if (appearance.hairColorDetail) parts.push(appearance.hairColorDetail);
+  else if (appearance.hairColor) parts.push(hairColMap[appearance.hairColor] || "");
+  if (appearance.hairStyleDetail) parts.push(appearance.hairStyleDetail);
+  else if (appearance.hairStyle) parts.push(hairStyleMap[appearance.hairStyle] || "");
+  if (appearance.hairTexture) parts.push(appearance.hairTexture);
+  if (appearance.hairline) parts.push(appearance.hairline);
   if (appearance.eyeColor) parts.push(eyeMap[appearance.eyeColor] || "");
+  if (appearance.faceShape) parts.push(`${appearance.faceShape} face`);
+  if (appearance.nose) parts.push(`${appearance.nose} nose`);
+  if (appearance.jaw) parts.push(appearance.jaw);
+  if (appearance.chin) parts.push(`${appearance.chin} chin`);
+  if (appearance.wrinkles && appearance.wrinkles !== "smooth skin") parts.push(appearance.wrinkles);
   if (appearance.beard) parts.push(beardMap[appearance.beard] || "");
+  if (appearance.mustache) parts.push(mustacheMap[appearance.mustache] || "");
+  if (appearance.glasses) parts.push(glassesMap[appearance.glasses] || "");
+  if (appearance.moles && appearance.moles !== "none visible" && appearance.moles !== "none") parts.push(appearance.moles);
+  if (appearance.scars && appearance.scars !== "none visible" && appearance.scars !== "none") parts.push(appearance.scars);
+  if (appearance.tattoos && appearance.tattoos !== "none visible" && appearance.tattoos !== "none") parts.push(appearance.tattoos);
   if (appearance.breastSize && appearance.gender === "Donna") parts.push(breastMap[appearance.breastSize] || "");
   if (appearance.buttSize) parts.push(buttMap[appearance.buttSize] || "");
   return parts.filter(p => p).join(", ");
@@ -1224,10 +1245,12 @@ function describeAppearanceChanges(diff) {
     height: v => ({ "Bassa (~155cm)": "short", "Media (~170cm)": "average height", "Alta (~185cm)": "tall", "Molto alta (~195cm)": "very tall" })[v] || v,
     skinColor: v => ({ "Molto chiara": "very pale skin", "Chiara": "fair skin", "Olivastra": "olive skin", "Scura": "dark skin", "Molto scura": "very dark skin" })[v] || v,
     hairLength: v => ({ "Rasati": "shaved head", "Molto corti": "very short hair", "Corti": "short hair", "Medi": "medium-length hair", "Lunghi": "long hair", "Molto lunghi": "very long hair" })[v] || v,
-    hairColor: v => ({ "Neri": "black hair", "Castano scuro": "dark brown hair", "Castano chiaro": "light brown hair", "Biondo scuro": "dark blonde hair", "Biondo chiaro": "light blonde hair", "Rosso": "red hair", "Bianco/Grigio": "white/grey hair", "Colorati": "colorful dyed hair" })[v] || v,
+    hairColor: v => ({ "Neri": "black hair", "Castano scuro": "dark brown hair", "Castano medio": "medium brown hair", "Castano chiaro": "light brown hair", "Biondo scuro": "dark blonde hair", "Biondo chiaro": "light blonde hair", "Rosso": "red hair", "Rosso/Ramato": "red auburn hair", "Brizzolato": "salt-and-pepper grey hair", "Grigio argento": "silver grey hair", "Bianco": "white hair", "Bianco/Grigio": "white/grey hair", "Colorati": "colorful dyed hair" })[v] || v,
     hairStyle: v => ({ "Lisci": "straight hair", "Mossi": "wavy hair", "Ricci": "curly hair", "Afro": "afro", "Raccolti": "hair up in bun", "Coda": "ponytail", "Trecce": "braided hair" })[v] || v,
     eyeColor: v => ({ "Marroni": "brown eyes", "Nocciola": "hazel eyes", "Verdi": "green eyes", "Azzurri": "blue eyes", "Grigi": "grey eyes", "Neri": "dark eyes" })[v] || v,
-    beard: v => ({ "Nessuna": "clean shaven", "Barba corta": "short beard", "Barba media": "medium beard", "Barba lunga": "long beard", "Pizzetto": "goatee", "Baffi": "mustache" })[v] || v,
+    beard: v => ({ "Nessuna": "clean shaven", "Barba corta": "short beard", "Barba media": "medium beard", "Barba lunga": "long beard", "Pizzetto": "goatee" })[v] || v,
+    mustache: v => ({ "none": "no mustache", "thin": "thin pencil mustache", "thick": "thick mustache", "handlebar": "handlebar mustache" })[v] || v,
+    glasses: v => ({ "none": "no glasses", "thin_metal": "thin metal frame glasses", "thick_black": "thick black frame glasses", "rimless": "rimless glasses", "sunglasses": "sunglasses" })[v] || v,
     breastSize: v => ({ "Piccolo": "small breasts", "Medio": "medium breasts", "Grande": "large breasts", "Molto grande": "very large breasts" })[v] || v,
     buttSize: v => ({ "Piccolo": "small butt", "Medio": "average butt", "Grande": "large butt", "Molto grande": "very large butt" })[v] || v,
   };
@@ -1679,10 +1702,39 @@ function buildProjectImageUpdatePrompt(appearanceDiff, editTextEN, reflectionCtx
 
 /** Analizza una foto tramite LLM visione (OpenRouter) e restituisce l'oggetto appearance. */
 async function analyzePhotoAppearance(base64DataUrl) {
-  const systemPrompt = `You are an expert at analyzing photos of people. Given a photo, describe the person's physical appearance.
-Return ONLY valid JSON with these exact fields:
-{"gender":"Uomo" or "Donna","bodyType":"Magra"|"Snella"|"Media"|"Robusta"|"Grassa"|"Muscolosa","height":"Bassa (~155cm)"|"Media (~170cm)"|"Alta (~185cm)"|"Molto alta (~195cm)","age":"Giovane (18-25)"|"Adulta (25-35)"|"Matura (35-50)"|"Senior (50+)","skinColor":"Molto chiara"|"Chiara"|"Olivastra"|"Scura"|"Molto scura","hairLength":"Rasati"|"Molto corti"|"Corti"|"Medi"|"Lunghi"|"Molto lunghi","hairColor":"Neri"|"Castano scuro"|"Castano chiaro"|"Biondo scuro"|"Biondo chiaro"|"Rosso"|"Bianco/Grigio"|"Colorati","hairStyle":"Lisci"|"Mossi"|"Ricci"|"Afro"|"Raccolti"|"Coda"|"Trecce","eyeColor":"Marroni"|"Nocciola"|"Verdi"|"Azzurri"|"Grigi"|"Neri","beard":null or "Nessuna"|"Barba corta"|"Barba media"|"Barba lunga"|"Pizzetto"|"Baffi","breastSize":null or "Piccolo"|"Medio"|"Grande"|"Molto grande","buttSize":"Piccolo"|"Medio"|"Grande"|"Molto grande"}
-No markdown, no backticks, no explanations.`;
+  const systemPrompt = `You are an expert forensic-level appearance analyst. Given a photo, produce an EXTREMELY DETAILED physical description.
+
+HAIR — be VERY specific:
+- Color: NOT just "brown". Say "dark brown with salt-and-pepper grey at temples", "jet black", "medium chestnut brown", "light brown with blonde highlights", "brizzolato/salt-and-pepper throughout", etc.
+- Texture: "thick and dense", "thin and fine", "coarse", "silky"
+- Style: "parted on left", "combed back", "slicked back", "messy tousled", "buzz cut"
+- Hairline: "receding at temples", "full thick hairline", "widow's peak", "M-shaped recession", "high forehead"
+- Length: "shaved", "very short", "short", "medium", "long", "very long"
+
+FACE — maximum detail:
+- Shape: "oval elongated", "square", "round", "angular high cheekbones", "heart-shaped", "rectangular"
+- Nose: "prominent roman", "straight narrow", "wide flat", "aquiline", "bulbous tip", "small upturned"
+- Lips: "thin", "full", "medium with defined cupid's bow"
+- Jaw: "sharp defined jawline", "soft rounded", "wide square", "narrow"
+- Chin: "strong defined", "rounded soft", "cleft chin", "weak receding", "prominent"
+- Wrinkles: "crow's feet", "nasolabial folds", "forehead lines", "frown lines", "smooth skin", etc.
+
+SKIN — precise tone: "Mediterranean olive warm undertones", "fair pink undertones", "tanned golden brown", "pale porcelain", "dark brown", "weathered sun-damaged", etc.
+AGE — give your BEST specific estimate: "approximately 55-58 years old", not a wide range.
+BUILD — specific: "lean athletic narrow shoulders", "slim tall", "stocky broad-shouldered", "heavyset", "muscular defined", etc.
+EYES — color with detail: "dark brown", "light hazel with green flecks", "bright blue", "grey-green", etc.
+
+DISTINCTIVE MARKS — check carefully:
+- Moles: location and size, or "none visible"
+- Mustache: "thin pencil", "thick", "none", "light shadow above lip"
+- Beard: "clean shaven", "light stubble", "full thick beard", "short trimmed with grey patches", "goatee", "soul patch"
+- Glasses: "thin metal frame", "thick black frame", "rimless", "none"
+- Scars: location or "none visible"
+- Tattoos: location or "none visible"
+- Piercings: description or "none visible"
+
+Return ONLY valid JSON (no markdown, no backticks):
+{"gender":"Uomo" or "Donna","ageEstimate":"55-58","age":"Matura (35-50)" or "Senior (50+)" etc.,"bodyType":"Magra"|"Snella"|"Media"|"Robusta"|"Grassa"|"Muscolosa","height":"Bassa (~155cm)"|"Media (~170cm)"|"Alta (~185cm)"|"Molto alta (~195cm)","skinColor":"Molto chiara"|"Chiara"|"Olivastra"|"Scura"|"Molto scura","skinDetail":"Mediterranean olive with warm undertones","hairLength":"Rasati"|"Molto corti"|"Corti"|"Medi"|"Lunghi"|"Molto lunghi","hairColor":"Neri"|"Castano scuro"|"Castano medio"|"Castano chiaro"|"Biondo scuro"|"Biondo chiaro"|"Rosso/Ramato"|"Brizzolato"|"Grigio argento"|"Bianco"|"Colorati","hairColorDetail":"dark brown with salt-and-pepper grey at temples","hairStyle":"Lisci"|"Mossi"|"Ricci"|"Afro"|"Raccolti"|"Coda"|"Trecce","hairStyleDetail":"straight slicked back with left side part","hairTexture":"thick and dense","hairline":"slight recession at temples","eyeColor":"Marroni"|"Nocciola"|"Verdi"|"Azzurri"|"Grigi"|"Neri","faceShape":"oval elongated","nose":"straight prominent","lips":"thin","jaw":"defined angular jawline","chin":"strong defined","wrinkles":"crow's feet, nasolabial folds, forehead lines","beard":"Nessuna"|"Barba corta"|"Barba media"|"Barba lunga"|"Pizzetto"|"Baffi","mustache":"none"|"thin"|"thick"|"handlebar","glasses":"none"|"thin_metal"|"thick_black"|"rimless"|"sunglasses","moles":"none visible","scars":"none visible","tattoos":"none visible","breastSize":null or "Piccolo"|"Medio"|"Grande"|"Molto grande","buttSize":"Piccolo"|"Medio"|"Grande"|"Molto grande","detailedDescription":"man, approximately 55-58 years old, dark brown hair with salt-and-pepper grey at temples, short length slicked back with left side part, thick dense hair, slight recession at temples, oval elongated face, straight prominent nose, thin lips, defined angular jawline, strong chin, crow's feet around dark brown eyes, nasolabial folds, forehead lines, Mediterranean olive skin with warm undertones, clean shaven, lean average build, no glasses, no visible moles tattoos or scars"}`;
   for (const model of ["google/gemma-4-26b-a4b-it", "meta-llama/llama-3.3-70b-instruct"]) {
     try {
       const res = await fetch(OPENROUTER_API_URL, {
@@ -1694,11 +1746,11 @@ No markdown, no backticks, no explanations.`;
             { role: "system", content: systemPrompt },
             { role: "user", content: [
               { type: "image_url", image_url: { url: base64DataUrl } },
-              { type: "text", text: "Analyze this person's physical appearance" }
+              { type: "text", text: "Analyze this person's physical appearance with forensic-level detail. Be extremely specific about hair color, face structure, skin tone, and any distinctive marks." }
             ]},
           ],
-          temperature: 0.3,
-          max_tokens: 400,
+          temperature: 0.2,
+          max_tokens: 900,
         }),
       });
       const data = await res.json();
@@ -6377,9 +6429,10 @@ export default function AIStudio() {
             );
 
             // completeness score
-            const totalFields = 10 + (isMale ? 1 : 0) + (isFemale ? 2 : 0);
-            const filled = ["gender","bodyType","height","age","skinColor","hairLength","hairColor","hairStyle","eyeColor","buttSize",
-              ...(isMale ? ["beard"] : []), ...(isFemale ? ["breastSize"] : [])].filter(k => ap[k]).length;
+            const totalFields = 12 + (isMale ? 2 : 0) + (isFemale ? 2 : 0);
+            const filled = ["gender","bodyType","height","age","skinColor","hairLength","hairColor","hairStyle","eyeColor","buttSize","glasses",
+              ...(isMale ? ["beard","mustache"] : []), ...(isFemale ? ["breastSize"] : [])].filter(k => ap[k] && ap[k] !== "none").length
+              + (ap.detailedDescription ? 1 : 0);
             const completePct = Math.round((filled / totalFields) * 100);
 
             return (
@@ -6459,13 +6512,13 @@ export default function AIStudio() {
                       ],
                       [
                         { label: "Corporatura", icon: "💪", field: "bodyType", options: ["Magra","Snella","Media","Robusta","Grassa","Muscolosa"], color: AX.gold, type: "slider" },
-                        { label: "Colore capelli", icon: "🎨", field: "hairColor", options: ["Neri","Castano scuro","Castano chiaro","Biondo scuro","Biondo chiaro","Rosso","Bianco/Grigio","Colorati"], color: AX.gold, type: "select" },
+                        { label: "Colore capelli", icon: "🎨", field: "hairColor", options: ["Neri","Castano scuro","Castano medio","Castano chiaro","Biondo scuro","Biondo chiaro","Rosso/Ramato","Brizzolato","Grigio argento","Bianco","Colorati"], color: AX.gold, type: "select" },
                         { label: "Sedere", icon: "🍑", field: "buttSize", options: ["Piccolo","Medio","Grande","Molto grande"], color: AX.magenta, type: "slider" },
                       ],
                       [
                         { label: "Altezza", icon: "📏", field: "height", options: ["Bassa (~155cm)","Media (~170cm)","Alta (~185cm)","Molto alta (~195cm)"], color: AX.violet, type: "slider" },
                         { label: "Stile capelli", icon: "💇", field: "hairStyle", options: ["Lisci","Mossi","Ricci","Afro","Raccolti","Coda","Trecce"], color: AX.violet, type: "select" },
-                        { label: isMale ? "Barba" : null, icon: "🧔", field: "beard", options: ["Nessuna","Barba corta","Barba media","Barba lunga","Pizzetto","Baffi"], color: AX.gold, type: isMale ? "select" : null },
+                        { label: isMale ? "Barba" : null, icon: "🧔", field: "beard", options: ["Nessuna","Barba corta","Barba media","Barba lunga","Pizzetto"], color: AX.gold, type: isMale ? "select" : null },
                       ],
                       [
                         { label: "Colore pelle", icon: "🎨", field: "skinColor", options: ["Molto chiara","Chiara","Olivastra","Scura","Molto scura"], color: AX.gold, type: "select" },
@@ -6501,6 +6554,64 @@ export default function AIStudio() {
                       </div>
                     );
                   })()}
+
+                  {/* Segni Distintivi */}
+                  <div style={{ marginTop: 14, paddingTop: 12, borderTop: "1px solid rgba(255,255,255,0.06)" }}>
+                    <label style={{ fontSize: 11, fontWeight: 700, color: AX.gold, letterSpacing: "0.05em", textTransform: "uppercase", display: "flex", alignItems: "center", gap: 6, marginBottom: 10 }}>
+                      <span style={{ fontSize: 14 }}>✨</span> Segni Distintivi
+                    </label>
+                    {(() => {
+                      const selectStyle = { width: "100%", padding: "8px 10px", borderRadius: 8, background: AX.bg, border: `1px solid ${AX.border}`, color: AX.text, fontSize: 12, outline: "none", boxSizing: "border-box" };
+                      const inputStyle = { ...selectStyle };
+                      const labelStyle = { fontSize: 10, fontWeight: 600, color: AX.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4, display: "block" };
+                      const cellStyle = { flex: "1 1 0", minWidth: 0 };
+                      return (
+                        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                          <div style={{ display: "flex", gap: 10 }}>
+                            {isMale && (
+                              <div style={cellStyle}>
+                                <label style={labelStyle}>👨 Baffi</label>
+                                <select value={ap.mustache || "none"} onChange={e => setAp("mustache", e.target.value)} style={selectStyle}>
+                                  <option value="none">Nessuno</option>
+                                  <option value="thin">Sottili</option>
+                                  <option value="thick">Folti</option>
+                                  <option value="handlebar">A manubrio</option>
+                                </select>
+                              </div>
+                            )}
+                            <div style={cellStyle}>
+                              <label style={labelStyle}>👓 Occhiali</label>
+                              <select value={ap.glasses || "none"} onChange={e => setAp("glasses", e.target.value)} style={selectStyle}>
+                                <option value="none">Nessuno</option>
+                                <option value="thin_metal">Montatura sottile metallo</option>
+                                <option value="thick_black">Montatura spessa nera</option>
+                                <option value="rimless">Senza montatura</option>
+                                <option value="sunglasses">Occhiali da sole</option>
+                              </select>
+                            </div>
+                            {!isMale && <div style={cellStyle} />}
+                          </div>
+                          <div style={{ display: "flex", gap: 10 }}>
+                            <div style={cellStyle}>
+                              <label style={labelStyle}>● Nei visibili</label>
+                              <input type="text" value={ap.moles || ""} onChange={e => setAp("moles", e.target.value)} placeholder="Es. neo sulla guancia sinistra" style={inputStyle} />
+                            </div>
+                            <div style={cellStyle}>
+                              <label style={labelStyle}>⚡ Cicatrici</label>
+                              <input type="text" value={ap.scars || ""} onChange={e => setAp("scars", e.target.value)} placeholder="Es. cicatrice sul sopracciglio" style={inputStyle} />
+                            </div>
+                          </div>
+                          <div style={{ display: "flex", gap: 10 }}>
+                            <div style={cellStyle}>
+                              <label style={labelStyle}>🎨 Tatuaggi visibili</label>
+                              <input type="text" value={ap.tattoos || ""} onChange={e => setAp("tattoos", e.target.value)} placeholder="Es. tatuaggio sull'avambraccio" style={inputStyle} />
+                            </div>
+                            <div style={cellStyle} />
+                          </div>
+                        </div>
+                      );
+                    })()}
+                  </div>
 
                   {/* Visual Signature */}
                   <div style={{ marginTop: 14, paddingTop: 12, borderTop: "1px solid rgba(255,255,255,0.06)" }}>
