@@ -1118,6 +1118,62 @@ async function refineWithKontext(imageUrl, appearance) {
   return imageUrl;
 }
 
+/**
+ * Applica identità facciale a un'immagine via IP-Adapter FaceID + face swap + Kontext refine.
+ * Pipeline: face-swap singolo (per posizionamento) → Kontext refine (per correzioni).
+ * IP-Adapter non accetta un'immagine base, quindi genera un ritratto separato
+ * che viene usato come reference per il face swap al posto della foto raw.
+ */
+async function applyFaceIdentity(baseImageUrl, faceHttpUrl, appearance, promptHint) {
+  let resultUrl = baseImageUrl;
+  try {
+    // Step 1: IP-Adapter FaceID — genera ritratto con identità facciale corretta
+    const physDesc = appearance ? appearanceToPrompt(appearance) : "";
+    const ipPrompt = [
+      physDesc || "a person",
+      promptHint ? promptHint.slice(0, 200) : "",
+      "photorealistic portrait, natural lighting, high quality, highly detailed",
+    ].filter(Boolean).join(", ");
+
+    console.log("[IP-ADAPTER] prompt:", ipPrompt.slice(0, 120));
+    console.log("[IP-ADAPTER] face_image_url:", faceHttpUrl.slice(0, 60));
+
+    const ipResult = await falQueueRequest("fal-ai/ip-adapter-face-id", {
+      prompt: ipPrompt,
+      face_image_url: faceHttpUrl,
+      model_type: "SDXL-v2-plus",
+      guidance_scale: 5.0,
+      num_inference_steps: 40,
+      num_samples: 1,
+      width: 1024,
+      height: 1024,
+      negative_prompt: "blurry, low resolution, bad anatomy, wrong hair color, deformed face, plastic skin, cartoon, anime",
+    });
+    const ipFaceUrl = ipResult?.image?.url || ipResult?.images?.[0]?.url || null;
+    console.log("[IP-ADAPTER] result:", ipFaceUrl?.slice(0, 60) || "null");
+
+    // Step 2: Face swap singolo — usa il ritratto IP-Adapter come swap_image
+    const swapSource = ipFaceUrl || faceHttpUrl;
+    const swapResult = await falRequest("fal-ai/face-swap", {
+      base_image_url: baseImageUrl,
+      swap_image_url: swapSource,
+    });
+    const swappedUrl = swapResult?.image?.url || swapResult?.images?.[0]?.url || null;
+    if (swappedUrl) {
+      resultUrl = swappedUrl;
+      console.log("[IP-ADAPTER SWAP] Applied:", swappedUrl.slice(0, 60));
+    }
+
+    // Step 3: Kontext refine — micro-correzioni capelli, pelle, artefatti
+    if (appearance) {
+      resultUrl = await refineWithKontext(resultUrl, appearance);
+    }
+  } catch (err) {
+    console.warn("[IP-ADAPTER] Pipeline failed, falling back to base image:", err.message);
+  }
+  return resultUrl;
+}
+
 /** Scarica un URL immagine fal.ai e ritorna una data URL base64 (per salvataggio su disco). */
 async function falImageUrlToBase64(url) {
   const res = await fetch(url);
@@ -7487,26 +7543,16 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
       if (!faceDataUri) throw new Error("Impossibile caricare la foto del personaggio");
       const faceUrl = await uploadBase64ToFal(faceDataUri);
 
-      const swap1 = await falRequest("fal-ai/face-swap", {
-        base_image_url: sourceUrl,
-        swap_image_url: faceUrl,
-      });
-      let imgUrl = swap1?.image?.url || swap1?.images?.[0]?.url || null;
-      if (!imgUrl) throw new Error("Nessun risultato dal face swap");
+      setImageStatus("🧬 Applicazione identità facciale...");
+      let imgUrl = await applyFaceIdentity(sourceUrl, faceUrl, selectedCharacter?.appearance, prompt);
 
-      if (imgUrl) {
-        const swap2 = await falRequest("fal-ai/face-swap", {
-          base_image_url: imgUrl,
-          swap_image_url: faceUrl,
-        });
-        if (swap2?.image?.url) imgUrl = swap2.image.url;
-        else if (swap2?.images?.[0]?.url) imgUrl = swap2.images[0].url;
-      }
-
-      if (autoRefine && selectedCharacter?.appearance) {
-        setImageStatus("✨ Rifinitura dettagli...");
-        imgUrl = await refineWithKontext(imgUrl, selectedCharacter.appearance);
-      }
+      // LEGACY: doppio face swap
+      // const swap1 = await falRequest("fal-ai/face-swap", { base_image_url: sourceUrl, swap_image_url: faceUrl });
+      // let imgUrl = swap1?.image?.url || swap1?.images?.[0]?.url || null;
+      // if (imgUrl) {
+      //   const swap2 = await falRequest("fal-ai/face-swap", { base_image_url: imgUrl, swap_image_url: faceUrl });
+      //   if (swap2?.image?.url) imgUrl = swap2.image.url;
+      // }
 
       setGeneratedImages(p => [imgUrl, ...p.filter(x => x !== STUDIO_IMAGE_GENERATING)]);
       setImageStatus("✅ Face swap completato!");
@@ -8080,38 +8126,27 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
         }
         imgUrl = kontextUrl;
 
-        // ── Face swap post-update: applica volto dalla foto ORIGINALE del personaggio (tutti gli stili) ──
+        // ── Identità facciale post-update: IP-Adapter FaceID ──
         if (charImg) {
           try {
-            setImageStatus && setImageStatus("⏳ Riapplicazione volto...");
+            setImageStatus && setImageStatus("🧬 Riapplicazione volto...");
             const faceDataUri = await characterImageToDataUri(charImg).catch(() => null);
             if (faceDataUri) {
               const faceUrl = await uploadBase64ToFal(faceDataUri);
-              const swap1 = await falRequest("fal-ai/face-swap", {
-                base_image_url: imgUrl,
-                swap_image_url: faceUrl,
-              });
-              let swappedUrl = swap1?.image?.url || swap1?.images?.[0]?.url || null;
-              if (swappedUrl) {
-                const swap2 = await falRequest("fal-ai/face-swap", {
-                  base_image_url: swappedUrl,
-                  swap_image_url: faceUrl,
-                });
-                if (swap2?.image?.url) swappedUrl = swap2.image.url;
-                else if (swap2?.images?.[0]?.url) swappedUrl = swap2.images[0].url;
-                console.log("[UPDATE FACE-SWAP] Applied (2-pass):", swappedUrl.slice(0, 80));
-                imgUrl = swappedUrl;
-              } else {
-                console.warn("[UPDATE FACE-SWAP] No image URL in response, using Kontext result");
-              }
+              imgUrl = await applyFaceIdentity(imgUrl, faceUrl, selectedCharacter?.appearance, prompt);
+              console.log("[UPDATE IP-ADAPTER] Applied:", imgUrl.slice(0, 80));
+
+              // LEGACY: doppio face swap
+              // const swap1 = await falRequest("fal-ai/face-swap", { base_image_url: imgUrl, swap_image_url: faceUrl });
+              // let swappedUrl = swap1?.image?.url || swap1?.images?.[0]?.url || null;
+              // if (swappedUrl) {
+              //   const swap2 = await falRequest("fal-ai/face-swap", { base_image_url: swappedUrl, swap_image_url: faceUrl });
+              //   if (swap2?.image?.url) swappedUrl = swap2.image.url;
+              //   imgUrl = swappedUrl;
+              // }
             }
           } catch (faceErr) {
-            console.warn("[UPDATE FACE-SWAP] Failed, using Kontext image:", faceErr.message);
-          }
-
-          if (autoRefine && selectedCharacter?.appearance) {
-            setImageStatus && setImageStatus("✨ Rifinitura dettagli...");
-            imgUrl = await refineWithKontext(imgUrl, selectedCharacter.appearance);
+            console.warn("[UPDATE IP-ADAPTER] Failed, using Kontext image:", faceErr.message);
           }
         }
 
@@ -8214,26 +8249,23 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
 
         if (useFaceSwap) {
           try {
-            setImageStatus && setImageStatus("⏳ Applicazione volto...");
+            setImageStatus && setImageStatus("🧬 Applicazione identità facciale...");
             const faceDataUri = await characterImageToDataUri(charImg).catch(() => null);
             if (faceDataUri) {
               const faceUrl = await uploadBase64ToFal(faceDataUri);
-              const swap1 = await falRequest("fal-ai/face-swap", { base_image_url: imgUrl, swap_image_url: faceUrl });
-              let swappedUrl = swap1?.image?.url || swap1?.images?.[0]?.url || null;
-              if (swappedUrl) {
-                const swap2 = await falRequest("fal-ai/face-swap", { base_image_url: swappedUrl, swap_image_url: faceUrl });
-                if (swap2?.image?.url) swappedUrl = swap2.image.url;
-                else if (swap2?.images?.[0]?.url) swappedUrl = swap2.images[0].url;
-                console.log("[SET FACE-SWAP] Applied (2-pass):", swappedUrl.slice(0, 80));
-                imgUrl = swappedUrl;
-              }
-            }
-          } catch (faceErr) { console.warn("[SET FACE-SWAP] Failed:", faceErr.message); }
+              imgUrl = await applyFaceIdentity(imgUrl, faceUrl, selectedCharacter?.appearance, scenePrompt);
+              console.log("[SET IP-ADAPTER] Applied:", imgUrl.slice(0, 80));
 
-          if (autoRefine && selectedCharacter?.appearance) {
-            setImageStatus && setImageStatus("✨ Rifinitura dettagli...");
-            imgUrl = await refineWithKontext(imgUrl, selectedCharacter.appearance);
-          }
+              // LEGACY: doppio face swap
+              // const swap1 = await falRequest("fal-ai/face-swap", { base_image_url: imgUrl, swap_image_url: faceUrl });
+              // let swappedUrl = swap1?.image?.url || swap1?.images?.[0]?.url || null;
+              // if (swappedUrl) {
+              //   const swap2 = await falRequest("fal-ai/face-swap", { base_image_url: swappedUrl, swap_image_url: faceUrl });
+              //   if (swap2?.image?.url) swappedUrl = swap2.image.url;
+              //   imgUrl = swappedUrl;
+              // }
+            }
+          } catch (faceErr) { console.warn("[SET IP-ADAPTER] Failed:", faceErr.message); }
         }
 
         setImageStatus && setImageStatus("✅ Completato!");
@@ -8288,38 +8320,27 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
 
         imgUrl = baseImageUrl;
 
-        // ── Face swap: applica volto dalla foto ORIGINALE del personaggio (tutti gli stili) ──
+        // ── Identità facciale: IP-Adapter FaceID ──
         if (useFaceSwap) {
           try {
-            setImageStatus && setImageStatus("⏳ Applicazione volto...");
+            setImageStatus && setImageStatus("🧬 Applicazione identità facciale...");
             const faceDataUri = await characterImageToDataUri(charImg).catch(() => null);
             if (faceDataUri) {
               const faceUrl = await uploadBase64ToFal(faceDataUri);
-              const swap1 = await falRequest("fal-ai/face-swap", {
-                base_image_url: imgUrl,
-                swap_image_url: faceUrl,
-              });
-              let swappedUrl = swap1?.image?.url || swap1?.images?.[0]?.url || null;
-              if (swappedUrl) {
-                const swap2 = await falRequest("fal-ai/face-swap", {
-                  base_image_url: swappedUrl,
-                  swap_image_url: faceUrl,
-                });
-                if (swap2?.image?.url) swappedUrl = swap2.image.url;
-                else if (swap2?.images?.[0]?.url) swappedUrl = swap2.images[0].url;
-                console.log("[CREATE FACE-SWAP] Applied (2-pass):", swappedUrl.slice(0, 80));
-                imgUrl = swappedUrl;
-              } else {
-                console.warn("[CREATE FACE-SWAP] No image URL in response, using base image");
-              }
+              imgUrl = await applyFaceIdentity(imgUrl, faceUrl, selectedCharacter?.appearance, resolvedEn || prompt);
+              console.log("[CREATE IP-ADAPTER] Applied:", imgUrl.slice(0, 80));
+
+              // LEGACY: doppio face swap
+              // const swap1 = await falRequest("fal-ai/face-swap", { base_image_url: imgUrl, swap_image_url: faceUrl });
+              // let swappedUrl = swap1?.image?.url || swap1?.images?.[0]?.url || null;
+              // if (swappedUrl) {
+              //   const swap2 = await falRequest("fal-ai/face-swap", { base_image_url: swappedUrl, swap_image_url: faceUrl });
+              //   if (swap2?.image?.url) swappedUrl = swap2.image.url;
+              //   imgUrl = swappedUrl;
+              // }
             }
           } catch (faceErr) {
-            console.warn("[CREATE FACE-SWAP] Failed, using base image:", faceErr.message);
-          }
-
-          if (autoRefine && selectedCharacter?.appearance) {
-            setImageStatus && setImageStatus("✨ Rifinitura dettagli...");
-            imgUrl = await refineWithKontext(imgUrl, selectedCharacter.appearance);
+            console.warn("[CREATE IP-ADAPTER] Failed, using base image:", faceErr.message);
           }
         }
 
@@ -8780,15 +8801,6 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
             </button>
           );
         })()}
-        {selectedCharacter && (
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6 }}>
-            <span style={{ fontSize: 11, color: AX.muted, fontWeight: 600 }}>✨ Rifinitura auto</span>
-            <button type="button" onClick={() => setAutoRefine(p => !p)}
-              style={{ background: autoRefine ? AX.violet : "rgba(255,255,255,0.08)", border: "none", borderRadius: 10, padding: "3px 12px", color: autoRefine ? "#fff" : AX.muted, fontSize: 10, fontWeight: 700, cursor: "pointer", transition: "all 0.15s" }}>
-              {autoRefine ? "ON" : "OFF"}
-            </button>
-          </div>
-        )}
       </div>
 
 
