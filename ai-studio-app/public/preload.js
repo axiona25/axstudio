@@ -25,6 +25,13 @@ contextBridge.exposeInMainWorld("electronAPI", {
   getDataDir: () => ipcRenderer.invoke("get-data-dir"),
   fileExists: (filePath) => ipcRenderer.invoke("file-exists", filePath),
 
+  /** Trim video con ffmpeg — taglia i primi N secondi */
+  trimVideo: (inputPath, outputPath, trimSeconds) =>
+    ipcRenderer.invoke("trim-video", inputPath, outputPath, trimSeconds),
+  /** Rinomina/sposta un file */
+  renameFile: (oldPath, newPath) =>
+    ipcRenderer.invoke("rename-file", oldPath, newPath),
+
   /** Chiave OpenAI da `Connettori.txt` (cartella progetto), se presente. */
   getOpenAiKey: () => ipcRenderer.invoke("get-openai-key"),
 });

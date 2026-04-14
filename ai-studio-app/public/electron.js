@@ -3,6 +3,7 @@ const path = require("path");
 const fs = require("fs");
 const https = require("https");
 const { pathToFileURL } = require("url");
+const { execFile } = require("child_process");
 
 console.log("[AI Studio main] entry file:", __filename);
 
@@ -254,6 +255,37 @@ ipcMain.handle("get-data-dir", async () => DATA_DIR);
 // ── Check if a file exists on disk ──
 ipcMain.handle("file-exists", async (_event, filePath) => {
   try { await fs.promises.access(filePath); return true; } catch { return false; }
+});
+
+// ── Trim video with ffmpeg ──
+ipcMain.handle("trim-video", async (_event, inputPath, outputPath, trimSeconds) => {
+  return new Promise((resolve) => {
+    execFile("ffmpeg", [
+      "-y", "-i", inputPath,
+      "-ss", String(trimSeconds || 1.0),
+      "-c:v", "libx264", "-crf", "18", "-preset", "fast",
+      "-c:a", "aac", "-b:a", "192k",
+      outputPath,
+    ], { timeout: 60000 }, (error) => {
+      if (error) {
+        console.error("[FFMPEG TRIM] Error:", error.message);
+        resolve({ success: false, error: error.message });
+      } else {
+        console.log("[FFMPEG TRIM] OK:", outputPath);
+        resolve({ success: true, outputPath });
+      }
+    });
+  });
+});
+
+// ── Rename / move file ──
+ipcMain.handle("rename-file", async (_event, oldPath, newPath) => {
+  try {
+    await fs.promises.rename(oldPath, newPath);
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
 });
 
 // ── OpenAI key from Connettori.txt (workspace / env CONNETTORI_DIR) ──

@@ -7931,6 +7931,23 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
           const resolvedVideoPromptIT = videoPromptManuallyEdited ? editableVideoIT : (proposedVideoPrompt?.prompt_it || currentVideoIT);
           const entry = await onSaveVideo(base64, fp, { resolution: videoResolution, duration, seed: result.seed || 0, userIdea: currentVideoIT, promptEN: fp, promptIT: resolvedVideoPromptIT, selectedStyles: selectedVideoStyles, selectedDirectionStyles: selectedDirectionStyles, ...(spCtx ? { screenplayId: spCtx.screenplayId, screenplayName: spCtx.screenplayName, screenplaySummary: spCtx.screenplaySummary || "", clipIndex: spCtx.clipIndex, clipTotal: spCtx.clipTotal } : {}) });
           if (entry?.filePath && isElectron) {
+            // Trim primo clip / video singolo: taglia ~1s di frame statico iniziale
+            const isFirstClipOrSingle = !spCtx || spCtx.clipIndex === 0;
+            if (isFirstClipOrSingle && window.electronAPI?.trimVideo) {
+              try {
+                setVideoStatus("✂️ Ottimizzazione video…");
+                const trimmedPath = entry.filePath.replace(/\.mp4$/i, "_trimmed.mp4");
+                const trimResult = await window.electronAPI.trimVideo(entry.filePath, trimmedPath, 1.0);
+                if (trimResult?.success) {
+                  await window.electronAPI.renameFile(trimmedPath, entry.filePath);
+                  console.log("[VIDEO TRIM] Trimmed 1s from first clip/single video");
+                } else {
+                  console.warn("[VIDEO TRIM] Failed, using original:", trimResult?.error);
+                }
+              } catch (trimErr) {
+                console.warn("[VIDEO TRIM] Error:", trimErr.message);
+              }
+            }
             displayUrl = mediaFileUrl(entry.filePath);
           }
         } catch (err) {
