@@ -2,6 +2,7 @@ import {
   resolveVideoPresetFromImageMeta,
   resolveVideoPresetFromStyleId,
   resolveVideoPresetsFromStyleIds,
+  resolveVideoPresetFromFilename,
   VALID_VIDEO_PRESET_IDS,
   ALIAS_MAP,
   normalizeKey,
@@ -168,6 +169,156 @@ describe("resolveVideoPresetFromImageMeta", () => {
     });
     expect(r).toBeNull();
   });
+
+  // ── promptKeyword fallback (step 3) ──
+
+  it("detects 'anime' keyword in promptEN when no selectedStyles", () => {
+    const r = resolveVideoPresetFromImageMeta({
+      selectedStyles: [],
+      prompt: "anime character with sword in the rain",
+    });
+    expect(r).toEqual({ presetId: "anime", confidence: "medium", source: "promptKeyword" });
+  });
+
+  it("detects 'anime' keyword in userIdea (Italian) when no selectedStyles", () => {
+    const r = resolveVideoPresetFromImageMeta({
+      selectedStyles: [],
+      userIdea: "personaggio anime con spada sotto la pioggia",
+    });
+    expect(r).toEqual({ presetId: "anime", confidence: "medium", source: "promptKeyword" });
+  });
+
+  it("detects 'comic book' multi-word keyword in prompt", () => {
+    const r = resolveVideoPresetFromImageMeta({
+      selectedStyles: [],
+      prompt: "a comic book hero fighting villains",
+    });
+    expect(r).toEqual({ presetId: "comic", confidence: "medium", source: "promptKeyword" });
+  });
+
+  it("detects 'cel shading' keyword in prompt", () => {
+    const r = resolveVideoPresetFromImageMeta({
+      selectedStyles: [],
+      prompt: "a warrior in cel shading style, dramatic pose",
+    });
+    expect(r).toEqual({ presetId: "anime", confidence: "medium", source: "promptKeyword" });
+  });
+
+  it("detects 'claymation' keyword in prompt", () => {
+    const r = resolveVideoPresetFromImageMeta({
+      selectedStyles: [],
+      prompt: "claymation figure walking through a forest",
+    });
+    expect(r).toEqual({ presetId: "clay", confidence: "medium", source: "promptKeyword" });
+  });
+
+  it("detects 'cartoon' keyword in prompt", () => {
+    const r = resolveVideoPresetFromImageMeta({
+      selectedStyles: [],
+      prompt: "a cartoon rabbit running in a field",
+    });
+    expect(r).toEqual({ presetId: "cartoon", confidence: "medium", source: "promptKeyword" });
+  });
+
+  it("detects 'realistic' in prompt when no style selected", () => {
+    const r = resolveVideoPresetFromImageMeta({
+      selectedStyles: [],
+      prompt: "a realistic portrait of a woman in studio light",
+    });
+    expect(r).toEqual({ presetId: "realistic", confidence: "medium", source: "promptKeyword" });
+  });
+
+  it("does NOT match 'anime' when part of a longer word", () => {
+    const r = resolveVideoPresetFromImageMeta({
+      selectedStyles: [],
+      prompt: "inanimate object on a shelf",
+    });
+    expect(r).toBeNull();
+  });
+
+  it("does NOT match blocklisted generic words like 'photo'", () => {
+    const r = resolveVideoPresetFromImageMeta({
+      selectedStyles: [],
+      prompt: "a photo of a cat sitting on a windowsill",
+    });
+    expect(r).toBeNull();
+  });
+
+  it("selectedStyles still takes priority over prompt keyword", () => {
+    const r = resolveVideoPresetFromImageMeta({
+      selectedStyles: ["realistic"],
+      prompt: "anime character jumping over a building",
+    });
+    expect(r).toEqual({ presetId: "realistic", confidence: "high", source: "selectedStyles" });
+  });
+
+  it("@tag still takes priority over prompt keyword", () => {
+    const r = resolveVideoPresetFromImageMeta({
+      selectedStyles: [],
+      prompt: "an @fumetto style anime hero",
+    });
+    expect(r).toEqual({ presetId: "comic", confidence: "medium", source: "promptTag" });
+  });
+
+  // ── promptFull fallback (step 5) ──
+
+  it("falls back to promptFull when prompt and userIdea have no style keywords", () => {
+    const r = resolveVideoPresetFromImageMeta({
+      selectedStyles: [],
+      prompt: "A mountain landscape with sunset sky",
+      userIdea: "paesaggio montano con cielo al tramonto",
+      promptFull: "A mountain landscape with sunset sky, watercolor wash, soft pastel palette, delicate brushstrokes",
+    });
+    expect(r).toEqual({ presetId: "watercolor", confidence: "low", source: "promptFullKeyword" });
+  });
+
+  it("promptFull is NOT used if prompt already matched", () => {
+    const r = resolveVideoPresetFromImageMeta({
+      selectedStyles: [],
+      prompt: "anime warrior in a forest",
+      promptFull: "anime warrior in a forest, watercolor wash, soft pastel palette",
+    });
+    expect(r).toEqual({ presetId: "anime", confidence: "medium", source: "promptKeyword" });
+  });
+
+  it("promptFull detects painting style from injected style prefix", () => {
+    const r = resolveVideoPresetFromImageMeta({
+      selectedStyles: [],
+      prompt: "A serene lake surrounded by trees",
+      promptFull: "A serene lake surrounded by trees, oil painting, old master aesthetic, classical painting style, rich color palette",
+    });
+    expect(r).toEqual({ presetId: "painting", confidence: "low", source: "promptFullKeyword" });
+  });
+
+  it("promptFull returns null when only generic words present", () => {
+    const r = resolveVideoPresetFromImageMeta({
+      selectedStyles: [],
+      prompt: "A beautiful sunset",
+      promptFull: "A beautiful sunset, RAW photograph, natural skin texture, photorealistic, highly detailed, 8K",
+    });
+    expect(r).not.toBeNull();
+    expect(r.source).toBe("promptFullKeyword");
+  });
+
+  // ── template fallback (step 2) ──
+
+  it("resolves template if it matches an alias", () => {
+    const r = resolveVideoPresetFromImageMeta({
+      selectedStyles: [],
+      template: "noir",
+      prompt: "A mysterious figure in an alley",
+    });
+    expect(r).toEqual({ presetId: "noir", confidence: "medium", source: "template" });
+  });
+
+  it("ignores unrecognized template", () => {
+    const r = resolveVideoPresetFromImageMeta({
+      selectedStyles: [],
+      template: "outdoor",
+      prompt: "A meadow with flowers",
+    });
+    expect(r).toBeNull();
+  });
 });
 
 // ─────────────────────────────────────────────────────────
@@ -225,5 +376,63 @@ describe("ALIAS_MAP integrity", () => {
     for (const id of VALID_VIDEO_PRESET_IDS) {
       expect(ALIAS_MAP[id]).toBe(id);
     }
+  });
+});
+
+// ─────────────────────────────────────────────────────────
+// resolveVideoPresetFromFilename
+// ─────────────────────────────────────────────────────────
+describe("resolveVideoPresetFromFilename", () => {
+  it("returns null for null/undefined/empty", () => {
+    expect(resolveVideoPresetFromFilename(null)).toBeNull();
+    expect(resolveVideoPresetFromFilename(undefined)).toBeNull();
+    expect(resolveVideoPresetFromFilename("")).toBeNull();
+  });
+
+  it("returns null for short or generic filenames", () => {
+    expect(resolveVideoPresetFromFilename("a.png")).toBeNull();
+    expect(resolveVideoPresetFromFilename("photo.jpg")).toBeNull();
+    expect(resolveVideoPresetFromFilename("IMG_2024.png")).toBeNull();
+  });
+
+  it("detects anime from filename", () => {
+    const r = resolveVideoPresetFromFilename("my_anime_girl.png");
+    expect(r).not.toBeNull();
+    expect(r.presetId).toBe("anime");
+    expect(r.confidence).toBe("medium");
+  });
+
+  it("detects comic from filename", () => {
+    expect(resolveVideoPresetFromFilename("comic-book-hero.jpg").presetId).toBe("comic");
+    expect(resolveVideoPresetFromFilename("fumetto_style.png").presetId).toBe("comic");
+  });
+
+  it("detects realistic from filename", () => {
+    expect(resolveVideoPresetFromFilename("realistic_portrait.png").presetId).toBe("realistic");
+    expect(resolveVideoPresetFromFilename("photoreal_scene.jpg").presetId).toBe("realistic");
+  });
+
+  it("detects cartoon from filename", () => {
+    expect(resolveVideoPresetFromFilename("cartoon_character.png").presetId).toBe("cartoon");
+  });
+
+  it("detects clay from filename", () => {
+    expect(resolveVideoPresetFromFilename("claymation-figure.png").presetId).toBe("clay");
+  });
+
+  it("detects cyberpunk from filename", () => {
+    expect(resolveVideoPresetFromFilename("cyberpunk_city.jpg").presetId).toBe("cyberpunk");
+  });
+
+  it("detects fantasy from filename", () => {
+    expect(resolveVideoPresetFromFilename("fantasy_dragon.png").presetId).toBe("fantasy");
+  });
+
+  it("is case insensitive", () => {
+    expect(resolveVideoPresetFromFilename("ANIME_Hero.PNG").presetId).toBe("anime");
+  });
+
+  it("strips extension before matching", () => {
+    expect(resolveVideoPresetFromFilename("test.anime.png").presetId).toBe("anime");
   });
 });

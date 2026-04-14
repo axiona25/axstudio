@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo, useId } from "react";
-import { resolveVideoPresetFromImageMeta } from "./imageStyleToVideoPreset";
+import { resolveVideoPresetFromImageMeta, resolveVideoPresetFromFilename, VALID_VIDEO_PRESET_IDS } from "./imageStyleToVideoPreset";
 import {
   HiHome,
   HiPhoto,
@@ -1195,9 +1195,83 @@ function describeAppearanceChanges(diff) {
 
 // ── Preservation clauses ──
 
-const DEFAULT_PRESERVATION_CLAUSE = "Keep the same pose, facial expression, composition, background, lighting, camera framing, proportions, face identity, and all other details unchanged.";
+const STATIC_PRESERVATION_CLAUSE = "Keep the same pose, facial expression, composition, background, lighting, camera framing, proportions, face identity, and all other details unchanged.";
+const DEFAULT_PRESERVATION_CLAUSE = STATIC_PRESERVATION_CLAUSE;
 const REFLECTION_PRESERVATION_CLAUSE = "Keep the same face identity, pose, expression, mirror composition, background, lighting, camera framing, and all other details unchanged.";
 const PRESERVATION_CLAUSE = DEFAULT_PRESERVATION_CLAUSE;
+
+// ── Update change detection ──
+// Rileva quali famiglie di attributi l'utente vuole cambiare nell'update,
+// per costruire una preservation clause che non contraddica la richiesta.
+
+const UPDATE_CHANGE_FAMILIES = {
+  pose: {
+    keywords_it: ["posa", "in piedi", "seduto", "seduta", "sdraiato", "sdraiata", "inginocchiato", "inginocchiata", "accovacciato", "accovacciata", "braccia", "braccio", "mano", "mani", "gambe", "gamba", "pugno", "pugni", "dinamico", "dinamica", "azione", "corsa", "corre", "cammina", "camminata", "salto", "salta", "ballo", "balla", "combatte", "lotta", "disteso", "distesa", "posizione", "incrocia", "incrociate", "alza", "alzare", "abbassa", "abbassare", "piega", "piegato", "piegata", "apri", "aperte"],
+    keywords_en: ["pose", "standing", "sitting", "lying", "kneeling", "crouching", "arms", "arm", "hand", "hands", "legs", "leg", "fist", "dynamic", "action", "running", "walking", "jumping", "dancing", "fighting", "crossed", "raised", "lowered", "bent", "open"],
+    preservable: "pose",
+  },
+  orientation: {
+    keywords_it: ["frontale", "di fronte", "vista frontale", "di lato", "laterale", "vista laterale", "tre quarti", "di spalle", "spalle", "di schiena", "girato", "girata", "voltato", "voltata", "ruotato", "ruotata", "orientamento", "verso la camera", "guarda avanti", "di profilo", "profilo"],
+    keywords_en: ["front view", "front-facing", "facing camera", "side view", "profile", "three-quarter", "back view", "from behind", "turned", "rotated", "orientation", "facing forward"],
+    preservable: "body orientation",
+  },
+  expression: {
+    keywords_it: ["sorriso", "sorridente", "sorride", "riso", "ride", "ridendo", "arrabbiato", "arrabbiata", "rabbia", "furioso", "furiosa", "triste", "tristezza", "piange", "piangendo", "lacrime", "lacrima", "felice", "allegro", "allegra", "serio", "seria", "determinato", "determinata", "spaventato", "spaventata", "sorpreso", "sorpresa", "disgustato", "disgustata", "espressione", "bocca aperta", "urlando", "urla", "grida", "gridando"],
+    keywords_en: ["smile", "smiling", "laughing", "angry", "furious", "sad", "crying", "tears", "happy", "cheerful", "serious", "determined", "scared", "surprised", "disgusted", "expression", "mouth open", "screaming", "yelling"],
+    preservable: "facial expression",
+  },
+  gaze: {
+    keywords_it: ["sguardo", "guarda", "guardando", "occhi verso", "guarda in alto", "guarda in basso", "guarda a destra", "guarda a sinistra", "guarda di lato", "guarda la camera", "guarda lontano", "occhi chiusi", "strizza"],
+    keywords_en: ["gaze", "looking at", "looking up", "looking down", "looking sideways", "looking at camera", "looking away", "eyes closed", "squinting"],
+    preservable: "gaze direction",
+  },
+  camera: {
+    keywords_it: ["inquadratura", "primo piano", "campo largo", "campo medio", "mezzo busto", "figura intera", "dall'alto", "dal basso", "angolo", "zoom", "ravvicinato", "ravvicinata"],
+    keywords_en: ["framing", "close-up", "wide shot", "medium shot", "half body", "full body", "from above", "from below", "angle", "zoom"],
+    preservable: "camera framing",
+  },
+};
+
+function detectUpdateChangeIntent(editTextIT, editTextEN, appearanceDiff) {
+  const textIT = (editTextIT || "").toLowerCase();
+  const textEN = (editTextEN || "").toLowerCase();
+  const changedFamilies = new Set();
+
+  for (const [family, def] of Object.entries(UPDATE_CHANGE_FAMILIES)) {
+    if (def.keywords_it.some(kw => textIT.includes(kw))) { changedFamilies.add(family); continue; }
+    if (def.keywords_en.some(kw => textEN.includes(kw))) { changedFamilies.add(family); }
+  }
+
+  if (appearanceDiff && Object.keys(appearanceDiff).length > 0) {
+    changedFamilies.add("appearance");
+  }
+
+  return changedFamilies;
+}
+
+function buildDynamicPreservationClause(changedFamilies, hasReflectionContext) {
+  const allPreservable = [
+    { key: "pose", label: "pose" },
+    { key: "orientation", label: "body orientation" },
+    { key: "expression", label: "facial expression" },
+    { key: "gaze", label: "gaze direction" },
+    { key: "camera", label: "camera framing" },
+  ];
+
+  const preserveList = allPreservable
+    .filter(p => !changedFamilies.has(p.key))
+    .map(p => p.label);
+
+  const alwaysPreserve = ["body proportions", "costume", "composition", "background", "lighting"];
+  if (hasReflectionContext) alwaysPreserve.push("mirror composition");
+
+  const fullList = [...alwaysPreserve, ...preserveList];
+
+  return `Keep the same ${fullList.join(", ")}, and all other unchanged details exactly as in the original image.`;
+}
+
+const UPDATE_ANTI_DRIFT_CLAUSE = "This is a surgical edit of the existing image. Do not redesign the face or turn the character into a different person. Do not alter the costume, emblem, or graphic style unless explicitly requested. Modify ONLY what was requested and preserve everything else exactly.";
+
 
 // ── Risky style definitions ──
 
@@ -1325,13 +1399,31 @@ function detectIdentitySensitiveContext({ selectedCharacter, humanType, promptTe
 
 const IDENTITY_CLAUSE_IMAGE = "Preserve the same face identity, facial proportions, eye shape, nose shape, mouth shape, hairstyle consistency, body proportions, and overall character identity.";
 const IDENTITY_CLAUSE_IMAGE_FACE = "Keep the same face identity, facial structure, eye spacing, nose shape, mouth shape, jawline, and hairstyle consistency.";
+
+// ── Face Identity Lock per image update ──
+// Clausola concentrata e ad alta priorità, posizionata in testa al prompt update.
+// Elenca esplicitamente ogni tratto facciale che il modello deve congelare.
+
+const FACE_IDENTITY_LOCK = [
+  "CRITICAL — FACE IDENTITY LOCK: this is the SAME person as in the source image.",
+  "Preserve the EXACT same face: same facial proportions, same bone structure, same eye shape and eye spacing, same eyebrow shape and thickness, same nose bridge and nose tip, same nostril shape, same cheekbone placement, same jawline and chin shape, same mouth width and lip shape, same forehead shape, same ear shape.",
+  "Preserve the same skin texture and complexion, same age appearance, same masculinity or femininity cues, same ethnicity and skin tone.",
+  "Preserve the same hairline, same hair part, same haircut and hairstyle unless explicitly requested to change.",
+  "Preserve the same beard shape, density, and coverage unless explicitly requested to change.",
+  "Preserve the same distinctive facial marks: scars, moles, freckles, dimples, wrinkles.",
+  "Do NOT generate a different person who merely wears the same clothes. This must be recognizably the EXACT same individual.",
+].join(" ");
+
+const FACE_ANTI_DRIFT_CLAUSE = "Do NOT redesign, reinterpret, or reimagine the face. Do NOT substitute with a different person of similar appearance. Treat this as a photograph of the SAME person in a different moment, not a new character inspired by the original.";
+
+const POSE_CHANGE_ENFORCEMENT = "IMPORTANT — BODY POSE CHANGE REQUIRED (from the neck down ONLY): the body pose MUST be visibly and clearly different from the source image. Replace the previous arm position, limb arrangement, stance, and body posture with the new pose described below. Do NOT retain the original pose. The pose change applies ONLY to the body — the head, face, beard, hairline, and all facial features must remain exactly the same person as in the source image.";
 const IDENTITY_CLAUSE_VIDEO = "Preserve the same face identity, facial structure, hairstyle consistency, body proportions, and overall character identity across the whole clip. Maintain stable facial features and coherent anatomy throughout the shot.";
 const IDENTITY_CLAUSE_VIDEO_CHARACTER = "Keep the same character identity consistent across all frames. Avoid facial drift, anatomy drift, hairstyle drift, and identity changes over time.";
 const VIDEO_REFLECTION_CLAUSE = "Maintain consistent appearance between the subject and any visible mirror reflection throughout the clip. Hair, face, clothing, and visible features must match between the subject and the reflection at all times.";
 
 // ── Character Subject Anchoring ──
 
-const CHARACTER_SUBJECT_LOCK = "Use the selected character as the ONLY main subject. Preserve the same face identity, hairstyle, facial structure, body proportions, and overall appearance exactly as shown in the reference.";
+const CHARACTER_SUBJECT_LOCK = "Use the selected character as the ONLY main subject. Preserve the same face identity, hairstyle, facial structure, and body proportions as shown in the reference.";
 const CHARACTER_ROLE_BINDING = "Treat any role, title, or profession mentioned in the prompt (e.g. mayor, detective, queen, doctor, hero) as a narrative role, outfit, or context for the selected character — NOT as a different subject to generate from scratch.";
 const CHARACTER_ANTI_ANIMAL = "Do not replace the human subject with an animal, cat, dog, feline, canine, mascot, furry, anthropomorphic creature, cartoon animal, or any non-human entity. The subject must remain the same human character.";
 const CHARACTER_ANTI_ANIMAL_NEGATIVE = "animal, cat, dog, feline, canine, furry, anthropomorphic, mascot, creature, cartoon animal, non-human, animal face, animal ears, animal nose, snout, whiskers, paws, tail";
@@ -1451,52 +1543,85 @@ function buildVideoIdentityPreservationClause(identityCtx, hasCharacter) {
 
 // ── Prompt builders ──
 
-/** Costruisce il prompt EN per image update (edit conservativo). */
-function buildProjectImageUpdatePrompt(appearanceDiff, editTextEN, reflectionCtx, selectedStyles, identityCtx, charAnchoring, visualSignatureClause) {
+/** Costruisce il prompt EN per image update (edit conservativo).
+ *  Struttura: FACE LOCK → PRESERVE → CHANGE ONLY → ANTI-DRIFT
+ */
+function buildProjectImageUpdatePrompt(appearanceDiff, editTextEN, reflectionCtx, selectedStyles, identityCtx, charAnchoring, visualSignatureClause, editTextIT) {
   const parts = [];
 
-  // 1. Character subject lock (priorità massima in update)
+  const changedFamilies = detectUpdateChangeIntent(editTextIT, editTextEN, appearanceDiff);
+  const userChangingFace = changedFamilies.has("expression") || changedFamilies.has("gaze");
+
+  // ══════════════════════════════════════════════════════════
+  // ── SECTION 0: FACE IDENTITY LOCK — priorità assoluta ─────
+  // ══════════════════════════════════════════════════════════
+  parts.push(FACE_IDENTITY_LOCK);
+  if (userChangingFace) {
+    parts.push("You MAY change the facial expression or gaze direction as requested below, but the underlying face identity, bone structure, and all permanent facial features listed above MUST remain identical.");
+  }
+
+  // ══════════════════════════════════════════════════════════
+  // ── SECTION 1: PRESERVE — attributi invariati ─────────────
+  // ══════════════════════════════════════════════════════════
+
   if (charAnchoring?.subjectLockClause) {
     parts.push(charAnchoring.subjectLockClause);
   }
 
-  // 2. Modifiche appearance del personaggio
-  const traitDescs = describeAppearanceChanges(appearanceDiff);
-  if (traitDescs.length > 0) {
-    parts.push(`Update the character to have: ${traitDescs.join(", ")}.`);
-  }
-
-  // 3. Testo aggiuntivo utente
-  if (editTextEN) {
-    parts.push(editTextEN.endsWith(".") ? editTextEN : `${editTextEN}.`);
-  }
-
-  if (parts.length === 0 && !charAnchoring?.subjectLockClause) parts.push("Regenerate the image with minimal changes.");
-
-  // 4. Identity preservation clause
-  const idClause = buildIdentityPreservationClause(identityCtx);
-  if (idClause) parts.push(idClause);
-
-  // 5. Visual signature clause
   if (visualSignatureClause) parts.push(visualSignatureClause);
 
-  // 6. Style preservation clause (se stile rischioso)
+  parts.push(buildDynamicPreservationClause(changedFamilies, !!reflectionCtx?.hasReflectionContext));
+
+  // ══════════════════════════════════════════════════════════
+  // ── SECTION 2: CHANGE ONLY — modifiche richieste ──────────
+  // ══════════════════════════════════════════════════════════
+
+  const userChangingBody = changedFamilies.has("pose") || changedFamilies.has("orientation");
+
+  if (userChangingBody) {
+    parts.push(POSE_CHANGE_ENFORCEMENT);
+  }
+
+  const traitDescs = describeAppearanceChanges(appearanceDiff);
+  if (traitDescs.length > 0) {
+    parts.push(`Change ONLY these attributes: ${traitDescs.join(", ")}.`);
+  }
+
+  if (editTextEN) {
+    const editSentence = editTextEN.endsWith(".") ? editTextEN : `${editTextEN}.`;
+    if (userChangingBody) {
+      parts.push(`YOU MUST apply this change visibly and completely: ${editSentence}`);
+    } else {
+      parts.push(editSentence);
+    }
+  }
+
+  if (traitDescs.length === 0 && !editTextEN && !charAnchoring?.subjectLockClause) {
+    parts.push("Regenerate the image with minimal changes.");
+  }
+
+  if (userChangingBody) {
+    parts.push("REMINDER: the pose change above applies ONLY to the body. The head and face MUST remain the EXACT same person — same eyes, same nose, same jawline, same beard, same hairline. Do NOT let the body change affect the face in any way.");
+  }
+
+  // ══════════════════════════════════════════════════════════
+  // ── SECTION 3: ANTI-DRIFT — protezione identità ──────────
+  // ══════════════════════════════════════════════════════════
+
+  parts.push(FACE_ANTI_DRIFT_CLAUSE);
+  parts.push(UPDATE_ANTI_DRIFT_CLAUSE);
+
   const { hasRiskyStyle, riskyIds } = detectRiskyStyles(selectedStyles);
   const styleClause = hasRiskyStyle ? buildStylePreservationClause(riskyIds) : null;
   if (styleClause) parts.push(styleClause);
 
-  // 7. Role binding + anti-animal
   if (charAnchoring?.roleBindingClause) parts.push(charAnchoring.roleBindingClause);
   if (charAnchoring?.antiAnimalClause) parts.push(charAnchoring.antiAnimalClause);
 
-  // 8. Reflection consistency clause
   if (reflectionCtx?.hasReflectionContext) {
     const refClause = buildReflectionConsistencyClause(appearanceDiff, editTextEN);
     if (refClause) parts.push(refClause);
   }
-
-  // 9. Preservation clause finale
-  parts.push(reflectionCtx?.hasReflectionContext ? REFLECTION_PRESERVATION_CLAUSE : DEFAULT_PRESERVATION_CLAUSE);
 
   return parts.join(" ");
 }
@@ -1537,7 +1662,6 @@ No markdown, no backticks, no explanations.`;
   return null;
 }
 
-
 const isElectron = typeof window !== "undefined" && !!(window.electronAPI);
 
 // ── OpenRouter Config (Prompt Enhancer LLM — uncensored, free tier) ──
@@ -1549,6 +1673,53 @@ const LLM_MODELS = [
   "cognitivecomputations/dolphin-mistral-24b-venice-edition:free",
   "qwen/qwen3-next-80b-a3b-instruct:free",
 ];
+
+// ── Classificatore stile visivo per immagini esterne (fallback leggero via vision LLM) ──
+const CLASSIFY_STYLE_VALID_IDS = [...VALID_VIDEO_PRESET_IDS].join(", ");
+const CLASSIFY_STYLE_SYSTEM = `You classify images into visual style categories. Choose EXACTLY ONE id from: ${CLASSIFY_STYLE_VALID_IDS}.
+Return ONLY valid JSON: {"style":"id","confidence":0.9,"reason_it":"brief Italian explanation"}
+confidence: 0.9+ only if very clear. No markdown, no backticks.`;
+
+async function classifyExternalImageStyle(base64DataUrl) {
+  if (!base64DataUrl || !OPENROUTER_API_KEY) return null;
+  for (const model of ["google/gemma-4-26b-a4b-it", "meta-llama/llama-3.3-70b-instruct"]) {
+    try {
+      const res = await fetch(OPENROUTER_API_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${OPENROUTER_API_KEY}`, "HTTP-Referer": "https://axstudio.app", "X-Title": "AXSTUDIO" },
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: "system", content: CLASSIFY_STYLE_SYSTEM },
+            { role: "user", content: [
+              { type: "image_url", image_url: { url: base64DataUrl } },
+              { type: "text", text: "Classify the visual/artistic style of this image." },
+            ]},
+          ],
+          temperature: 0.2,
+          max_tokens: 150,
+        }),
+      });
+      const data = await res.json();
+      const text = data?.choices?.[0]?.message?.content;
+      if (!text) continue;
+      const jsonMatch = text.replace(/```json|```/g, "").trim().match(/\{[\s\S]*\}/);
+      if (!jsonMatch) continue;
+      const parsed = JSON.parse(jsonMatch[0]);
+      if (parsed.style && VALID_VIDEO_PRESET_IDS.has(parsed.style)) {
+        const conf = typeof parsed.confidence === "number" ? Math.min(1, Math.max(0, parsed.confidence)) : 0.6;
+        return {
+          presetId: parsed.style,
+          confidence: conf >= 0.8 ? "high" : "medium",
+          confidenceScore: conf,
+          source: "vision",
+          reason_it: parsed.reason_it || null,
+        };
+      }
+    } catch (e) { console.warn("[classifyExternalImageStyle] model failed:", e.message); }
+  }
+  return null;
+}
 
 /**
  * Chiama OpenRouter con fallback automatico tra i modelli.
@@ -2347,6 +2518,16 @@ function suggestDirectionStyleHeuristic(promptIT, promptEN = "", selectedVisualS
     }
   }
 
+  const heuristicDuration = (() => {
+    const SHORT_KW = ["dettaglio", "sguardo", "occhio", "labbra", "reazione", "goccia", "flash", "glitch", "micro"];
+    const LONG_KW = ["panorama", "panoramica", "paesaggio", "attraversa", "cammina per", "viaggio", "sequenza", "storia", "racconto", "epico", "epica", "battaglia", "inseguimento", "esplora"];
+    const VLONG_KW = ["sceneggiatura", "scena complessa", "più azioni", "camera change", "transizione"];
+    if (VLONG_KW.some(kw => text.includes(kw))) return 15;
+    if (LONG_KW.some(kw => text.includes(kw))) return 10;
+    if (SHORT_KW.some(kw => text.includes(kw))) return 3;
+    return 5;
+  })();
+
   if (bestMatch) {
     return {
       recommended_direction_style: bestMatch.recommended,
@@ -2354,6 +2535,8 @@ function suggestDirectionStyleHeuristic(promptIT, promptEN = "", selectedVisualS
       reason_it: bestMatch.reason,
       confidence: Math.min(0.95, bestMatch.confidence + bestScore * 0.05),
       source: "heuristic",
+      suggested_duration: heuristicDuration,
+      duration_reason_it: `Durata stimata in base al tipo di scena rilevata.`,
     };
   }
 
@@ -2363,26 +2546,33 @@ function suggestDirectionStyleHeuristic(promptIT, promptEN = "", selectedVisualS
     reason_it: "Nessun pattern specifico rilevato: la regia cinematica è la scelta più versatile e sicura.",
     confidence: 0.55,
     source: "heuristic_fallback",
+    suggested_duration: heuristicDuration,
+    duration_reason_it: `Durata stimata in base al tipo di scena rilevata.`,
   };
 }
 
 const DIRECTION_SUGGEST_SYSTEM_PROMPT =
   "You are a video direction advisor for an AI video generator. " +
-  "Given a scene description, suggest the BEST camera direction style. " +
+  "Given a scene description, suggest the BEST camera direction style AND the optimal clip duration. " +
   "You MUST choose ONLY from this exact list of IDs: " +
   "cinematic, slow_motion, timelapse, hyperlapse, drone, handheld, gimbal, dolly_in, dolly_out, orbit, push_in_macro, rack_focus, found_footage, documentary, surveillance, bodycam, first_person, fpv_drone, music_video, commercial, trailer, dreamy, chaotic, loop, stop_motion. " +
   "\n\nAnalyze the scene for: type (intimate/epic/action/poetic/product/transitional), energy level, shot width, mood, and visual style compatibility. " +
+  "\n\nFor duration, choose ONLY one of: 3, 5, 7, 10, 15 (seconds). Guidelines: " +
+  "3s = micro-action, reaction, detail shot. " +
+  "5s = one complete action (default). " +
+  "7s = short sequence of 2-3 connected movements. " +
+  "10s = scene with multiple actions in one continuous flow. " +
+  "15s = complex scene with camera changes or multiple beats. " +
   "\n\nReturn ONLY valid JSON (no markdown): " +
-  '{"recommended_direction_style": "id", "alternative_direction_styles": ["id1", "id2"], "reason_it": "Brief Italian explanation of why this direction fits the scene", "confidence": 0.85}' +
-  "\n\nThe reason_it MUST be in Italian, 1-2 sentences max. " +
+  '{"recommended_direction_style": "id", "alternative_direction_styles": ["id1", "id2"], "suggested_duration": 5, "duration_reason_it": "Brief Italian explanation of why this duration fits", "reason_it": "Brief Italian explanation of why this direction fits the scene", "confidence": 0.85}' +
+  "\n\nThe reason_it and duration_reason_it MUST be in Italian, 1-2 sentences max. " +
   "Alternatives must be 2-3 different valid IDs. Never duplicate the recommended in alternatives.";
 
-async function suggestDirectionStyleLLM(promptIT, promptEN = "", selectedVisualStyles = [], duration = 5) {
+async function suggestDirectionStyleLLM(promptIT, promptEN = "", selectedVisualStyles = []) {
   const context = [
     promptEN ? `Scene (EN): ${promptEN}` : "",
     `Scene (IT): ${promptIT}`,
     selectedVisualStyles.length > 0 ? `Visual style: ${selectedVisualStyles.join(", ")}` : "",
-    `Duration: ${duration}s`,
   ].filter(Boolean).join("\n");
 
   for (const model of LLM_MODELS) {
@@ -2416,12 +2606,16 @@ async function suggestDirectionStyleLLM(promptIT, promptEN = "", selectedVisualS
         const alts = (parsed.alternative_direction_styles || [])
           .filter(id => DIRECTION_VALID_IDS.has(id) && id !== parsed.recommended_direction_style)
           .slice(0, 3);
+        const VALID_DURATIONS = new Set([3, 5, 7, 10, 15]);
+        const rawDur = Number(parsed.suggested_duration);
+        const suggestedDuration = VALID_DURATIONS.has(rawDur) ? rawDur : null;
         return {
           recommended_direction_style: parsed.recommended_direction_style,
           alternative_direction_styles: alts.length > 0 ? alts : ["cinematic", "gimbal"].filter(id => id !== parsed.recommended_direction_style).slice(0, 2),
           reason_it: parsed.reason_it || "",
           confidence: typeof parsed.confidence === "number" ? Math.min(1, Math.max(0, parsed.confidence)) : 0.75,
           source: "llm",
+          ...(suggestedDuration != null ? { suggested_duration: suggestedDuration, duration_reason_it: parsed.duration_reason_it || "" } : {}),
         };
       }
     } catch (e) {
@@ -2434,7 +2628,7 @@ async function suggestDirectionStyleLLM(promptIT, promptEN = "", selectedVisualS
 async function suggestDirectionStyle(promptIT, promptEN = "", selectedVisualStyles = [], duration = 5) {
   const heuristic = suggestDirectionStyleHeuristic(promptIT, promptEN, selectedVisualStyles, duration);
   try {
-    const llmResult = await suggestDirectionStyleLLM(promptIT, promptEN, selectedVisualStyles, duration);
+    const llmResult = await suggestDirectionStyleLLM(promptIT, promptEN, selectedVisualStyles);
     if (llmResult) {
       if (process.env.NODE_ENV === "development") {
         console.log("[DIRECTION SUGGEST]", {
@@ -2447,7 +2641,12 @@ async function suggestDirectionStyle(promptIT, promptEN = "", selectedVisualStyl
           recommendationSource: "hybrid",
         });
       }
-      return { ...llmResult, source: "hybrid" };
+      return {
+        ...llmResult,
+        source: "hybrid",
+        suggested_duration: llmResult.suggested_duration ?? heuristic.suggested_duration,
+        duration_reason_it: llmResult.duration_reason_it ?? heuristic.duration_reason_it,
+      };
     }
   } catch (e) {
     console.warn("[DIRECTION SUGGEST] LLM layer failed, using heuristic only:", e.message);
@@ -2616,10 +2815,10 @@ function buildVideoLibraryPickEntries(history, diskMediaEntries, generatedImages
   (Array.isArray(history) ? history : []).forEach(h => {
     if (!historyRecordIsImage(h)) return;
     const p = historyRecordImagePath(h);
-    if (p) pushFile(p, h.prompt || h.fileName || "");
+    if (p) pushFile(p, h.params?.promptIT || h.params?.userIdea || h.prompt || h.fileName || "");
   });
   (diskMediaEntries || []).forEach(e => {
-    if (e?.type === "image" && e.filePath) pushFile(e.filePath, e.prompt || e.fileName || "");
+    if (e?.type === "image" && e.filePath) pushFile(e.filePath, e.params?.promptIT || e.params?.userIdea || e.prompt || e.fileName || "");
   });
   (generatedImages || []).forEach((url, i) => pushGalleryUrlEntry(out, seen, url, i, "Generata (sessione)"));
   return out;
@@ -2643,7 +2842,7 @@ function buildGlobalFreeImageGalleryEntries(history, generatedImages, projects, 
     .filter(h => historyRecordIsImage(h) && historyRecordImagePath(h))
     .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
   for (const h of imageHistory) {
-    const hintBase = (h.prompt || h.fileName || "").trim();
+    const hintBase = (h.params?.promptIT || h.params?.userIdea || h.prompt || h.fileName || "").trim();
     const hp = h.projectId != null && h.projectId !== "" ? String(h.projectId) : null;
     const tag = !hp ? "Immagine libera" : (projectNameById.get(hp) || "Progetto");
     const hint = hintBase ? `${hintBase} · ${tag}` : tag;
@@ -2654,7 +2853,7 @@ function buildGlobalFreeImageGalleryEntries(history, generatedImages, projects, 
     .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
   for (const e of diskImages) {
     const fp = e.filePath || e.path;
-    const hintBase = (e.prompt || e.fileName || "").trim();
+    const hintBase = (e.params?.promptIT || e.params?.userIdea || e.prompt || e.fileName || "").trim();
     const hint = hintBase ? `${hintBase} · Catalogo disco` : "Catalogo disco";
     pushFile(fp, hint);
   }
@@ -2923,6 +3122,32 @@ function filePathFromAxstudioMediaUrl(url) {
   }
 }
 
+/**
+ * Normalizza un path per confronto robusto:
+ * - decodeURIComponent (doppio, per sicurezza)
+ * - rimuove querystring residui
+ * - uniforma separatori a /
+ * - collassa // multipli
+ * - rimuove trailing /
+ * - trim
+ */
+function normalizeFsPath(raw) {
+  if (!raw || typeof raw !== "string") return "";
+  let p = raw;
+  try { p = decodeURIComponent(p); } catch { /* noop */ }
+  try { p = decodeURIComponent(p); } catch { /* noop */ }
+  const qIdx = p.indexOf("?");
+  if (qIdx !== -1) p = p.slice(0, qIdx);
+  p = p.replace(/\\/g, "/").replace(/\/\/+/g, "/").replace(/\/+$/, "").trim();
+  return p;
+}
+
+function basenameFsPath(raw) {
+  const n = normalizeFsPath(raw);
+  const idx = n.lastIndexOf("/");
+  return idx >= 0 ? n.slice(idx + 1) : n;
+}
+
 /** Anteprime sessione prima, poi catalogo Home (dedupe per path / URL). */
 function mergeSessionUrlsFirst(sessionItems, catalogUrls) {
   const session = sessionItems || [];
@@ -3115,7 +3340,7 @@ function HomeGalleryTile({ entry, onRequestDelete, onOpenPreview }) {
       <button
         type="button"
         onClick={onTileClick}
-        title={(entry.prompt || "").trim() || entry.fileName || ""}
+        title={(entry.params?.promptIT || entry.params?.userIdea || entry.prompt || "").trim() || entry.fileName || ""}
         style={{
           position: "relative", aspectRatio: "1", borderRadius: 10, overflow: "hidden",
           border: `1px solid ${AX.border}`, background: AX.bg, padding: 0,
@@ -3160,7 +3385,7 @@ function HomeGalleryTile({ entry, onRequestDelete, onOpenPreview }) {
             fontSize: 22, color: AX.text2,
           }}>
             <span style={{ display: "flex", opacity: 0.95 }}>{isVideo ? <HiFilm size={28} /> : <HiPhoto size={28} />}</span>
-            <span style={{ fontSize: 9, marginTop: 4, padding: "0 6px", textAlign: "center", color: AX.muted, lineHeight: 1.25, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{(entry.prompt || "").slice(0, 40)}{(entry.prompt || "").length > 40 ? "…" : ""}</span>
+            <span style={{ fontSize: 9, marginTop: 4, padding: "0 6px", textAlign: "center", color: AX.muted, lineHeight: 1.25, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{(entry.params?.promptIT || entry.params?.userIdea || entry.prompt || "").slice(0, 40)}{(entry.params?.promptIT || entry.params?.userIdea || entry.prompt || "").length > 40 ? "…" : ""}</span>
           </div>
         )}
         <span style={{
@@ -4375,7 +4600,6 @@ export default function AIStudio() {
     if (!url) return;
     setProjectGallerySelectedEntryId(ent.id);
     setProjectVideoSourceImg(url);
-    setVideoPrompt(buildVideoRefPrompt(ent, selectedCharacter, projects));
     setProjectVideoProposalResetNonce(n => n + 1);
   }, [selectedCharacter, projects]);
 
@@ -4386,7 +4610,6 @@ export default function AIStudio() {
       setProjectGallerySelectedEntryId(null);
       return;
     }
-    setVideoPrompt(buildVideoRefPrompt(ent, selectedCharacter, projects));
   }, [selectedCharacter, projectGallerySelectedEntryId, projectGalleryEntryList, projects]);
 
   useEffect(() => {
@@ -5278,7 +5501,7 @@ export default function AIStudio() {
 
           {activeTab === "image" && (
             <>
-              <ImgGen {...{ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setResolution, generating, setGenerating, generatedImages, setGeneratedImages, selectedCharacter, scenes: scenePresets, onSave: saveGeneratedImage, previewImg: genPreviewImg, setPreviewImg: setGenPreviewImg, layoutFill: false, history, recallImageUrl, setRecallImageUrl, selectedStyles: imgSelectedStyles, setSelectedStyles: setImgSelectedStyles, aspect: imgAspect, setAspect: setImgAspect, steps: imgSteps, setSteps: setImgSteps, cfg: imgCfg, setCfg: setImgCfg, adv: imgAdv, setAdv: setImgAdv, projectSourceImageUrl, setProjectSourceImageUrl, currentProjectId: currentProject?.id, imgSessionPromptMap }} />
+              <ImgGen {...{ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setResolution, generating, setGenerating, generatedImages, setGeneratedImages, selectedCharacter, setSelectedCharacter, projectCharacters: currentProject?.characters || [], scenes: scenePresets, onSave: saveGeneratedImage, previewImg: genPreviewImg, setPreviewImg: setGenPreviewImg, layoutFill: false, history, recallImageUrl, setRecallImageUrl, selectedStyles: imgSelectedStyles, setSelectedStyles: setImgSelectedStyles, aspect: imgAspect, setAspect: setImgAspect, steps: imgSteps, setSteps: setImgSteps, cfg: imgCfg, setCfg: setImgCfg, adv: imgAdv, setAdv: setImgAdv, projectSourceImageUrl, setProjectSourceImageUrl, currentProjectId: currentProject?.id, imgSessionPromptMap }} />
             </>
           )}
           {activeTab === "video" && (
@@ -5294,7 +5517,7 @@ export default function AIStudio() {
         {/* ═══ FREE IMAGE ═══ */}
         {view === "free-image" && (
           <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflowY: "auto", overflowX: "hidden" }}>
-            <ImgGen {...{ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setResolution, generating, setGenerating, generatedImages, setGeneratedImages, selectedCharacter: null, scenes: scenePresets, onSave: saveGeneratedImage, previewImg: genPreviewImg, setPreviewImg: setGenPreviewImg, layoutFill: true, history, recallImageUrl, setRecallImageUrl, selectedStyles: imgSelectedStyles, setSelectedStyles: setImgSelectedStyles, aspect: imgAspect, setAspect: setImgAspect, steps: imgSteps, setSteps: setImgSteps, cfg: imgCfg, setCfg: setImgCfg, adv: imgAdv, setAdv: setImgAdv, imgSessionPromptMap }} />
+            <ImgGen {...{ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setResolution, generating, setGenerating, generatedImages, setGeneratedImages, selectedCharacter: null, setSelectedCharacter: null, projectCharacters: [], scenes: scenePresets, onSave: saveGeneratedImage, previewImg: genPreviewImg, setPreviewImg: setGenPreviewImg, layoutFill: true, history, recallImageUrl, setRecallImageUrl, selectedStyles: imgSelectedStyles, setSelectedStyles: setImgSelectedStyles, aspect: imgAspect, setAspect: setImgAspect, steps: imgSteps, setSteps: setImgSteps, cfg: imgCfg, setCfg: setImgCfg, adv: imgAdv, setAdv: setImgAdv, imgSessionPromptMap }} />
           </div>
         )}
 
@@ -5447,7 +5670,7 @@ function HistoryList({ items }) {
         <div key={h.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", borderRadius: 12, background: AX.surface, border: `1px solid ${AX.border}` }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "center", color: AX.electric }}>{h.type === "image" ? <HiPhoto size={22} /> : h.type === "video" ? <HiFilm size={22} /> : <HiMicrophone size={22} />}</div>
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 12, color: AX.text, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{h.prompt}</div>
+            <div style={{ fontSize: 12, color: AX.text, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{h.params?.promptIT || h.params?.userIdea || h.prompt}</div>
             <div style={{ display: "flex", gap: 10, fontSize: 10, color: AX.muted, marginTop: 2 }}>
               <span>{new Date(h.createdAt).toLocaleString("it-IT")}</span>
               <span>{h.fileName}</span>
@@ -5581,7 +5804,7 @@ function VideoPreviewModal({ src, onClose, videoStatus, setVideoStatus }) {
 }
 
 // ── Image Generator ──
-function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setResolution, generating, setGenerating, generatedImages, setGeneratedImages, selectedCharacter, scenes, onSave, previewImg, setPreviewImg, layoutFill, history, recallImageUrl, setRecallImageUrl, selectedStyles, setSelectedStyles, aspect, setAspect, steps, setSteps, cfg, setCfg, adv, setAdv, projectSourceImageUrl, setProjectSourceImageUrl, currentProjectId, imgSessionPromptMap }) {
+function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setResolution, generating, setGenerating, generatedImages, setGeneratedImages, selectedCharacter, setSelectedCharacter, projectCharacters, scenes, onSave, previewImg, setPreviewImg, layoutFill, history, recallImageUrl, setRecallImageUrl, selectedStyles, setSelectedStyles, aspect, setAspect, steps, setSteps, cfg, setCfg, adv, setAdv, projectSourceImageUrl, setProjectSourceImageUrl, currentProjectId, imgSessionPromptMap }) {
   console.log("[IMGGEN] history prop length:", history?.length, "recallImageUrl:", recallImageUrl?.slice(0, 60));
   const [tmpl, setTmpl] = useState(null);
   const [translating, setTranslating] = useState(false);
@@ -5595,15 +5818,27 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
   // ── Project image update mode ──
   const appearanceSnapshotRef = useRef(null);
   const sourceImagePromptItRef = useRef(null);
+  const sourceImageStylesRef = useRef(null);
 
   // Quando il recall carica un'immagine, salva lo snapshot corrente dell'appearance
   // (sarà confrontato con l'appearance attuale per determinare update mode)
+  const hasStyleChanges = (() => {
+    if (!sourceImageStylesRef.current) return false;
+    const src = [...sourceImageStylesRef.current].sort().join(",");
+    const cur = [...selectedStyles].sort().join(",");
+    return src !== cur;
+  })();
+  const hasAppearanceOrTextChanges = Boolean(
+    selectedCharacter && (
+      Object.keys(diffAppearance(appearanceSnapshotRef.current, selectedCharacter?.appearance)).length > 0 ||
+      (prompt.trim() && prompt.trim() !== (sourceImagePromptItRef.current || ""))
+    )
+  );
+  const isStyleChangeOnlyMode = Boolean(projectSourceImageUrl && currentProjectId && hasStyleChanges && !hasAppearanceOrTextChanges);
   const isImageUpdateMode = Boolean(
     projectSourceImageUrl &&
     currentProjectId &&
-    selectedCharacter &&
-    (Object.keys(diffAppearance(appearanceSnapshotRef.current, selectedCharacter?.appearance)).length > 0 ||
-     (prompt.trim() && prompt.trim() !== (sourceImagePromptItRef.current || "")))
+    (hasStyleChanges || hasAppearanceOrTextChanges)
   );
 
   // ── Separazione prompt IT (UI) / EN (API) ──
@@ -5629,7 +5864,7 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
     // 1. Cerca prima nella mappa sessione (URL fal.ai / blob ancora in memoria)
     const sessionMeta = sessionPromptMap.current.get(recallImageUrl);
     if (sessionMeta) {
-      const { userIdea, promptEN, promptIT, savedStyles, appearanceSnapshot: snap } = sessionMeta;
+      const { userIdea, promptEN, promptIT, savedStyles, appearanceSnapshot: snap, characterId: metaCharId } = sessionMeta;
       const textForField = promptIT || userIdea || promptEN || "";
       setPrompt(textForField);
       const itSource = textForField || userIdea || "";
@@ -5643,10 +5878,15 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
       setEditableIT("");
       setRecallFeedback(null);
       if (savedStyles?.length > 0) setSelectedStyles(savedStyles);
+      if (metaCharId && projectCharacters?.length > 0 && typeof setSelectedCharacter === "function") {
+        const recalledChar = projectCharacters.find(c => c.id === metaCharId);
+        if (recalledChar) setSelectedCharacter(recalledChar);
+      }
       if (currentProjectId && typeof setProjectSourceImageUrl === "function") {
         setProjectSourceImageUrl(recallImageUrl);
         appearanceSnapshotRef.current = snap || { ...(selectedCharacter?.appearance || {}) };
         sourceImagePromptItRef.current = textForField || "";
+        sourceImageStylesRef.current = savedStyles || [];
       }
       return;
     }
@@ -5669,7 +5909,7 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
     const idea = record.params?.userIdea || "";
     const promptEN = record.params?.promptEN || record.prompt || "";
     const savedStyles = record.params?.selectedStyles || [];
-    const textForField = promptIT || idea || promptEN;
+    const textForField = promptIT || idea || "";
     setPrompt(textForField || "");
     if (textForField) {
       setRecallFeedback(null);
@@ -5690,10 +5930,16 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
     setProposedPrompt(null);
     setEditableIT("");
     if (savedStyles.length > 0) setSelectedStyles(savedStyles);
+    const recCharId = record.params?.characterId;
+    if (recCharId && projectCharacters?.length > 0 && typeof setSelectedCharacter === "function") {
+      const recalledChar = projectCharacters.find(c => c.id === recCharId);
+      if (recalledChar) setSelectedCharacter(recalledChar);
+    }
     if (currentProjectId && typeof setProjectSourceImageUrl === "function") {
       setProjectSourceImageUrl(recallImageUrl);
       appearanceSnapshotRef.current = record.params?.appearanceSnapshot || { ...(selectedCharacter?.appearance || {}) };
       sourceImagePromptItRef.current = textForField || "";
+      sourceImageStylesRef.current = savedStyles || [];
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [recallImageUrl]);
@@ -5883,13 +6129,25 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
       const appearanceDiffObj = diffAppearance(appearanceSnapshotRef.current, selectedCharacter?.appearance);
       const hasAppearanceChanges = Object.keys(appearanceDiffObj).length > 0;
       const hasEditTextChanges = Boolean(prompt.trim() && prompt.trim() !== (sourceImagePromptItRef.current || ""));
-      const projectImageMode = (projectSourceImageUrl && currentProjectId && (hasAppearanceChanges || hasEditTextChanges)) ? "update" : "create";
+
+      const styleChangedInGenerate = (() => {
+        if (!sourceImageStylesRef.current) return false;
+        const src = [...sourceImageStylesRef.current].sort().join(",");
+        const cur = [...selectedStyles].sort().join(",");
+        return src !== cur;
+      })();
+      const isStyleChangeOnly = styleChangedInGenerate && !hasAppearanceChanges && !hasEditTextChanges;
+      const projectImageMode = (projectSourceImageUrl && currentProjectId && (hasAppearanceChanges || hasEditTextChanges || styleChangedInGenerate)) ? "update" : "create";
 
       console.log("[PROJECT IMAGE MODE]", {
         projectImageMode,
         sourceImageUrl: projectSourceImageUrl?.slice(0, 80),
         hasAppearanceChanges,
         hasEditTextChanges,
+        styleChangedInGenerate,
+        isStyleChangeOnly,
+        sourceStyles: sourceImageStylesRef.current,
+        currentStyles: selectedStyles,
         appearanceDiff: appearanceDiffObj,
       });
 
@@ -5930,15 +6188,19 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
           selectedCharacter, updateHumanType, prompt.trim(), editTextEN, riskyStyleInfo.riskyIds,
         );
         const updateVisualSigClause = buildCharacterVisualSignatureClause(selectedCharacter);
-        const updatePromptEN = buildProjectImageUpdatePrompt(appearanceDiffObj, editTextEN, reflectionCtx, selectedStyles, updateIdentityCtx, updateCharAnchoring, updateVisualSigClause);
+        const updatePromptEN = buildProjectImageUpdatePrompt(appearanceDiffObj, editTextEN, reflectionCtx, selectedStyles, updateIdentityCtx, updateCharAnchoring, updateVisualSigClause, prompt.trim());
 
         const updateIdClause = buildIdentityPreservationClause(updateIdentityCtx);
         const updateStyleClause = riskyStyleInfo.hasRiskyStyle ? buildStylePreservationClause(riskyStyleInfo.riskyIds) : null;
 
         console.log("[PROJECT IMAGE UPDATE]", {
           projectImageMode: "update",
+          isStyleChangeOnly,
+          sourceStyles: sourceImageStylesRef.current,
+          targetStyles: selectedStyles,
           updatePromptEn: updatePromptEN,
           payloadModel: "fal-ai/flux-pro/kontext/max",
+          hasFaceSwap: Boolean(charImg),
           sourceImageUrl: projectSourceImageUrl?.slice(0, 80),
           selectedCharacterId: selectedCharacter?.id || null,
           characterSubjectLockUsed: updateCharAnchoring.subjectLockClause || null,
@@ -5969,9 +6231,46 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
           }
         }
 
+        let sourceUrlForKontext = sourceUrl;
+        if (sourceUrlForKontext.startsWith("data:")) {
+          sourceUrlForKontext = await uploadBase64ToFal(sourceUrlForKontext).catch(() => sourceUrlForKontext);
+        }
+
+        // ── Style transfer puro: prompt aggressivo per rigenerazione completa nello stile target ──
+        let finalKontextPrompt = updatePromptEN;
+        if (isStyleChangeOnly) {
+          const targetStyleDesc = selectedStyles
+            .map(sid => STYLE_PRESETS.find(s => s.id === sid))
+            .filter(Boolean)
+            .map(s => s.prompt)
+            .join(", ") || "photorealistic RAW photograph";
+          const targetStyleLabel = selectedStyles
+            .map(sid => STYLE_PRESETS.find(s => s.id === sid)?.label)
+            .filter(Boolean)
+            .join(" / ") || "Realistico";
+          const sourceEN = preparedEnRef.current?.en || resolvedEn || "";
+          const sceneDesc = sourceEN ? ` The scene depicts: ${sourceEN}.` : "";
+
+          finalKontextPrompt =
+            `Completely regenerate this image as a ${targetStyleDesc}. ` +
+            `This is NOT a filter or overlay — create a brand new ${targetStyleLabel} image from scratch.${sceneDesc} ` +
+            `The new image MUST reproduce the EXACT same scene: ` +
+            `same character pose, same body position, same arm and leg placement, ` +
+            `same costume design with all details (colors, logos, patterns, cape, belt, boots, accessories), ` +
+            `same background elements (buildings, sky, street, environment), ` +
+            `same camera angle, same framing and composition. ` +
+            `But everything must look 100% ${targetStyleLabel}: ` +
+            `real fabric with wrinkles and texture, real human skin with pores, ` +
+            `real metal, real sky with real clouds, real concrete, real lighting with natural shadows. ` +
+            `Like a professional ${targetStyleLabel} capture of the exact same scene. ` +
+            `Do NOT simplify, do NOT change the pose, do NOT add or remove any element.`;
+          console.log("[STYLE TRANSFER] Aggressive style transfer prompt:", finalKontextPrompt.slice(0, 200));
+          setImageStatus && setImageStatus("🎨 Cambio stile in corso...");
+        }
+
         const kontextResult = await falRequest("fal-ai/flux-pro/kontext/max", {
-          prompt: updatePromptEN,
-          image_url: sourceUrl,
+          prompt: finalKontextPrompt,
+          image_url: sourceUrlForKontext,
           num_images: 1,
           safety_tolerance: "6",
         });
@@ -5984,6 +6283,29 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
           return;
         }
         imgUrl = kontextUrl;
+
+        // ── Face swap post-update: applica volto dalla foto ORIGINALE del personaggio (tutti gli stili) ──
+        if (charImg) {
+          try {
+            setImageStatus && setImageStatus("⏳ Riapplicazione volto...");
+            const faceDataUri = await characterImageToDataUri(charImg).catch(() => null);
+            if (faceDataUri) {
+              const swapResult = await falRequest("fal-ai/face-swap", {
+                base_image_url: imgUrl,
+                swap_image_url: faceDataUri,
+              });
+              const swappedUrl = swapResult?.image?.url || swapResult?.images?.[0]?.url || null;
+              if (swappedUrl) {
+                console.log("[UPDATE FACE-SWAP] Applied:", swappedUrl.slice(0, 80));
+                imgUrl = swappedUrl;
+              } else {
+                console.warn("[UPDATE FACE-SWAP] No image URL in response, using Kontext result");
+              }
+            }
+          } catch (faceErr) {
+            console.warn("[UPDATE FACE-SWAP] Failed, using Kontext image:", faceErr.message);
+          }
+        }
 
         console.log("[PROJECT IMAGE UPDATE] result:", imgUrl?.slice(0, 80));
 
@@ -5999,6 +6321,7 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
           promptIT: resolvedPromptIT,
           savedStyles: selectedStyles,
           appearanceSnapshot: { ...(selectedCharacter?.appearance || {}) },
+          characterId: selectedCharacter?.id || null,
           sourceImageUrl: projectSourceImageUrl,
           projectImageMode: "update",
         };
@@ -6009,7 +6332,7 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
             if (onSave) {
               const dataUrl = await falImageUrlToBase64(imgUrl);
               const entry = await onSave(dataUrl, updatePromptEN, {
-                resolution, steps, cfg, seed: 0, template: tmpl, faceSwap: false,
+                resolution, steps, cfg, seed: 0, template: tmpl, faceSwap: Boolean(charImg),
                 userIdea: currentIt, promptEN: updatePromptEN, promptIT: resolvedPromptIT, selectedStyles,
                 appearanceSnapshot: { ...(selectedCharacter?.appearance || {}) },
                 sourceImageUrl: projectSourceImageUrl,
@@ -6025,6 +6348,7 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
                   setProjectSourceImageUrl(nu);
                   appearanceSnapshotRef.current = { ...(selectedCharacter?.appearance || {}) };
                   sourceImagePromptItRef.current = currentIt;
+                  sourceImageStylesRef.current = [...selectedStyles];
                 }
               }
             }
@@ -6057,24 +6381,26 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
 
         imgUrl = baseImageUrl;
 
+        // ── Face swap: applica volto dalla foto ORIGINALE del personaggio (tutti gli stili) ──
         if (useFaceSwap) {
           try {
             setImageStatus && setImageStatus("⏳ Applicazione volto...");
             const faceDataUri = await characterImageToDataUri(charImg).catch(() => null);
             if (faceDataUri) {
               const swapResult = await falRequest("fal-ai/face-swap", {
-                base_image_url: baseImageUrl,
+                base_image_url: imgUrl,
                 swap_image_url: faceDataUri,
               });
               const swappedUrl = swapResult?.image?.url || swapResult?.images?.[0]?.url || null;
               if (swappedUrl) {
+                console.log("[CREATE FACE-SWAP] Applied:", swappedUrl.slice(0, 80));
                 imgUrl = swappedUrl;
               } else {
-                console.warn("[FAL] Face swap returned no image URL, using base image");
+                console.warn("[CREATE FACE-SWAP] No image URL in response, using base image");
               }
             }
           } catch (faceErr) {
-            console.warn("[FAL] Face swap failed, using base image:", faceErr.message);
+            console.warn("[CREATE FACE-SWAP] Failed, using base image:", faceErr.message);
           }
         }
 
@@ -6090,6 +6416,7 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
           promptIT: resolvedPromptIT,
           savedStyles: selectedStyles,
           appearanceSnapshot: { ...(selectedCharacter?.appearance || {}) },
+          characterId: selectedCharacter?.id || null,
           projectImageMode: "create",
         };
         sessionPromptMap.current.set(imgUrl, sessionMeta);
@@ -6114,6 +6441,7 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
                   setProjectSourceImageUrl(nu);
                   appearanceSnapshotRef.current = { ...(selectedCharacter?.appearance || {}) };
                   sourceImagePromptItRef.current = currentIt;
+                  sourceImageStylesRef.current = [...selectedStyles];
                 }
               }
             }
@@ -6255,7 +6583,7 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
                 type="button"
                 title={s.label}
                 onClick={() => setSelectedStyles(prev =>
-                  prev.includes(s.id) ? prev.filter(x => x !== s.id) : [...prev, s.id]
+                  prev.includes(s.id) ? [] : [s.id]
                 )}
                 style={{
                   width: "100%",
@@ -6450,6 +6778,13 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
       ) : null}
 
 
+      {isStyleChangeOnlyMode && (
+        <div style={{ fontSize: 11, color: AX.violet, marginBottom: 6, padding: "5px 10px", background: "rgba(123,77,255,0.08)", borderRadius: 8, display: "flex", alignItems: "center", gap: 6 }}>
+          <span style={{ fontSize: 14 }}>🎨</span>
+          <span>Cambio stile — la scena viene mantenuta identica, cambia solo lo stile visivo</span>
+        </div>
+      )}
+
       <div style={{ marginBottom: fill ? 0 : 22, flexShrink: 0, display: "flex", gap: 10 }}>
         {/* Prepara Prompt — secondario */}
         <button
@@ -6504,8 +6839,8 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
           }}
         >
           {generating
-            ? <><div style={{ width: 14, height: 14, border: "2px solid rgba(255,255,255,0.2)", borderTopColor: "#fff", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />{imageStatus || (isImageUpdateMode ? "Aggiornamento…" : "Generazione…")}</>
-            : isImageUpdateMode ? <>{"🔄 Aggiorna Immagine"}</> : <>{"⚡ Genera Immagine"}</>}
+            ? <><div style={{ width: 14, height: 14, border: "2px solid rgba(255,255,255,0.2)", borderTopColor: "#fff", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />{imageStatus || (isStyleChangeOnlyMode ? "Cambio stile…" : isImageUpdateMode ? "Aggiornamento…" : "Generazione…")}</>
+            : isStyleChangeOnlyMode ? <>{"🎨 Cambia Stile"}</> : isImageUpdateMode ? <>{"🔄 Aggiorna Immagine"}</> : <>{"⚡ Genera Immagine"}</>}
         </button>
       </div>
 
@@ -6554,6 +6889,9 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
   const [visualStyleSuggestion, setVisualStyleSuggestion] = useState(null);
   const [vidStyleSelectionMode, setVidStyleSelectionMode] = useState("auto");
   const vidStyleManualOverrideForSourceRef = useRef(null);
+  const sourceImgFilenameRef = useRef(null);
+  const visionClassifyTicketRef = useRef(0);
+  const [vidDurationSelectionMode, setVidDurationSelectionMode] = useState("auto");
   const historyVidRef = useRef(history);
   historyVidRef.current = history;
   const fileRef = useRef(null);
@@ -6576,6 +6914,7 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
       const result = await suggestDirectionStyle(promptIT.trim(), promptEN, selectedVideoStyles || [], videoDuration);
       if (ticket !== dirRecAbortRef.current) return;
       setDirectionRecommendation(result);
+      if (result?.suggested_duration) setVidDurationSelectionMode("auto");
     } catch (e) {
       console.warn("[DIRECTION REC] Error:", e.message);
       if (ticket === dirRecAbortRef.current) setDirectionRecommendation(null);
@@ -6589,14 +6928,24 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
     if (dirRecDebounceRef.current) clearTimeout(dirRecDebounceRef.current);
     const trimmed = (videoPrompt || "").trim();
     if (trimmed.length < 8) return;
-    const inputKey = `${trimmed}|${(selectedVideoStyles || []).join(",")}|${videoDuration}`;
+    const inputKey = `${trimmed}|${(selectedVideoStyles || []).join(",")}`;
     if (inputKey === dirRecLastInputRef.current) return;
     dirRecDebounceRef.current = setTimeout(() => {
       dirRecLastInputRef.current = inputKey;
       void fetchDirectionRecommendation(trimmed);
     }, 900);
     return () => { if (dirRecDebounceRef.current) clearTimeout(dirRecDebounceRef.current); };
-  }, [videoPrompt, selectedVideoStyles, videoDuration, fetchDirectionRecommendation]);
+  }, [videoPrompt, selectedVideoStyles, fetchDirectionRecommendation]);
+
+  // ── Auto-apply durata suggerita dalla recommendation della Regia ──
+  useEffect(() => {
+    if (!directionRecommendation?.suggested_duration) return;
+    if (vidDurationSelectionMode !== "auto") return;
+    const sd = directionRecommendation.suggested_duration;
+    if ([3, 5, 7, 10, 15].includes(sd) && sd !== videoDuration) {
+      setVideoDuration(sd);
+    }
+  }, [directionRecommendation, vidDurationSelectionMode, videoDuration, setVideoDuration]);
 
   useEffect(() => {
     if (!proposalResetNonce || proposalResetNonce <= proposalResetSeenRef.current) return;
@@ -6611,33 +6960,100 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
   const getVideoSourceImageMeta = useCallback((srcUrl) => {
     if (!srcUrl) return null;
 
-    // 1. History su disco
-    const liveHistory = historyVidRef.current || [];
     const fp = filePathFromAxstudioMediaUrl(srcUrl);
-    const record = liveHistory.find(h => {
-      if (h.type !== "image") return false;
-      if (fp && h.filePath && h.filePath === fp) return true;
-      if (h.fileName && srcUrl.includes(h.fileName)) return true;
-      return false;
+    const srcNorm = normalizeFsPath(fp || srcUrl);
+    const srcBase = basenameFsPath(fp || srcUrl);
+
+    // DEBUG — rimuovere dopo indagine QA
+    console.log("[META DEBUG] srcUrl =", srcUrl);
+    console.log("[META DEBUG] fp =", fp);
+    console.log("[META DEBUG] srcNorm =", srcNorm);
+    console.log("[META DEBUG] srcBase =", srcBase);
+
+    // 1. History su disco — passata 1: path normalizzato esatto
+    const liveHistory = historyVidRef.current || [];
+    const imageRecords = liveHistory.filter(h => historyRecordIsImage(h));
+
+    // DEBUG — primi 5 record image
+    imageRecords.slice(0, 5).forEach((h, i) => {
+      const hPath = h.filePath || h.path || "";
+      console.log(`[META DEBUG] history[${i}] fileName="${h.fileName}" path="${hPath}" normPath="${normalizeFsPath(hPath)}" base="${basenameFsPath(hPath)}"`);
     });
+
+    let record = null;
+
+    // Match 1: path normalizzato esatto
+    if (srcNorm) {
+      record = imageRecords.find(h => {
+        const hPath = h.filePath || h.path;
+        return hPath && normalizeFsPath(hPath) === srcNorm;
+      });
+      if (record) console.log("[META DEBUG] MATCH via normalized path");
+    }
+
+    // Match 2: basename esatto
+    if (!record && srcBase) {
+      record = imageRecords.find(h => {
+        const hBase = h.fileName || basenameFsPath(h.filePath || h.path || "");
+        return hBase && hBase === srcBase;
+      });
+      if (record) console.log("[META DEBUG] MATCH via basename exact");
+    }
+
+    // Match 3: fallback substring (solo se fileName in srcUrl)
+    if (!record) {
+      record = imageRecords.find(h => {
+        return h.fileName && srcUrl.includes(h.fileName);
+      });
+      if (record) console.log("[META DEBUG] MATCH via substring fallback");
+    }
+
     if (record) {
+      console.log("[META DEBUG] FOUND record: fileName=" + record.fileName + " filePath=" + (record.filePath || record.path || "").slice(0, 80) + " selectedStyles=" + JSON.stringify(record.params?.selectedStyles) + " promptSnippet=" + (record.prompt || "").slice(0, 80));
       return {
         selectedStyles: record.params?.selectedStyles,
         prompt: record.params?.promptEN || record.prompt,
+        promptFull: record.prompt,
         userIdea: record.params?.userIdea,
+        template: record.params?.template,
       };
     }
 
     // 2. SessionPromptMap (immagini live/sessione non ancora salvate o appena salvate)
-    const sessionMeta = imgSessionPromptMap?.current?.get(srcUrl);
-    if (sessionMeta) {
-      return {
-        selectedStyles: sessionMeta.savedStyles,
-        prompt: sessionMeta.promptEN,
-        userIdea: sessionMeta.userIdea,
-      };
+    const spm = imgSessionPromptMap?.current;
+    if (spm) {
+      // DEBUG — chiavi sessionPromptMap
+      let spmIdx = 0;
+      for (const [key] of spm) {
+        if (spmIdx >= 5) break;
+        const kp = filePathFromAxstudioMediaUrl(key);
+        console.log(`[META DEBUG] spm[${spmIdx}] key="${key.slice(0, 80)}" decodedPath="${normalizeFsPath(kp || key)}"`);
+        spmIdx++;
+      }
+
+      let sessionMeta = spm.get(srcUrl);
+      if (!sessionMeta) {
+        for (const [key, val] of spm) {
+          const kp = filePathFromAxstudioMediaUrl(key);
+          const keyNorm = normalizeFsPath(kp || key);
+          if (srcNorm && keyNorm && keyNorm === srcNorm) { sessionMeta = val; console.log("[META DEBUG] MATCH spm via normalized path"); break; }
+          const keyBase = basenameFsPath(kp || key);
+          if (srcBase && keyBase && keyBase === srcBase) { sessionMeta = val; console.log("[META DEBUG] MATCH spm via basename"); break; }
+        }
+      } else {
+        console.log("[META DEBUG] MATCH spm via exact key");
+      }
+      if (sessionMeta) {
+        console.log("[META DEBUG] FOUND in spm: savedStyles=" + JSON.stringify(sessionMeta.savedStyles) + " promptSnippet=" + (sessionMeta.promptEN || "").slice(0, 80));
+        return {
+          selectedStyles: sessionMeta.savedStyles,
+          prompt: sessionMeta.promptEN,
+          userIdea: sessionMeta.userIdea,
+        };
+      }
     }
 
+    console.log("[META DEBUG] NOT FOUND — no match in history (" + imageRecords.length + " image records) or spm (" + (spm?.size ?? 0) + " keys)");
     return null;
   }, [imgSessionPromptMap]);
 
@@ -6649,10 +7065,13 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
 
     if (!sourceImg) {
       setVisualStyleSuggestion(null);
+      setSelectedVideoStyles([]);
+      setVidStyleSelectionMode("auto");
+      vidStyleManualOverrideForSourceRef.current = null;
+      sourceImgFilenameRef.current = null;
       return;
     }
 
-    // Se l'immagine e diversa da quella con override manuale, resetta a auto
     const isNewImage = sourceImg !== vidStyleManualOverrideForSourceRef.current;
     if (isNewImage && vidStyleSelectionMode === "manual") {
       setVidStyleSelectionMode("auto");
@@ -6661,13 +7080,58 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
 
     const effectiveMode = isNewImage ? "auto" : vidStyleSelectionMode;
 
+    // ── 1. Metadata interni AXSTUDIO (priorità assoluta) ──
     const meta = getVideoSourceImageMeta(sourceImg);
     const result = meta ? resolveVideoPresetFromImageMeta(meta) : null;
-    setVisualStyleSuggestion(result);
 
-    if (result && effectiveMode === "auto") {
-      setSelectedVideoStyles([result.presetId]);
+    // DEBUG — rimuovere dopo indagine QA
+    console.log("[ASPETTO DEBUG]", {
+      sourceImg: sourceImg?.slice(0, 80),
+      metaFound: !!meta,
+      meta: meta ? { selectedStyles: meta.selectedStyles, prompt: meta.prompt?.slice(0, 100), promptFull: meta.promptFull?.slice(0, 100), userIdea: meta.userIdea?.slice(0, 100), template: meta.template } : null,
+      result,
+      effectiveMode,
+      filenameRef: sourceImgFilenameRef.current,
+    });
+
+    if (result) {
+      setVisualStyleSuggestion(result);
+      if (effectiveMode === "auto" && result.confidence !== "low") {
+        setSelectedVideoStyles([result.presetId]);
+      }
+      return;
     }
+
+    // ── 2. Fallback per immagini esterne ──
+    // 2a. Euristica filename (sincrona, istantanea)
+    const fnResult = resolveVideoPresetFromFilename(sourceImgFilenameRef.current);
+    if (fnResult) {
+      const suggestion = { ...fnResult, source: "filename", reason_it: "Rilevato dal nome del file." };
+      setVisualStyleSuggestion(suggestion);
+      if (effectiveMode === "auto" && fnResult.confidence === "high") {
+        setSelectedVideoStyles([fnResult.presetId]);
+      }
+      return;
+    }
+
+    // 2b. Classificazione visiva via LLM (asincrona, solo per data: URL)
+    if (sourceImg.startsWith("data:image")) {
+      setVisualStyleSuggestion(null);
+      const ticket = ++visionClassifyTicketRef.current;
+      const capturedSourceImg = sourceImg;
+      classifyExternalImageStyle(sourceImg).then(visionResult => {
+        if (ticket !== visionClassifyTicketRef.current) return;
+        if (prevSourceImgRef.current !== capturedSourceImg) return;
+        if (!visionResult) return;
+        setVisualStyleSuggestion(visionResult);
+        if (vidStyleManualOverrideForSourceRef.current == null && visionResult.confidence === "high") {
+          setSelectedVideoStyles([visionResult.presetId]);
+        }
+      });
+      return;
+    }
+
+    setVisualStyleSuggestion(null);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sourceImg, getVideoSourceImageMeta]);
 
@@ -6692,7 +7156,7 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
     const promptIT = record.params?.promptIT || "";
     const idea = record.params?.userIdea || "";
     const promptEN = record.params?.promptEN || record.prompt || "";
-    const textForField = promptIT || idea || promptEN;
+    const textForField = promptIT || idea || "";
     setVideoPrompt(textForField || "");
     if (textForField) {
       setRecallVideoFeedback(null);
@@ -6752,6 +7216,7 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
   const handleFile = e => {
     const f = e.target.files?.[0];
     if (!f) return;
+    sourceImgFilenameRef.current = f.name || null;
     const r = new FileReader();
     r.onload = ev => {
       if (!useProjectImagePicker) setInternalPickerEntryId(null);
@@ -6763,6 +7228,7 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
   const handleGallerySelection = ent => {
     if (useProjectImagePicker) {
       onPickerImageChange(ent);
+      if (ent) setVideoLibraryOpen(false);
       return;
     }
     setInternalPickerEntryId(ent?.id ?? null);
@@ -6772,6 +7238,7 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
     }
     const url = resolveGalleryEntryDisplayUrl(ent);
     if (url) setSourceImg(url);
+    setVideoLibraryOpen(false);
   };
 
   const generateVideo = async () => {
@@ -7149,7 +7616,7 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
         setEditableVideoIT(out.prompt_it);
         setVideoPromptManuallyEdited(false);
         if (dirRecDebounceRef.current) { clearTimeout(dirRecDebounceRef.current); dirRecDebounceRef.current = null; }
-        dirRecLastInputRef.current = `${videoPrompt.trim()}|${(selectedVideoStyles || []).join(",")}|${videoDuration}`;
+        dirRecLastInputRef.current = `${videoPrompt.trim()}|${(selectedVideoStyles || []).join(",")}`;
         void fetchDirectionRecommendation(videoPrompt.trim(), out.prompt_en);
       } else {
         setTranslateVideoErr("Tutti i modelli LLM non disponibili. Puoi generare direttamente con il tuo prompt.");
@@ -7175,7 +7642,7 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
         setEditableVideoIT(out.prompt_it);
         setVideoPromptManuallyEdited(false);
         if (dirRecDebounceRef.current) { clearTimeout(dirRecDebounceRef.current); dirRecDebounceRef.current = null; }
-        dirRecLastInputRef.current = `${videoPrompt.trim()}|${(selectedVideoStyles || []).join(",")}|${videoDuration}`;
+        dirRecLastInputRef.current = `${videoPrompt.trim()}|${(selectedVideoStyles || []).join(",")}`;
         void fetchDirectionRecommendation(editableVideoIT.trim(), out.prompt_en);
       } else {
         setTranslateVideoErr("Tutti i modelli LLM non disponibili. Riprova più tardi.");
@@ -7234,11 +7701,13 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
         setEditableClips(result.clips.map(clip => ({
           scene: clip.scene || 0,
           duration: String(clip.duration || "5"),
+          _aiDuration: String(clip.duration || "5"),
           prompt_en: clip.prompt_en || "",
           prompt_it: clip.prompt_it || "",
           camera: clip.camera || "",
           notes: clip.notes || "",
           _modified: false,
+          _durationModified: false,
         })));
         setScreenplaySummary(result.summary_it || "");
       } else {
@@ -7259,6 +7728,8 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
     setEditableVideoIT("");
     setTranslateVideoErr("");
     setEditableClips([]);
+    const prevDurMode = vidDurationSelectionMode;
+    setVidDurationSelectionMode("manual");
 
     const spId = `sp_${Date.now()}`;
     const spName = screenplaySummary || videoPrompt.trim().slice(0, 60) || "Sceneggiatura";
@@ -7286,6 +7757,7 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
       await generateVideo();
     }
     vidScreenplayCtxRef.current = null;
+    setVidDurationSelectionMode(prevDurMode);
     setVideoStatus(`✅ ${clips.length} clip generati!`);
     setTimeout(() => setVideoStatus(""), 3000);
   };
@@ -7347,6 +7819,16 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
               const alreadySelected = selectedVideoStyles.includes(suggId);
               const suggPreset = VIDEO_VISUAL_STYLE_PRESETS.find(p => p.id === suggId);
               if (!suggPreset) return null;
+              const src = visualStyleSuggestion.source;
+              const reasonText = src === "vision"
+                ? (visualStyleSuggestion.reason_it || "Stile rilevato dall'analisi visiva dell'immagine.")
+                : src === "filename"
+                  ? "Rilevato dal nome del file."
+                  : src === "promptFullKeyword"
+                    ? "Rilevato dal prompt di generazione dell'immagine."
+                    : src === "promptKeyword" || src === "promptTag"
+                      ? "Rilevato dal testo usato per generare l'immagine."
+                      : "L'immagine sorgente è stata creata con questo stile.";
               return (
                 <div style={{ marginBottom: 12, padding: "10px 14px", borderRadius: 10, background: "rgba(255,179,71,0.06)", border: "1px solid rgba(255,179,71,0.18)" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: alreadySelected ? 0 : 8 }}>
@@ -7361,7 +7843,7 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
                         </button>
                       </div>
                       <p style={{ margin: 0, fontSize: 11, color: AX.muted, lineHeight: 1.5, fontStyle: "italic" }}>
-                        L'immagine sorgente è stata creata con questo stile.
+                        {reasonText}
                       </p>
                     </>
                   )}
@@ -7493,6 +7975,21 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
                           {rec.reason_it}
                         </p>
                       )}
+                      {videoMode === "single" && rec.suggested_duration && (
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, paddingTop: 8, borderTop: "1px solid rgba(79,216,255,0.1)" }}>
+                          <span style={{ fontSize: 10, fontWeight: 700, color: AX.electric, textTransform: "uppercase", letterSpacing: "0.06em" }}>Durata consigliata dalla scena</span>
+                          {(() => {
+                            const sd = rec.suggested_duration;
+                            const isActive = videoDuration === sd && vidDurationSelectionMode === "auto";
+                            return (
+                              <button type="button" onClick={() => { setVideoDuration(sd); setVidDurationSelectionMode("auto"); }} style={{ padding: "3px 10px", borderRadius: 8, border: `1.5px solid ${isActive ? AX.electric : "rgba(79,216,255,0.35)"}`, background: isActive ? "rgba(79,216,255,0.18)" : "rgba(79,216,255,0.08)", color: isActive ? AX.electric : AX.text2, fontSize: 12, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", gap: 4, transition: "all 0.15s ease" }}>
+                                {sd}s {isActive && <span style={{ fontSize: 10 }}>✓</span>}
+                              </button>
+                            );
+                          })()}
+                          {rec.duration_reason_it && <span style={{ fontSize: 10, color: AX.muted, fontStyle: "italic", flex: 1 }}>{rec.duration_reason_it}</span>}
+                        </div>
+                      )}
                     </>
                   );
                 })()}
@@ -7563,10 +8060,18 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
           {videoMode === "single" && (<>
             <div style={{ width: 1, alignSelf: "stretch", background: AX.border, margin: "0 14px", flexShrink: 0 }} />
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              <span style={{ fontSize: 10, color: AX.muted, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em" }}>Durata</span>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <span style={{ fontSize: 10, color: AX.muted, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em" }}>Durata</span>
+                {directionRecommendation?.suggested_duration && directionRecommendation.suggested_duration !== videoDuration && vidDurationSelectionMode === "manual" && (
+                  <span style={{ fontSize: 9, color: AX.electric, fontWeight: 600, opacity: 0.85 }}>
+                    AI: {directionRecommendation.suggested_duration}s
+                    <span role="button" tabIndex={0} onClick={() => { setVideoDuration(directionRecommendation.suggested_duration); setVidDurationSelectionMode("auto"); }} onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { setVideoDuration(directionRecommendation.suggested_duration); setVidDurationSelectionMode("auto"); } }} style={{ marginLeft: 4, cursor: "pointer", textDecoration: "underline", opacity: 0.8 }}>usa</span>
+                  </span>
+                )}
+              </div>
               <div style={{ display: "flex", gap: 5 }}>
                 {[3, 5, 7, 10, 15].map(s => (
-                  <button key={s} type="button" onClick={() => setVideoDuration(s)} style={{ padding: "6px 10px", borderRadius: 8, fontSize: 11, fontWeight: 600, border: "1px solid", cursor: "pointer", borderColor: videoDuration === s ? AX.magenta : AX.border, background: videoDuration === s ? "rgba(255,79,163,0.18)" : "transparent", color: videoDuration === s ? AX.magenta : AX.muted }}>{s}s</button>
+                  <button key={s} type="button" onClick={() => { setVideoDuration(s); setVidDurationSelectionMode("manual"); }} style={{ padding: "6px 10px", borderRadius: 8, fontSize: 11, fontWeight: 600, border: "1px solid", cursor: "pointer", borderColor: videoDuration === s ? AX.magenta : AX.border, background: videoDuration === s ? "rgba(255,79,163,0.18)" : "transparent", color: videoDuration === s ? AX.magenta : AX.muted }}>{s}s</button>
                 ))}
               </div>
             </div>
@@ -7696,13 +8201,18 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
                             <button
                               key={d}
                               type="button"
-                              onClick={() => setEditableClips(prev => prev.map((c, j) => j === i ? { ...c, duration: d } : c))}
+                              onClick={() => setEditableClips(prev => prev.map((c, j) => j === i ? { ...c, duration: d, _durationModified: d !== (c._aiDuration || "5") } : c))}
                               style={{ padding: "2px 7px", borderRadius: 10, border: `1px solid ${clip.duration === d ? AX.electric : AX.border}`, background: clip.duration === d ? "rgba(41,182,255,0.15)" : "transparent", color: clip.duration === d ? AX.electric : AX.muted, fontSize: 10, fontWeight: clip.duration === d ? 700 : 400, cursor: "pointer" }}
                             >
                               {d}s
                             </button>
                           ))}
                         </div>
+                        {clip._durationModified && clip._aiDuration && (
+                          <span style={{ fontSize: 9, color: AX.gold, fontWeight: 600, opacity: 0.8 }} title={`Durata AI originale: ${clip._aiDuration}s`}>
+                            (AI: {clip._aiDuration}s)
+                          </span>
+                        )}
                         <button
                           type="button"
                           onClick={() => setEditableClips(prev => prev.filter((_, j) => j !== i))}
@@ -7817,16 +8327,28 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
                 : <><HiSparkles size={15} style={{ color: AX.gold }} />Prepara prompt</>}
             </button>
             {/* Genera Video — primario */}
-            <button
-              type="button"
-              onClick={() => { void generateVideo(); }}
-              disabled={generating || !videoPrompt.trim()}
-              style={{ flex: "1.6 1 0", padding: "13px 20px", borderRadius: 12, border: "none", background: generating || !videoPrompt.trim() ? AX.surface : "linear-gradient(135deg, #FF4FA3 0%, #7B4DFF 100%)", color: generating || !videoPrompt.trim() ? AX.muted : "#fff", fontWeight: 800, fontSize: 14, cursor: generating || !videoPrompt.trim() ? "not-allowed" : "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 7, minHeight: 46, boxShadow: generating || !videoPrompt.trim() ? "none" : "0 8px 28px rgba(255,79,163,0.3)", transition: "all 0.15s ease" }}
-            >
-              {generating
-                ? <><div style={{ width: 14, height: 14, border: "2px solid rgba(255,255,255,0.2)", borderTopColor: "#fff", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />{videoStatus || "Generazione…"}</>
-                : <>{"🎬 Genera Video"}</>}
-            </button>
+            {(() => {
+              const noDirection = !selectedDirectionStyles || selectedDirectionStyles.length === 0;
+              const btnDisabled = generating || !videoPrompt.trim() || noDirection;
+              const btnTitle = noDirection
+                ? (directionRecLoading
+                    ? "Attendi il suggerimento di regia oppure selezionane una manualmente."
+                    : "Seleziona una regia prima di generare il video.")
+                : undefined;
+              return (
+                <button
+                  type="button"
+                  onClick={() => { void generateVideo(); }}
+                  disabled={btnDisabled}
+                  title={btnTitle}
+                  style={{ flex: "1.6 1 0", padding: "13px 20px", borderRadius: 12, border: "none", background: btnDisabled ? AX.surface : "linear-gradient(135deg, #FF4FA3 0%, #7B4DFF 100%)", color: btnDisabled ? AX.muted : "#fff", fontWeight: 800, fontSize: 14, cursor: btnDisabled ? "not-allowed" : "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 7, minHeight: 46, boxShadow: btnDisabled ? "none" : "0 8px 28px rgba(255,79,163,0.3)", transition: "all 0.15s ease" }}
+                >
+                  {generating
+                    ? <><div style={{ width: 14, height: 14, border: "2px solid rgba(255,255,255,0.2)", borderTopColor: "#fff", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />{videoStatus || "Generazione…"}</>
+                    : <>{"🎬 Genera Video"}</>}
+                </button>
+              );
+            })()}
           </>) : (
             /* Analizza Sceneggiatura */
             <button
@@ -7848,15 +8370,25 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
         <div style={{ marginTop: 14, padding: 14, borderRadius: 12, background: "rgba(123,77,255,0.06)", border: "1px solid rgba(123,77,255,0.22)", flexShrink: 0 }}>
           {/* Header progetto */}
           <div style={{ marginBottom: 12 }}>
-            <div style={{ fontSize: 14, fontWeight: 700, color: AX.text, marginBottom: 4 }}>
-              📜 Sceneggiatura — {editableClips.length} clip
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+              <span style={{ fontSize: 14, fontWeight: 700, color: AX.text }}>
+                📜 Sceneggiatura — {editableClips.length} clip
+              </span>
+              <span style={{ fontSize: 9, fontWeight: 700, color: AX.electric, background: "rgba(79,216,255,0.12)", border: "1px solid rgba(79,216,255,0.25)", padding: "2px 7px", borderRadius: 10, letterSpacing: "0.06em" }}>AI</span>
             </div>
             {screenplaySummary && (
               <div style={{ fontSize: 11, color: AX.text2, marginBottom: 6, lineHeight: 1.45 }}>{screenplaySummary}</div>
             )}
-            <div style={{ fontSize: 11, color: AX.muted }}>
-              Durata totale: {editableClips.reduce((s, c) => s + parseInt(c.duration || "5", 10), 0)}s
-              {" — "}costo stimato: ~${(editableClips.reduce((s, c) => s + parseInt(c.duration || "5", 10), 0) * 0.112).toFixed(2)}
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              <span style={{ fontSize: 11, color: AX.muted }}>
+                Durata totale: {editableClips.reduce((s, c) => s + parseInt(c.duration || "5", 10), 0)}s
+                {" — "}costo stimato: ~${(editableClips.reduce((s, c) => s + parseInt(c.duration || "5", 10), 0) * 0.112).toFixed(2)}
+              </span>
+              {editableClips.some(c => c._durationModified) && (
+                <button type="button" onClick={() => setEditableClips(prev => prev.map(c => ({ ...c, duration: c._aiDuration || c.duration, _durationModified: false })))} style={{ fontSize: 9, color: AX.electric, background: "none", border: `1px solid rgba(79,216,255,0.3)`, borderRadius: 8, padding: "2px 8px", cursor: "pointer", fontWeight: 600 }}>
+                  ↺ Ripristina durate AI
+                </button>
+              )}
             </div>
           </div>
 
@@ -7873,11 +8405,16 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
                     <button
                       key={d}
                       type="button"
-                      onClick={() => setEditableClips(prev => prev.map((c, j) => j === i ? { ...c, duration: d } : c))}
+                      onClick={() => setEditableClips(prev => prev.map((c, j) => j === i ? { ...c, duration: d, _durationModified: d !== (c._aiDuration || "5") } : c))}
                       style={{ padding: "1px 7px", borderRadius: 10, border: `1px solid ${clip.duration === d ? AX.electric : AX.border}`, background: clip.duration === d ? "rgba(41,182,255,0.15)" : "transparent", color: clip.duration === d ? AX.electric : AX.muted, fontSize: 9, fontWeight: clip.duration === d ? 700 : 400, cursor: "pointer" }}
                     >{d}s</button>
                   ))}
                 </div>
+                {clip._durationModified && clip._aiDuration && (
+                  <span style={{ fontSize: 9, color: AX.gold, fontWeight: 600, opacity: 0.8 }} title={`Durata AI originale: ${clip._aiDuration}s`}>
+                    (AI: {clip._aiDuration}s)
+                  </span>
+                )}
                 {clip.camera && (
                   <span style={{ fontSize: 9, color: AX.muted, fontStyle: "italic", marginLeft: "auto", maxWidth: 140, textAlign: "right", lineHeight: 1.3 }}>
                     🎥 {clip.camera}

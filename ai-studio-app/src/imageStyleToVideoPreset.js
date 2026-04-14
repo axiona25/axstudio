@@ -273,6 +273,30 @@ function resolveOne(raw) {
  * @param {string}   [metadata.userIdea]       - idea utente in italiano
  * @returns {{ presetId: string, confidence: "high"|"medium"|"low", source: string } | null}
  */
+const PROMPT_KEYWORD_BLOCKLIST = new Set([
+  "photo", "film", "neon", "magic", "oil", "retro", "analog",
+  "sketch", "animated", "animation", "enchanted", "gothic",
+  "bw", "3d", "sprite",
+]);
+
+const PROMPT_KEYWORD_ENTRIES = Object.entries(ALIAS_MAP)
+  .filter(([alias]) => alias.length >= 4 && !PROMPT_KEYWORD_BLOCKLIST.has(alias))
+  .sort((a, b) => b[0].length - a[0].length);
+
+function scanKeywords(text) {
+  if (!text || text.length < 4) return null;
+  const lower = text.toLowerCase();
+  for (const [alias, target] of PROMPT_KEYWORD_ENTRIES) {
+    const idx = lower.indexOf(alias);
+    if (idx === -1) continue;
+    const before = idx > 0 ? lower[idx - 1] : " ";
+    const after = idx + alias.length < lower.length ? lower[idx + alias.length] : " ";
+    if (/\w/.test(before) || /\w/.test(after)) continue;
+    return target;
+  }
+  return null;
+}
+
 export function resolveVideoPresetFromImageMeta(metadata) {
   if (!metadata || typeof metadata !== "object") return null;
 
@@ -286,8 +310,15 @@ export function resolveVideoPresetFromImageMeta(metadata) {
     }
   }
 
-  // ── 2. Tag @ nel prompt ──
+  // ── 2. Template scena (se riconoscibile come stile) ──
+  if (metadata.template) {
+    const r = resolveOne(metadata.template);
+    if (r) return { presetId: r.presetId, confidence: "medium", source: "template" };
+  }
+
   const prompts = [metadata.prompt, metadata.userIdea].filter(Boolean).join(" ");
+
+  // ── 3. Tag @ nel prompt ──
   const tagMatch = prompts.match(/@(\w+)/g);
   if (tagMatch) {
     for (const tag of tagMatch) {
@@ -296,7 +327,17 @@ export function resolveVideoPresetFromImageMeta(metadata) {
     }
   }
 
-  // ── 3. Nessun mapping affidabile ──
+  // ── 4. Keyword stilistiche nel prompt utente (senza @) ──
+  const kw = scanKeywords(prompts);
+  if (kw) return { presetId: kw, confidence: "medium", source: "promptKeyword" };
+
+  // ── 5. Keyword stilistiche nel prompt completo iniettato (contiene prefissi stile) ──
+  if (metadata.promptFull && metadata.promptFull !== metadata.prompt) {
+    const kwFull = scanKeywords(metadata.promptFull);
+    if (kwFull) return { presetId: kwFull, confidence: "low", source: "promptFullKeyword" };
+  }
+
+  // ── 6. Nessun mapping affidabile ──
   return null;
 }
 
@@ -329,6 +370,42 @@ export function resolveVideoPresetsFromStyleIds(styleIds) {
     }
   }
   return results;
+}
+
+/**
+ * Tenta di inferire il preset video dal nome file di un'immagine esterna.
+ * Cerca keyword stilistiche nel filename (senza estensione).
+ *
+ * @param {string} filename - nome file (es. "my_anime_hero.png")
+ * @returns {{ presetId: string, confidence: "medium" } | null}
+ */
+const FILENAME_GENERIC_BLOCKLIST = new Set([
+  "photo", "image", "img", "pic", "picture", "shot", "screenshot",
+  "screen", "frame", "file", "scan", "capture", "copy", "final",
+  "draft", "edit", "new", "old", "test", "tmp", "temp",
+  "neon", "magic",
+]);
+
+export function resolveVideoPresetFromFilename(filename) {
+  if (!filename || typeof filename !== "string") return null;
+  const base = filename.replace(/\.[^.]+$/, "");
+  const key = normalizeKey(base);
+  if (!key || key.length < 3) return null;
+
+  const tokens = key.split(/\s+/);
+  for (const token of tokens) {
+    if (token.length < 3 || FILENAME_GENERIC_BLOCKLIST.has(token)) continue;
+    const hit = ALIAS_MAP[token];
+    if (hit) return { presetId: hit, confidence: "medium" };
+  }
+
+  for (const [alias, target] of Object.entries(ALIAS_MAP)) {
+    if (alias.length >= 5 && !FILENAME_GENERIC_BLOCKLIST.has(alias) && key.includes(alias)) {
+      return { presetId: target, confidence: "medium" };
+    }
+  }
+
+  return null;
 }
 
 // ── Esportazioni per testing ──
