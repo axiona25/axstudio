@@ -157,6 +157,14 @@ export default function VideoEditor({ projectName, projectMedia, history, mediaF
       if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || e.target.tagName === "SELECT") return;
       const mod = e.metaKey || e.ctrlKey;
 
+      if (mod && e.code === "KeyA") {
+        e.preventDefault();
+        const allIds = [];
+        timeline.tracks.forEach(t => t.clips.forEach(c => allIds.push(c.id)));
+        if (allIds.length > 0) timeline.selectClip(null);
+        allIds.forEach(id => timeline.toggleSelectClip(id, true));
+        return;
+      }
       if (mod && e.code === "KeyS") { e.preventDefault(); handleSaveProject(); return; }
       if (mod && e.code === "KeyZ" && e.shiftKey) { e.preventDefault(); timeline.redo(); return; }
       if (mod && e.code === "KeyZ") { e.preventDefault(); timeline.undo(); return; }
@@ -174,7 +182,8 @@ export default function VideoEditor({ projectName, projectMedia, history, mediaF
             timeline.splitClip(timeline.selectedClipId, timeline.playheadTime);
           break;
         case "Delete": case "Backspace":
-          if (timeline.selectedClipId) timeline.removeClip(timeline.selectedClipId);
+          if (timeline.selectedClipIds.length > 1) timeline.removeSelectedClips();
+          else if (timeline.selectedClipId) timeline.removeClip(timeline.selectedClipId);
           break;
         case "ArrowLeft": e.preventDefault(); timeline.stepFrame(-1); break;
         case "ArrowRight": e.preventDefault(); timeline.stepFrame(1); break;
@@ -365,7 +374,8 @@ export default function VideoEditor({ projectName, projectMedia, history, mediaF
           if (timeline.selectedClipId) timeline.splitClip(timeline.selectedClipId, timeline.playheadTime);
         }} />
         <EditToolBtn icon={<HiTrash size={14} />} title="Elimina (Del)" onClick={() => {
-          if (timeline.selectedClipId) timeline.removeClip(timeline.selectedClipId);
+          if (timeline.selectedClipIds.length > 1) timeline.removeSelectedClips();
+          else if (timeline.selectedClipId) timeline.removeClip(timeline.selectedClipId);
         }} />
         <div style={{ width: 1, height: 18, background: AX.border, margin: "0 4px" }} />
         <EditToolBtn icon={<HiArrowUturnLeft size={14} />} title="Undo (⌘Z)" onClick={() => timeline.undo()} disabled={!timeline.canUndo} />
@@ -384,13 +394,16 @@ export default function VideoEditor({ projectName, projectMedia, history, mediaF
           isPlaying={timeline.isPlaying}
           zoom={timeline.zoom}
           scrollX={timeline.scrollX}
-          selectedClipId={timeline.selectedClipId}
+          selectedClipIds={timeline.selectedClipIds}
           totalDuration={timeline.totalDuration}
           onSeek={timeline.seekTo}
           onZoomChange={timeline.setZoom}
           onScrollChange={timeline.setScrollX}
-          onSelectClip={timeline.setSelectedClipId}
+          onToggleSelectClip={timeline.toggleSelectClip}
           onMoveClip={timeline.moveClip}
+          onBeginMultiDrag={timeline.beginMultiDrag}
+          onUpdateMultiDrag={timeline.updateMultiDrag}
+          onEndMultiDrag={timeline.endMultiDrag}
           onResizeClip={handleResizeClip}
           onSplitClip={timeline.splitClip}
           onRemoveClip={timeline.removeClip}

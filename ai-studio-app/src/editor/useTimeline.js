@@ -45,7 +45,7 @@ export function useTimeline({ fps = 30, width = 1920, height = 1080 } = {}) {
   const [isPlaying, setIsPlaying] = useState(false);
   const [zoom, setZoom] = useState(0.8);
   const [scrollX, setScrollX] = useState(0);
-  const [selectedClipId, setSelectedClipId] = useState(null);
+  const [selectedClipIds, setSelectedClipIds] = useState([]);
   const [playbackSpeed, setPlaybackSpeed] = useState(1);
   const [projectFps, setProjectFps] = useState(fps);
   const [projectResolution, setProjectResolution] = useState({ width, height });
@@ -57,6 +57,21 @@ export function useTimeline({ fps = 30, width = 1920, height = 1080 } = {}) {
   const redoStackRef = useRef([]);
   const [, setHistoryTick] = useState(0);
   const clipboardRef = useRef(null);
+
+  const selectClip = useCallback((clipId) => {
+    setSelectedClipIds(clipId ? [clipId] : []);
+  }, []);
+
+  const toggleSelectClip = useCallback((clipId, multiKey) => {
+    if (!multiKey) {
+      setSelectedClipIds(clipId ? [clipId] : []);
+      return;
+    }
+    setSelectedClipIds(prev => {
+      if (prev.includes(clipId)) return prev.filter(id => id !== clipId);
+      return [...prev, clipId];
+    });
+  }, []);
 
   const pushUndo = useCallback((snapshot) => {
     undoStackRef.current = [...undoStackRef.current.slice(-49), snapshot];
@@ -99,44 +114,61 @@ export function useTimeline({ fps = 30, width = 1920, height = 1080 } = {}) {
   }, [pushUndo]);
 
   const copyClip = useCallback(() => {
-    if (!selectedClipId) return;
+    if (selectedClipIds.length === 0) return;
+    const items = [];
     for (const t of tracks) {
-      const c = t.clips.find(cl => cl.id === selectedClipId);
-      if (c) { clipboardRef.current = { clip: JSON.parse(JSON.stringify(c)), trackId: t.id, cut: false }; return; }
-    }
-  }, [selectedClipId, tracks]);
-
-  const cutClip = useCallback(() => {
-    if (!selectedClipId) return;
-    for (const t of tracks) {
-      const c = t.clips.find(cl => cl.id === selectedClipId);
-      if (c) {
-        clipboardRef.current = { clip: JSON.parse(JSON.stringify(c)), trackId: t.id, cut: true };
-        withUndo(prev => prev.map(tr => {
-          const had = tr.clips.some(cl => cl.id === selectedClipId);
-          if (!had) return tr;
-          const remaining = tr.clips.filter(cl => cl.id !== selectedClipId);
-          const sorted = [...remaining].sort((a, b) => a.startTime - b.startTime);
-          let cursor = 0;
-          return { ...tr, clips: sorted.map(cl => { const u = { ...cl, startTime: cursor }; cursor += u.duration; return u; }) };
-        }));
-        setSelectedClipId(null);
-        return;
+      for (const c of t.clips) {
+        if (selectedClipIds.includes(c.id)) {
+          items.push({ clip: JSON.parse(JSON.stringify(c)), trackId: t.id });
+        }
       }
     }
-  }, [selectedClipId, tracks, withUndo]);
+    if (items.length > 0) clipboardRef.current = { items, cut: false };
+  }, [selectedClipIds, tracks]);
+
+  const cutClip = useCallback(() => {
+    if (selectedClipIds.length === 0) return;
+    const items = [];
+    for (const t of tracks) {
+      for (const c of t.clips) {
+        if (selectedClipIds.includes(c.id)) {
+          items.push({ clip: JSON.parse(JSON.stringify(c)), trackId: t.id });
+        }
+      }
+    }
+    if (items.length === 0) return;
+    clipboardRef.current = { items, cut: true };
+    const idsToRemove = new Set(selectedClipIds);
+    withUndo(prev => prev.map(tr => {
+      const hadAny = tr.clips.some(cl => idsToRemove.has(cl.id));
+      if (!hadAny) return tr;
+      const remaining = tr.clips.filter(cl => !idsToRemove.has(cl.id));
+      const sorted = [...remaining].sort((a, b) => a.startTime - b.startTime);
+      let cursor = 0;
+      return { ...tr, clips: sorted.map(cl => { const u = { ...cl, startTime: cursor }; cursor += u.duration; return u; }) };
+    }));
+    setSelectedClipIds([]);
+  }, [selectedClipIds, tracks, withUndo]);
 
   const pasteClip = useCallback(() => {
-    if (!clipboardRef.current) return;
-    const { clip, trackId } = clipboardRef.current;
-    const newClip = { ...clip, id: genClipId(), trackId };
+    if (!clipboardRef.current || !clipboardRef.current.items) return;
+    const { items } = clipboardRef.current;
+    const newIds = [];
     withUndo(prev => {
-      const track = prev.find(t => t.id === trackId);
-      const endTime = track ? track.clips.reduce((m, c) => Math.max(m, c.startTime + c.duration), 0) : 0;
-      newClip.startTime = endTime;
-      return prev.map(t => t.id === trackId ? { ...t, clips: [...t.clips, newClip] } : t);
+      let result = prev;
+      for (const { clip, trackId } of items) {
+        const newClip = { ...clip, id: genClipId(), trackId };
+        newIds.push(newClip.id);
+        result = result.map(t => {
+          if (t.id !== trackId) return t;
+          const endTime = t.clips.reduce((m, c) => Math.max(m, c.startTime + c.duration), 0);
+          newClip.startTime = endTime;
+          return { ...t, clips: [...t.clips, newClip] };
+        });
+      }
+      return result;
     });
-    setSelectedClipId(newClip.id);
+    setSelectedClipIds(newIds);
   }, [withUndo]);
 
   const totalDuration = tracks.reduce((max, track) => {
@@ -152,7 +184,7 @@ export function useTimeline({ fps = 30, width = 1920, height = 1080 } = {}) {
       clip.startTime = endTime;
       return prev.map(t => t.id === trackId ? { ...t, clips: [...t.clips, clip] } : t);
     });
-    setSelectedClipId(clip.id);
+    setSelectedClipIds([clip.id]);
   }, [withUndo]);
 
   const reflowTrack = useCallback((trackClips) => {
@@ -172,14 +204,24 @@ export function useTimeline({ fps = 30, width = 1920, height = 1080 } = {}) {
       if (!hadClip) return t;
       return { ...t, clips: reflowTrack(remaining) };
     }));
-    setSelectedClipId(prev => prev === clipId ? null : prev);
+    setSelectedClipIds(prev => prev.includes(clipId) ? prev.filter(id => id !== clipId) : prev);
   }, [reflowTrack, withUndo]);
 
   const updateClip = useCallback((clipId, updates) => {
     withUndo(prev => prev.map(t => {
       const hasClip = t.clips.some(c => c.id === clipId);
       if (!hasClip) return t;
-      const updated = t.clips.map(c => c.id === clipId ? { ...c, ...updates } : c);
+      const updated = t.clips.map(c => {
+        if (c.id !== clipId) return c;
+        const merged = { ...c, ...updates };
+        const isUnlimited = merged.type === "image" || merged.type === "text";
+        if (!isUnlimited && merged.duration != null) {
+          const maxDur = (merged.originalDuration || c.originalDuration || c.duration) - (merged.trimStart || 0);
+          merged.duration = Math.min(merged.duration, maxDur);
+        }
+        merged.duration = Math.max(0.2, merged.duration);
+        return merged;
+      });
       return { ...t, clips: reflowTrack(updated) };
     }));
   }, [reflowTrack, withUndo]);
@@ -202,6 +244,59 @@ export function useTimeline({ fps = 30, width = 1920, height = 1080 } = {}) {
     });
     return movedClip;
   }, [withUndo]);
+
+  const removeSelectedClips = useCallback(() => {
+    if (selectedClipIds.length === 0) return;
+    const ids = new Set(selectedClipIds);
+    withUndo(prev => prev.map(t => {
+      const hadAny = t.clips.some(c => ids.has(c.id));
+      if (!hadAny) return t;
+      return { ...t, clips: reflowTrack(t.clips.filter(c => !ids.has(c.id))) };
+    }));
+    setSelectedClipIds([]);
+  }, [selectedClipIds, reflowTrack, withUndo]);
+
+  const multiDragSnapshotRef = useRef(null);
+
+  const beginMultiDrag = useCallback(() => {
+    if (selectedClipIds.length <= 1) return;
+    const snapshot = [];
+    for (const t of tracks) {
+      for (const c of t.clips) {
+        if (selectedClipIds.includes(c.id)) {
+          snapshot.push({ id: c.id, origStart: c.startTime, origTrackId: t.id, origTrackIdx: tracks.findIndex(tr => tr.id === t.id) });
+        }
+      }
+    }
+    multiDragSnapshotRef.current = { snapshot, undoPushed: false };
+  }, [selectedClipIds, tracks]);
+
+  const updateMultiDrag = useCallback((deltaTime, deltaTrackShift) => {
+    const snap = multiDragSnapshotRef.current;
+    if (!snap || snap.snapshot.length === 0) return;
+    if (!snap.undoPushed) {
+      pushUndo(JSON.parse(JSON.stringify(tracks)));
+      snap.undoPushed = true;
+    }
+    setTracks(prev => {
+      const idsToMove = new Set(snap.snapshot.map(s => s.id));
+      let result = prev.map(t => ({ ...t, clips: t.clips.filter(c => !idsToMove.has(c.id)) }));
+      for (const s of snap.snapshot) {
+        const newStart = Math.max(0, Math.round((s.origStart + deltaTime) * 100) / 100);
+        let newIdx = Math.max(0, Math.min(result.length - 1, s.origTrackIdx + deltaTrackShift));
+        if (result[newIdx].type !== prev[s.origTrackIdx].type) newIdx = s.origTrackIdx;
+        const origClip = prev.flatMap(t => t.clips).find(c => c.id === s.id);
+        if (!origClip) continue;
+        const placed = { ...origClip, startTime: newStart, trackId: result[newIdx].id };
+        result = result.map((t, i) => i === newIdx ? { ...t, clips: [...t.clips, placed] } : t);
+      }
+      return result;
+    });
+  }, [tracks, pushUndo]);
+
+  const endMultiDrag = useCallback(() => {
+    multiDragSnapshotRef.current = null;
+  }, []);
 
   const splitClip = useCallback((clipId, splitTime) => {
     withUndo(prev => prev.map(t => {
@@ -294,13 +389,16 @@ export function useTimeline({ fps = 30, width = 1920, height = 1080 } = {}) {
     };
   }, []);
 
+  const selectedClipId = selectedClipIds.length === 1 ? selectedClipIds[0] : null;
+
   const getSelectedClip = useCallback(() => {
+    if (selectedClipIds.length !== 1) return null;
     for (const t of tracks) {
-      const clip = t.clips.find(c => c.id === selectedClipId);
+      const clip = t.clips.find(c => c.id === selectedClipIds[0]);
       if (clip) return clip;
     }
     return null;
-  }, [tracks, selectedClipId]);
+  }, [tracks, selectedClipIds]);
 
   const getClipsAtTime = useCallback((time) => {
     const result = [];
@@ -325,8 +423,8 @@ export function useTimeline({ fps = 30, width = 1920, height = 1080 } = {}) {
   const getState = useCallback(() => ({
     tracks, playheadTime, zoom, scrollX,
     projectFps, projectResolution,
-    playbackSpeed, selectedClipId,
-  }), [tracks, playheadTime, zoom, scrollX, projectFps, projectResolution, playbackSpeed, selectedClipId]);
+    playbackSpeed, selectedClipIds,
+  }), [tracks, playheadTime, zoom, scrollX, projectFps, projectResolution, playbackSpeed, selectedClipIds]);
 
   const restoreState = useCallback((state) => {
     if (state.tracks) setTracks(JSON.parse(JSON.stringify(state.tracks)));
@@ -337,7 +435,7 @@ export function useTimeline({ fps = 30, width = 1920, height = 1080 } = {}) {
     setProjectFps(state.projectFps || 30);
     setProjectResolution(state.projectResolution || { width: 1920, height: 1080 });
     setPlaybackSpeed(state.playbackSpeed || 1);
-    setSelectedClipId(state.selectedClipId || null);
+    setSelectedClipIds(state.selectedClipIds || (state.selectedClipId ? [state.selectedClipId] : []));
     setIsPlaying(false);
     if (playTimerRef.current) cancelAnimationFrame(playTimerRef.current);
     undoStackRef.current = [];
@@ -351,7 +449,7 @@ export function useTimeline({ fps = 30, width = 1920, height = 1080 } = {}) {
     setPlayheadTime(0);
     setZoom(0.8);
     setScrollX(0);
-    setSelectedClipId(null);
+    setSelectedClipIds([]);
     setIsPlaying(false);
     setPlaybackSpeed(1);
     if (playTimerRef.current) cancelAnimationFrame(playTimerRef.current);
@@ -367,12 +465,14 @@ export function useTimeline({ fps = 30, width = 1920, height = 1080 } = {}) {
     isPlaying,
     zoom, setZoom,
     scrollX, setScrollX,
-    selectedClipId, setSelectedClipId,
+    selectedClipId, selectedClipIds,
+    selectClip, toggleSelectClip,
     playbackSpeed, setPlaybackSpeed,
     projectFps, setProjectFps,
     projectResolution, setProjectResolution,
     totalDuration,
-    addClip, removeClip, updateClip, moveClip, splitClip,
+    addClip, removeClip, removeSelectedClips, updateClip, moveClip, splitClip,
+    beginMultiDrag, updateMultiDrag, endMultiDrag,
     snapTime, getSnapPoints,
     play, pause, stop, seekTo, stepFrame,
     getSelectedClip, getClipsAtTime,

@@ -62,11 +62,21 @@ function RulerBar({ zoom, scrollX, totalDuration, playheadTime, onSeek, pxPerSec
     ctx.fillStyle = "rgba(17,19,26,0.95)";
     ctx.fillRect(0, 0, w, h);
 
-    const interval = pxPerSec >= 200 ? 1 : pxPerSec >= 80 ? 2 : pxPerSec >= 40 ? 5 : 10;
-    const subInterval = interval / (pxPerSec >= 200 ? 4 : 2);
+    let majorStep, minorStep, microStep;
+    if (pxPerSec >= 300) {
+      majorStep = 1; minorStep = 0.5; microStep = 0.1;
+    } else if (pxPerSec >= 120) {
+      majorStep = 1; minorStep = 0.5; microStep = 0.1;
+    } else if (pxPerSec >= 60) {
+      majorStep = 2; minorStep = 1; microStep = 0.2;
+    } else if (pxPerSec >= 30) {
+      majorStep = 5; minorStep = 1; microStep = 0.5;
+    } else {
+      majorStep = 10; minorStep = 2; microStep = 1;
+    }
 
-    const startSec = Math.floor(scrollX / pxPerSec / interval) * interval;
-    const endSec = Math.ceil((scrollX + w) / pxPerSec / interval) * interval + interval;
+    const startSec = Math.floor(scrollX / pxPerSec / majorStep) * majorStep - majorStep;
+    const endSec = Math.ceil((scrollX + w) / pxPerSec / majorStep) * majorStep + majorStep;
 
     ctx.strokeStyle = AX.border;
     ctx.lineWidth = 1;
@@ -75,15 +85,27 @@ function RulerBar({ zoom, scrollX, totalDuration, playheadTime, onSeek, pxPerSec
     ctx.lineTo(w, h - 0.5);
     ctx.stroke();
 
-    for (let t = startSec; t <= endSec; t += subInterval) {
+    const eps = microStep * 0.01;
+    for (let t = startSec; t <= endSec; t = Math.round((t + microStep) * 1000) / 1000) {
       const x = t * pxPerSec - scrollX;
       if (x < -10 || x > w + 10) continue;
-      const isMajor = Math.abs(t % interval) < 0.001;
 
-      ctx.strokeStyle = isMajor ? AX.muted : "rgba(42,49,66,0.6)";
+      const isMajor = Math.abs(t % majorStep) < eps || Math.abs(t % majorStep - majorStep) < eps;
+      const isMinor = !isMajor && (Math.abs(t % minorStep) < eps || Math.abs(t % minorStep - minorStep) < eps);
+
+      let tickTop, color;
+      if (isMajor) {
+        tickTop = 8; color = AX.muted;
+      } else if (isMinor) {
+        tickTop = 15; color = "rgba(142,151,170,0.4)";
+      } else {
+        tickTop = 20; color = "rgba(42,49,66,0.7)";
+      }
+
+      ctx.strokeStyle = color;
       ctx.lineWidth = 1;
       ctx.beginPath();
-      ctx.moveTo(Math.round(x) + 0.5, isMajor ? 8 : 16);
+      ctx.moveTo(Math.round(x) + 0.5, tickTop);
       ctx.lineTo(Math.round(x) + 0.5, h);
       ctx.stroke();
 
@@ -163,7 +185,7 @@ const ClipBlock = memo(function ClipBlock({ clip, track, pxPerSec, scrollX, sele
         boxShadow: selected ? `0 0 12px ${AX.electric}40, inset 0 0 8px rgba(79,216,255,0.1)` : "none",
         transition: "box-shadow 0.15s ease",
       }}
-      onClick={(e) => { e.stopPropagation(); onSelect(clip.id); }}
+      onClick={(e) => { e.stopPropagation(); onSelect(clip.id, e.metaKey || e.ctrlKey); }}
       onMouseDown={(e) => { if (e.button === 0) onDragStart(e, clip); }}
       onContextMenu={(e) => { e.preventDefault(); onContextMenu?.(e, clip); }}
     >
@@ -239,7 +261,7 @@ function TrackHeader({ track, onMute, onLock }) {
   );
 }
 
-function TrackLane({ track, pxPerSec, scrollX, selectedClipId, onSelectClip, onDragStart, onResizeStart, onDrop, onContextMenu }) {
+function TrackLane({ track, pxPerSec, scrollX, selectedClipIds, onSelectClip, onDragStart, onResizeStart, onDrop, onContextMenu }) {
   const colors = TRACK_COLORS[track.type] || TRACK_COLORS.video;
   const laneRef = useRef(null);
   const [dropPreview, setDropPreview] = useState(null);
@@ -281,7 +303,7 @@ function TrackLane({ track, pxPerSec, scrollX, selectedClipId, onSelectClip, onD
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
-      onClick={() => onSelectClip(null)}
+      onClick={() => onSelectClip(null, false)}
     >
       {track.clips.map(clip => (
         <ClipBlock
@@ -290,7 +312,7 @@ function TrackLane({ track, pxPerSec, scrollX, selectedClipId, onSelectClip, onD
           track={track}
           pxPerSec={pxPerSec}
           scrollX={scrollX}
-          selected={clip.id === selectedClipId}
+          selected={(selectedClipIds || []).includes(clip.id)}
           onSelect={onSelectClip}
           onDragStart={onDragStart}
           onResizeStart={onResizeStart}
@@ -318,8 +340,9 @@ function TrackLane({ track, pxPerSec, scrollX, selectedClipId, onSelectClip, onD
 }
 
 export default function Timeline({
-  tracks, playheadTime, isPlaying, zoom, scrollX, selectedClipId, totalDuration,
-  onSeek, onZoomChange, onScrollChange, onSelectClip, onMoveClip, onResizeClip,
+  tracks, playheadTime, isPlaying, zoom, scrollX, selectedClipIds, totalDuration,
+  onSeek, onZoomChange, onScrollChange, onToggleSelectClip, onMoveClip, onResizeClip,
+  onBeginMultiDrag, onUpdateMultiDrag, onEndMultiDrag,
   onSplitClip, onRemoveClip, onDropMedia, onToggleMute, onToggleLock,
 }) {
   const containerRef = useRef(null);
@@ -352,18 +375,22 @@ export default function Timeline({
   }, [zoom, scrollX, onZoomChange, onScrollChange]);
 
   const handleDragStart = useCallback((e, clip) => {
-    const rect = e.currentTarget.getBoundingClientRect();
+    const isMulti = (selectedClipIds || []).includes(clip.id) && (selectedClipIds || []).length > 1;
     setDragging({
       clipId: clip.id,
       trackId: clip.trackId,
-      offsetX: e.clientX - rect.left,
       startMouseX: e.clientX,
       startMouseY: e.clientY,
       originalStart: clip.startTime,
       originalTrackId: clip.trackId,
+      isMulti,
     });
-    onSelectClip(clip.id);
-  }, [onSelectClip]);
+    if (isMulti) {
+      onBeginMultiDrag();
+    } else if (!(e.metaKey || e.ctrlKey)) {
+      onToggleSelectClip(clip.id, false);
+    }
+  }, [onToggleSelectClip, onBeginMultiDrag, selectedClipIds]);
 
   const handleResizeStart = useCallback((e, clip, side) => {
     setResizing({
@@ -372,6 +399,9 @@ export default function Timeline({
       startMouseX: e.clientX,
       originalStart: clip.startTime,
       originalDuration: clip.duration,
+      clipType: clip.type,
+      clipOriginalDuration: clip.originalDuration || clip.duration,
+      clipTrimStart: clip.trimStart || 0,
     });
   }, []);
 
@@ -381,34 +411,45 @@ export default function Timeline({
     const handleMouseMove = (e) => {
       if (dragging) {
         const dx = e.clientX - dragging.startMouseX;
-        const newStart = Math.max(0, dragging.originalStart + dx / pxPerSec);
-
-        let newTrackId = dragging.originalTrackId;
+        const deltaTime = dx / pxPerSec;
         const dy = e.clientY - dragging.startMouseY;
         const trackShift = Math.round(dy / TRACK_HEIGHT);
-        if (trackShift !== 0) {
-          const currentIdx = tracks.findIndex(t => t.id === dragging.originalTrackId);
-          const newIdx = Math.max(0, Math.min(tracks.length - 1, currentIdx + trackShift));
-          if (tracks[newIdx].type === tracks[currentIdx].type) {
-            newTrackId = tracks[newIdx].id;
-          }
-        }
 
-        onMoveClip(dragging.clipId, newTrackId, newStart);
+        if (dragging.isMulti) {
+          onUpdateMultiDrag(deltaTime, trackShift);
+        } else {
+          const newStart = Math.max(0, dragging.originalStart + deltaTime);
+          let newTrackId = dragging.originalTrackId;
+          if (trackShift !== 0) {
+            const currentIdx = tracks.findIndex(t => t.id === dragging.originalTrackId);
+            const newIdx = Math.max(0, Math.min(tracks.length - 1, currentIdx + trackShift));
+            if (tracks[newIdx].type === tracks[currentIdx].type) {
+              newTrackId = tracks[newIdx].id;
+            }
+          }
+          onMoveClip(dragging.clipId, newTrackId, newStart);
+        }
       }
 
       if (resizing) {
         const dx = e.clientX - resizing.startMouseX;
         const deltaSec = dx / pxPerSec;
+        const isUnlimited = resizing.clipType === "image" || resizing.clipType === "text";
+        const maxDuration = isUnlimited ? Infinity : resizing.clipOriginalDuration;
 
         if (resizing.side === "right") {
-          const newDuration = Math.max(0.2, resizing.originalDuration + deltaSec);
+          let newDuration = Math.max(0.2, resizing.originalDuration + deltaSec);
+          if (!isUnlimited) {
+            const usedByTrim = resizing.clipTrimStart;
+            newDuration = Math.min(newDuration, maxDuration - usedByTrim);
+          }
           onResizeClip(resizing.clipId, { duration: newDuration });
         } else {
           const shift = Math.min(deltaSec, resizing.originalDuration - 0.2);
           const newStart = resizing.originalStart + shift;
           const newDuration = resizing.originalDuration - shift;
           if (newStart >= 0 && newDuration >= 0.2) {
+            if (!isUnlimited && newDuration > maxDuration) return;
             onResizeClip(resizing.clipId, { startTime: newStart, duration: newDuration, trimStart: shift });
           }
         }
@@ -416,6 +457,7 @@ export default function Timeline({
     };
 
     const handleMouseUp = () => {
+      if (dragging?.isMulti) onEndMultiDrag();
       setDragging(null);
       setResizing(null);
     };
@@ -426,7 +468,7 @@ export default function Timeline({
       window.removeEventListener("mousemove", handleMouseMove);
       window.removeEventListener("mouseup", handleMouseUp);
     };
-  }, [dragging, resizing, pxPerSec, tracks, onMoveClip, onResizeClip]);
+  }, [dragging, resizing, pxPerSec, tracks, onMoveClip, onUpdateMultiDrag, onEndMultiDrag, onResizeClip]);
 
   const handleContextMenu = useCallback((e, clip) => {
     setContextMenu({ x: e.clientX, y: e.clientY, clipId: clip.id });
@@ -485,8 +527,8 @@ export default function Timeline({
                 track={track}
                 pxPerSec={pxPerSec}
                 scrollX={scrollX}
-                selectedClipId={selectedClipId}
-                onSelectClip={onSelectClip}
+                selectedClipIds={selectedClipIds}
+                onSelectClip={onToggleSelectClip}
                 onDragStart={handleDragStart}
                 onResizeStart={handleResizeStart}
                 onDrop={onDropMedia}

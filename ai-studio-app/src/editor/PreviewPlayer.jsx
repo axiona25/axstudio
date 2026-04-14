@@ -24,27 +24,26 @@ const VolumeIcon = ({ muted }) => muted
   ? <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M16.5 12A4.5 4.5 0 0014 8.18v2.24l2.45 2.45c.03-.29.05-.58.05-.87zm2.5 0c0 .94-.2 1.84-.54 2.64l1.51 1.51A8.8 8.8 0 0021 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06a8.99 8.99 0 003.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/></svg>
   : <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0014 8.18v7.64c1.48-.73 2.5-2.25 2.5-3.82zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>;
 
-function getActiveVideoClip(tracks, time) {
+function getActiveClipsByPriority(tracks, time) {
+  let videoClip = null;
+  const textClips = [];
+  let audioClip = null;
+
   for (const track of (tracks || [])) {
-    if (track.muted || track.type !== "video") continue;
+    if (track.muted) continue;
     for (const clip of track.clips) {
       if (time >= clip.startTime && time < clip.startTime + clip.duration) {
-        return clip;
+        if (track.type === "video" && !videoClip) {
+          videoClip = clip;
+        } else if (track.type === "text") {
+          textClips.push(clip);
+        } else if (track.type === "audio" && !audioClip) {
+          audioClip = clip;
+        }
       }
     }
   }
-  return null;
-}
-
-function getActiveTextClips(tracks, time) {
-  const result = [];
-  (tracks || []).forEach(track => {
-    if (track.muted || track.type !== "text") return;
-    track.clips.forEach(clip => {
-      if (time >= clip.startTime && time < clip.startTime + clip.duration) result.push(clip);
-    });
-  });
-  return result;
+  return { videoClip, textClips, audioClip };
 }
 
 export default memo(function PreviewPlayer({
@@ -59,14 +58,13 @@ export default memo(function PreviewPlayer({
   const [isMuted, setIsMuted] = useState(false);
   const [, setIsFullscreen] = useState(false);
 
-  const activeClip = getActiveVideoClip(tracks, playheadTime);
-  const activeClipId = activeClip?.id || null;
-  const activeClipSrc = activeClip?.src || "";
-  const isImageClip = activeClip?.type === "image";
-  const showVideo = !!activeClipSrc && !isImageClip;
+  const activeRef = useRef({ clipId: null, src: "" });
+  const imgCacheRef = useRef({ src: "", img: null });
 
-  const currentClipIdRef = useRef(null);
-  const loadingSrcRef = useRef("");
+  const { videoClip, textClips } = getActiveClipsByPriority(tracks, playheadTime);
+  const isVideo = videoClip && videoClip.type === "video";
+  const isImage = videoClip && videoClip.type === "image";
+  const hasVisual = !!videoClip;
 
   useEffect(() => {
     const vid = videoRef.current;
@@ -78,27 +76,30 @@ export default memo(function PreviewPlayer({
     if (vid) vid.playbackRate = playbackSpeed;
   }, [playbackSpeed]);
 
+  // --- Video element sync ---
   useEffect(() => {
     const vid = videoRef.current;
     if (!vid) return;
 
-    if (!activeClipSrc || isImageClip) {
-      vid.pause();
-      currentClipIdRef.current = null;
-      loadingSrcRef.current = "";
+    if (!isVideo) {
+      if (!vid.paused) vid.pause();
+      if (activeRef.current.clipId && activeRef.current.src) {
+        activeRef.current = { clipId: null, src: "" };
+      }
       return;
     }
 
-    const clipLocalTime = Math.max(0, playheadTime - (activeClip?.startTime || 0));
-    const clipChanged = activeClipId !== currentClipIdRef.current;
-    const srcChanged = activeClipSrc !== loadingSrcRef.current;
+    const clipSrc = videoClip.src || "";
+    const clipId = videoClip.id;
+    const clipLocalTime = Math.max(0, playheadTime - videoClip.startTime) + (videoClip.trimStart || 0);
+
+    const srcChanged = clipSrc !== activeRef.current.src;
+    const clipChanged = clipId !== activeRef.current.clipId;
 
     if (srcChanged) {
-      loadingSrcRef.current = activeClipSrc;
-      currentClipIdRef.current = activeClipId;
-      vid.src = activeClipSrc;
+      activeRef.current = { clipId, src: clipSrc };
+      vid.src = clipSrc;
       vid.load();
-
       const onReady = () => {
         vid.currentTime = Math.min(clipLocalTime, vid.duration || 9999);
         vid.playbackRate = playbackSpeed;
@@ -110,7 +111,7 @@ export default memo(function PreviewPlayer({
     }
 
     if (clipChanged) {
-      currentClipIdRef.current = activeClipId;
+      activeRef.current = { clipId, src: clipSrc };
       vid.currentTime = Math.min(clipLocalTime, vid.duration || 9999);
       if (isPlaying && vid.paused) vid.play().catch(() => {});
       return;
@@ -118,16 +119,17 @@ export default memo(function PreviewPlayer({
 
     if (isPlaying) {
       const drift = Math.abs(vid.currentTime - clipLocalTime);
-      if (drift > 0.5) vid.currentTime = clipLocalTime;
+      if (drift > 0.3) vid.currentTime = clipLocalTime;
       if (vid.paused) vid.play().catch(() => {});
     } else {
       if (!vid.paused) vid.pause();
       vid.currentTime = Math.min(clipLocalTime, vid.duration || 9999);
     }
-  }, [activeClipId, activeClipSrc, isImageClip, isPlaying, playheadTime, activeClip, playbackSpeed]);
+  }, [isVideo, videoClip, playheadTime, isPlaying, playbackSpeed]);
 
+  // --- Canvas rendering (images, text overlays, empty state) ---
   useEffect(() => {
-    if (showVideo) return;
+    if (isVideo) return;
 
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -138,27 +140,53 @@ export default memo(function PreviewPlayer({
     ctx.fillStyle = "#000";
     ctx.fillRect(0, 0, w, h);
 
-    const textClips = getActiveTextClips(tracks, playheadTime);
+    const drawTexts = () => {
+      textClips.forEach((tc, i) => {
+        ctx.fillStyle = "rgba(255,255,255,0.95)";
+        ctx.font = "bold 28px 'DM Sans', sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        const yPos = h * 0.75 + i * 40;
+        ctx.shadowColor = "rgba(0,0,0,0.7)";
+        ctx.shadowBlur = 6;
+        ctx.fillText(tc.name || "Testo", w / 2, yPos);
+        ctx.shadowBlur = 0;
+      });
+    };
 
-    if (isImageClip && activeClip?.src) {
-      const img = new Image();
-      img.crossOrigin = "anonymous";
-      img.onload = () => {
-        ctx.fillStyle = "#000";
-        ctx.fillRect(0, 0, w, h);
+    if (isImage && videoClip?.src) {
+      const cached = imgCacheRef.current;
+      if (cached.src === videoClip.src && cached.img) {
+        const img = cached.img;
         const scale = Math.min(w / img.width, h / img.height);
         const dw = img.width * scale;
         const dh = img.height * scale;
         ctx.drawImage(img, (w - dw) / 2, (h - dh) / 2, dw, dh);
-        textClips.forEach(tc => {
-          ctx.fillStyle = "rgba(255,255,255,0.95)";
-          ctx.font = "bold 24px 'DM Sans', sans-serif";
-          ctx.textAlign = "center";
-          ctx.fillText(tc.name || "Testo", w / 2, h / 2 + 60);
-        });
-      };
-      img.src = activeClip.src;
-    } else if (!activeClip) {
+        drawTexts();
+      } else {
+        const img = new Image();
+        img.crossOrigin = "anonymous";
+        img.onload = () => {
+          imgCacheRef.current = { src: videoClip.src, img };
+          ctx.fillStyle = "#000";
+          ctx.fillRect(0, 0, w, h);
+          const scale = Math.min(w / img.width, h / img.height);
+          const dw = img.width * scale;
+          const dh = img.height * scale;
+          ctx.drawImage(img, (w - dw) / 2, (h - dh) / 2, dw, dh);
+          drawTexts();
+        };
+        img.src = videoClip.src;
+      }
+      return;
+    }
+
+    if (textClips.length > 0 && !hasVisual) {
+      drawTexts();
+      return;
+    }
+
+    if (!hasVisual) {
       const grad = ctx.createLinearGradient(0, 0, w, h);
       grad.addColorStop(0, "rgba(10,10,15,1)");
       grad.addColorStop(0.5, "rgba(26,31,43,0.5)");
@@ -179,7 +207,28 @@ export default memo(function PreviewPlayer({
       ctx.fillStyle = "rgba(142,151,170,0.5)";
       ctx.fillText(`${resolution?.width || 1920}×${resolution?.height || 1080}`, w / 2, h / 2 + 14);
     }
-  }, [playheadTime, tracks, resolution, showVideo, isImageClip, activeClip]);
+  }, [playheadTime, tracks, resolution, isVideo, isImage, videoClip, textClips, hasVisual]);
+
+  // --- Text overlay on top of video ---
+  useEffect(() => {
+    if (!isVideo || textClips.length === 0) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    const w = canvas.width;
+    const h = canvas.height;
+    ctx.clearRect(0, 0, w, h);
+    textClips.forEach((tc, i) => {
+      ctx.fillStyle = "rgba(255,255,255,0.95)";
+      ctx.font = "bold 28px 'DM Sans', sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.shadowColor = "rgba(0,0,0,0.7)";
+      ctx.shadowBlur = 6;
+      ctx.fillText(tc.name || "Testo", w / 2, h * 0.75 + i * 40);
+      ctx.shadowBlur = 0;
+    });
+  }, [isVideo, textClips, playheadTime]);
 
   const handleSeekBar = useCallback((e) => {
     const rect = e.currentTarget.getBoundingClientRect();
@@ -200,6 +249,10 @@ export default memo(function PreviewPlayer({
 
   const progress = totalDuration > 0 ? (playheadTime / totalDuration) * 100 : 0;
 
+  const showVideoEl = isVideo;
+  const showCanvasBelow = !isVideo;
+  const showCanvasOverlay = isVideo && textClips.length > 0;
+
   return (
     <div ref={containerRef} style={{
       display: "flex", flexDirection: "column", height: "100%",
@@ -210,13 +263,23 @@ export default memo(function PreviewPlayer({
           ref={canvasRef}
           width={resolution?.width || 1920}
           height={resolution?.height || 1080}
-          style={{ width: "100%", height: "100%", objectFit: "contain", display: showVideo ? "none" : "block" }}
+          style={{
+            width: "100%", height: "100%", objectFit: "contain",
+            display: showCanvasBelow ? "block" : (showCanvasOverlay ? "block" : "none"),
+            position: showCanvasOverlay ? "absolute" : "relative",
+            top: 0, left: 0, zIndex: showCanvasOverlay ? 2 : 0,
+            pointerEvents: "none",
+          }}
         />
         <video
           ref={videoRef}
           muted={isMuted}
           playsInline
-          style={{ width: "100%", height: "100%", objectFit: "contain", display: showVideo ? "block" : "none", background: "#000" }}
+          style={{
+            width: "100%", height: "100%", objectFit: "contain",
+            display: showVideoEl ? "block" : "none",
+            background: "#000", position: "relative", zIndex: 1,
+          }}
         />
       </div>
 
