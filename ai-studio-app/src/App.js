@@ -1073,131 +1073,100 @@ async function falQueueRequest(endpoint, payload, onProgress) {
   }
 }
 
-async function refineWithKontext(imageUrl, appearance) {
-  if (!appearance) return imageUrl;
-  const corrections = [];
-
-  const hairDesc = appearance.hairColorDetail || appearance.hairColor || "";
-  if (hairDesc) corrections.push(`Ensure the hair color is exactly ${hairDesc}`);
-
-  const densityMap = { "Medio": "medium density, not too thick", "Sottili": "thin, not voluminous", "Radi": "thinning, sparse on top", "Diradamento": "noticeably thinning, balding" };
-  if (appearance.hairDensity && densityMap[appearance.hairDensity]) {
-    corrections.push(`Hair density should be ${densityMap[appearance.hairDensity]}`);
-  }
-
-  const skinDesc = appearance.skinDetail || "";
-  if (skinDesc) corrections.push(`Skin tone should be ${skinDesc}`);
-
-  if (appearance.beard === "Nessuna") corrections.push("Face must be completely clean shaven, no stubble");
-
-  if (appearance.ageEstimate) corrections.push(`The person should look approximately ${appearance.ageEstimate} years old`);
-
-  corrections.push("Remove any unnatural artifacts around the face");
-  corrections.push("Ensure natural skin texture and smooth transition between face and neck");
-
-  if (corrections.length === 0) return imageUrl;
-
-  const correctionPrompt = corrections.join(". ") + ". Keep everything else exactly the same — same pose, same clothing, same background, same composition. Only fix the face and hair details.";
-  console.log("[KONTEXT REFINE] Corrections:", correctionPrompt);
-
-  try {
-    const result = await falRequest("fal-ai/flux-pro/kontext/max", {
-      image_url: imageUrl,
-      prompt: correctionPrompt,
-      num_images: 1,
-      safety_tolerance: "6",
-    });
-    const refinedUrl = result?.images?.[0]?.url || result?.image?.url || null;
-    if (refinedUrl) {
-      console.log("[KONTEXT REFINE] Success:", refinedUrl.slice(0, 60));
-      return refinedUrl;
-    }
-  } catch (err) {
-    console.warn("[KONTEXT REFINE] Failed, using face-swap result:", err.message);
-  }
-  return imageUrl;
+function inferGenderFromAppearance(appearance) {
+  const g = appearance?.gender?.toLowerCase?.();
+  if (g === "male" || g === "female" || g === "non-binary") return g;
+  return "male";
 }
 
-/**
- * Applica identità facciale a un'immagine esistente via easel-ai/advanced-face-swap.
- * Usata quando l'immagine base esiste già (face-swap-only, post-update, set-insert).
- * Fallback: fal-ai/face-swap classico.
- */
-async function applyFaceIdentity(baseImageUrl, faceHttpUrl, appearance, promptHint) {
-  let resultUrl = baseImageUrl;
-  const gender = appearance?.gender === "Donna" ? "female" : "male";
+async function applyFaceIdentity(imageUrl, faceUrl, appearance, autoRefine, finalPrompt) {
+  const identityPrompt = appearance?.detailedDescription
+    ? `${finalPrompt}. The person has: ${appearance.detailedDescription}`
+    : finalPrompt;
 
+  // STEP 1: identity-first generation with fal-ai/flux-pulid
   try {
-    console.log("[FACE-ID] easel-ai/advanced-face-swap on base:", baseImageUrl.slice(0, 60));
-    console.log("[FACE-ID] face_image_0:", faceHttpUrl.slice(0, 60));
-    const swapResult = await falQueueRequest("easel-ai/advanced-face-swap", {
-      face_image_0: faceHttpUrl,
-      gender_0: gender,
-      target_image: baseImageUrl,
-      workflow_type: "target_hair",
-      upscale: false,
-    });
-    const swappedUrl = swapResult?.image?.url || null;
-    if (swappedUrl) {
-      resultUrl = swappedUrl;
-      console.log("[FACE-ID] easel-ai result:", swappedUrl.slice(0, 60));
-    }
-  } catch (err) {
-    console.warn("[FACE-ID] easel-ai failed, trying fal-ai/face-swap:", err.message);
-    try {
-      const swap = await falRequest("fal-ai/face-swap", {
-        base_image_url: baseImageUrl,
-        swap_image_url: faceHttpUrl,
-      });
-      const url = swap?.image?.url || swap?.images?.[0]?.url || null;
-      if (url) { resultUrl = url; console.log("[FACE-ID] fal-ai fallback result:", url.slice(0, 60)); }
-    } catch (e2) { console.warn("[FACE-ID] All face swap failed:", e2.message); }
-  }
-
-  if (appearance) {
-    resultUrl = await refineWithKontext(resultUrl, appearance);
-  }
-  return resultUrl;
-}
-
-/**
- * Genera un'immagine con identità facciale integrata via fal-ai/flux-pulid.
- * Usata come step principale nella creazione immagini (sostituisce FLUX Ultra + face swap).
- * Fallback: ritorna null se fallisce (il chiamante userà FLUX Ultra + applyFaceIdentity).
- */
-async function generateWithPulid(fullPrompt, faceHttpUrl, appearance, negativePrompt, imageSize) {
-  try {
-    const physDesc = appearance?.detailedDescription || appearanceToPrompt(appearance) || "";
-    const pulidPrompt = physDesc
-      ? `${fullPrompt}. The person has: ${physDesc}`
-      : fullPrompt;
-
-    console.log("[FLUX-PULID] prompt:", pulidPrompt.slice(0, 150));
-    console.log("[FLUX-PULID] reference_image_url:", faceHttpUrl.slice(0, 60));
-
-    const result = await falQueueRequest("fal-ai/flux-pulid", {
-      prompt: pulidPrompt,
-      reference_image_url: faceHttpUrl,
-      image_size: imageSize || "landscape_4_3",
-      num_inference_steps: 20,
+    const pulIdResult = await falQueueRequest("fal-ai/flux-pulid", {
+      prompt: identityPrompt,
+      reference_image_url: faceUrl,
+      image_size: "portrait_4_3",
+      num_inference_steps: 28,
       guidance_scale: 4,
-      id_weight: 1,
-      negative_prompt: negativePrompt || "bad quality, worst quality, text, signature, watermark, extra limbs, blurry, deformed face",
-      enable_safety_checker: false,
-      max_sequence_length: "512",
+      id_weight: 1.1,
+      negative_prompt: "bad quality, worst quality, distorted face, asymmetrical eyes, extra fingers, watermark, text, oversmoothed skin, gray hair, white hair",
+      enable_safety_checker: true,
+      max_sequence_length: "128",
     });
-
-    const url = result?.images?.[0]?.url || result?.image?.url || null;
-    console.log("[FLUX-PULID] result:", url?.slice(0, 60) || "null");
-    return url;
+    let resultUrl = pulIdResult?.images?.[0]?.url;
+    if (resultUrl) {
+      if (autoRefine && appearance) {
+        resultUrl = await refineWithKontext(resultUrl, appearance);
+      }
+      return resultUrl;
+    }
+    throw new Error("flux-pulid returned no image url");
   } catch (err) {
-    console.warn("[FLUX-PULID] Failed:", err.message);
-    return null;
+    console.warn("[FLUX-PULID] Failed, falling back to face swap:", err?.message || err);
+  }
+
+  // STEP 2: fallback — easel advanced face swap
+  try {
+    const swap = await falQueueRequest("easel-ai/advanced-face-swap", {
+      face_image_0: faceUrl,
+      gender_0: inferGenderFromAppearance(appearance),
+      target_image: imageUrl,
+      workflow_type: "user_hair",
+      upscale: true,
+      detailer: true,
+    });
+    return swap?.image?.url || imageUrl;
+  } catch (err) {
+    console.warn("[ADVANCED-FACE-SWAP] Failed, using legacy fallback:", err?.message || err);
+  }
+
+  // LEGACY: base face swap fallback
+  try {
+    const swap = await falRequest("fal-ai/face-swap", {
+      base_image_url: imageUrl,
+      swap_image_url: faceUrl,
+    });
+    return swap?.image?.url || imageUrl;
+  } catch (err) {
+    console.warn("[LEGACY FACE-SWAP] Failed:", err?.message || err);
+    return imageUrl;
   }
 }
 
+async function refineWithKontext(imageUrl, appearance) {
+  const refinePrompt = [
+    "Refine the image while preserving the same identity, face structure, and expression.",
+    "Only fix minor artifacts and improve realism.",
+    "Keep dark brown hair, natural skin texture, realistic nose shape, realistic jawline.",
+    "Do not change pose, framing, outfit, or facial identity.",
+    appearance?.detailedDescription
+      ? `Identity details to preserve: ${appearance.detailedDescription}.`
+      : null,
+  ].filter(Boolean).join(" ");
+
+  try {
+    const result = await falQueueRequest("fal-ai/flux-pro/kontext/max", {
+      image_url: imageUrl,
+      prompt: refinePrompt,
+      guidance_scale: 3.5,
+      num_images: 1,
+      output_format: "jpeg",
+      safety_tolerance: "2",
+      enhance_prompt: false,
+    });
+    return result?.images?.[0]?.url || imageUrl;
+  } catch (err) {
+    console.warn("[KONTEXT REFINE] Failed:", err?.message || err);
+    return imageUrl;
+  }
+}
+
+// LEGACY: generateWithPulid standalone (ora integrato in applyFaceIdentity)
 // LEGACY: IP-Adapter FaceID (rimosso in favore di flux-pulid + easel-ai/advanced-face-swap)
-// async function applyFaceIdentity_ipAdapter(...) { ... }
 
 /** Scarica un URL immagine fal.ai e ritorna una data URL base64 (per salvataggio su disco). */
 async function falImageUrlToBase64(url) {
@@ -7569,7 +7538,7 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
       const faceUrl = await uploadBase64ToFal(faceDataUri);
 
       setImageStatus("🧬 Applicazione identità facciale...");
-      let imgUrl = await applyFaceIdentity(sourceUrl, faceUrl, selectedCharacter?.appearance, prompt);
+      let imgUrl = await applyFaceIdentity(sourceUrl, faceUrl, selectedCharacter?.appearance, autoRefine, prompt);
 
       // LEGACY: doppio face swap
       // const swap1 = await falRequest("fal-ai/face-swap", { base_image_url: sourceUrl, swap_image_url: faceUrl });
@@ -8158,7 +8127,7 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
             const faceDataUri = await characterImageToDataUri(charImg).catch(() => null);
             if (faceDataUri) {
               const faceUrl = await uploadBase64ToFal(faceDataUri);
-              imgUrl = await applyFaceIdentity(imgUrl, faceUrl, selectedCharacter?.appearance, prompt);
+              imgUrl = await applyFaceIdentity(imgUrl, faceUrl, selectedCharacter?.appearance, autoRefine, prompt);
               console.log("[UPDATE FACE-ID] Applied:", imgUrl.slice(0, 80));
 
               // LEGACY: doppio face swap
@@ -8278,7 +8247,7 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
             const faceDataUri = await characterImageToDataUri(charImg).catch(() => null);
             if (faceDataUri) {
               const faceUrl = await uploadBase64ToFal(faceDataUri);
-              imgUrl = await applyFaceIdentity(imgUrl, faceUrl, selectedCharacter?.appearance, scenePrompt);
+              imgUrl = await applyFaceIdentity(imgUrl, faceUrl, selectedCharacter?.appearance, autoRefine, scenePrompt);
               console.log("[SET FACE-ID] Applied:", imgUrl.slice(0, 80));
 
               // LEGACY: doppio face swap
@@ -8324,79 +8293,41 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
         })();
 
       } else {
-        // ═══ RAMO CREATE: flux-pulid (primario) o FLUX Ultra (fallback) ═══
-        const pulidImageSize = aspect_ratio === "1:1" ? "square_hd" : aspect_ratio === "16:9" ? "landscape_16_9" : "portrait_16_9";
+        // ═══ RAMO CREATE: generazione immagine ═══
+        setImageStatus && setImageStatus("⏳ Generazione immagine...");
+        const baseResult = await falRequest("fal-ai/flux-pro/v1.1-ultra", {
+          prompt: finalPrompt,
+          ...(finalNegativePrompt ? { negative_prompt: finalNegativePrompt } : {}),
+          aspect_ratio,
+          num_images: 1,
+          enable_safety_checker: false,
+          safety_tolerance: "6",
+        });
+        const baseImageUrl = baseResult?.images?.[0]?.url || baseResult?.image?.url || null;
 
-        if (useFaceSwap) {
-          // ── Step 1: flux-pulid genera immagine CON identità facciale ──
-          setImageStatus && setImageStatus("🧬 Generazione con identità...");
-          const faceDataUri = await characterImageToDataUri(charImg).catch(() => null);
-          let faceUrl = null;
-          if (faceDataUri) faceUrl = await uploadBase64ToFal(faceDataUri);
-
-          let pulidUrl = null;
-          if (faceUrl) {
-            pulidUrl = await generateWithPulid(finalPrompt, faceUrl, selectedCharacter?.appearance, finalNegativePrompt, pulidImageSize);
-          }
-
-          if (pulidUrl) {
-            imgUrl = pulidUrl;
-            console.log("[CREATE PULID] Generated with identity:", imgUrl.slice(0, 80));
-
-            // Step 2: Kontext refine (opzionale)
-            if (autoRefine && selectedCharacter?.appearance) {
-              setImageStatus && setImageStatus("✨ Rifinitura dettagli...");
-              imgUrl = await refineWithKontext(imgUrl, selectedCharacter.appearance);
-            }
-          } else {
-            // ── Fallback: FLUX Ultra + easel-ai face swap ──
-            console.log("[CREATE PULID] Failed, falling back to FLUX Ultra + face swap");
-            setImageStatus && setImageStatus("⏳ Generazione immagine (fallback)...");
-            const baseResult = await falRequest("fal-ai/flux-pro/v1.1-ultra", {
-              prompt: finalPrompt,
-              ...(finalNegativePrompt ? { negative_prompt: finalNegativePrompt } : {}),
-              aspect_ratio,
-              num_images: 1,
-              enable_safety_checker: false,
-              safety_tolerance: "6",
-            });
-            const baseImageUrl = baseResult?.images?.[0]?.url || baseResult?.image?.url || null;
-            if (!baseImageUrl) {
-              console.error("fal.ai FLUX fallback: no image URL", baseResult);
-              setGeneratedImages(p => p.filter(x => x !== STUDIO_IMAGE_GENERATING));
-              setGenerating(false);
-              return;
-            }
-            imgUrl = baseImageUrl;
-            if (faceUrl) {
-              setImageStatus && setImageStatus("🧬 Applicazione volto (fallback)...");
-              imgUrl = await applyFaceIdentity(imgUrl, faceUrl, selectedCharacter?.appearance, resolvedEn || prompt);
-              console.log("[CREATE FALLBACK] Face applied:", imgUrl.slice(0, 80));
-            }
-          }
-        } else {
-          // ── Nessun personaggio: FLUX Ultra classico ──
-          setImageStatus && setImageStatus("⏳ Generazione immagine...");
-          const baseResult = await falRequest("fal-ai/flux-pro/v1.1-ultra", {
-            prompt: finalPrompt,
-            ...(finalNegativePrompt ? { negative_prompt: finalNegativePrompt } : {}),
-            aspect_ratio,
-            num_images: 1,
-            enable_safety_checker: false,
-            safety_tolerance: "6",
-          });
-          const baseImageUrl = baseResult?.images?.[0]?.url || baseResult?.image?.url || null;
-          if (!baseImageUrl) {
-            console.error("fal.ai FLUX: no image URL in response", baseResult);
-            setGeneratedImages(p => p.filter(x => x !== STUDIO_IMAGE_GENERATING));
-            setGenerating(false);
-            return;
-          }
-          imgUrl = baseImageUrl;
+        if (!baseImageUrl) {
+          console.error("fal.ai FLUX: no image URL in response", baseResult);
+          setGeneratedImages(p => p.filter(x => x !== STUDIO_IMAGE_GENERATING));
+          setGenerating(false);
+          return;
         }
 
-        // LEGACY: IP-Adapter FaceID pipeline
-        // imgUrl = await applyFaceIdentity(imgUrl, faceUrl, selectedCharacter?.appearance, resolvedEn || prompt);
+        imgUrl = baseImageUrl;
+
+        // ── Identità facciale: flux-pulid → easel-ai fallback → face-swap fallback ──
+        if (useFaceSwap) {
+          try {
+            setImageStatus && setImageStatus("🧬 Applicazione identità facciale...");
+            const faceDataUri = await characterImageToDataUri(charImg).catch(() => null);
+            if (faceDataUri) {
+              const faceUrl = await uploadBase64ToFal(faceDataUri);
+              imgUrl = await applyFaceIdentity(imgUrl, faceUrl, selectedCharacter?.appearance, autoRefine, finalPrompt);
+              console.log("[CREATE FACE-ID] Applied:", imgUrl.slice(0, 80));
+            }
+          } catch (faceErr) {
+            console.warn("[CREATE FACE-ID] Failed, using base image:", faceErr.message);
+          }
+        }
 
         setImageStatus && setImageStatus("✅ Completato!");
         setTimeout(() => setImageStatus && setImageStatus(""), 2000);
