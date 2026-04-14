@@ -1801,21 +1801,25 @@ async function callLLM(systemPrompt, ideaIT, scenePrefixOrOpts = "", opts = {}) 
   let temperature = 0.6;
   let maxTokens = 500;
   let validator = null;
+  let characterContext = "";
   if (typeof scenePrefixOrOpts === "object" && scenePrefixOrOpts !== null) {
     scenePrefix = scenePrefixOrOpts.scenePrefix || "";
     temperature = scenePrefixOrOpts.temperature ?? 0.6;
     maxTokens = scenePrefixOrOpts.maxTokens ?? 500;
     validator = scenePrefixOrOpts.validator || null;
+    characterContext = scenePrefixOrOpts.characterContext || "";
   } else {
     scenePrefix = scenePrefixOrOpts || "";
     temperature = opts.temperature ?? 0.6;
     maxTokens = opts.maxTokens ?? 500;
     validator = opts.validator || null;
+    characterContext = opts.characterContext || "";
   }
 
-  const userMsg = scenePrefix
+  let userMsg = scenePrefix
     ? `Scene style: ${scenePrefix}\n\nIdea: ${ideaIT}`
     : `Idea: ${ideaIT}`;
+  if (characterContext) userMsg += characterContext;
 
   for (const model of LLM_MODELS) {
     try {
@@ -1941,8 +1945,8 @@ const VIDEO_SYSTEM_PROMPT =
  * Arricchisce un'idea italiana in prompt FLUX — uncensored, fallback chain OpenRouter.
  * @returns {Promise<{ prompt_en: string, prompt_it: string } | null>}
  */
-async function translatePrompt(ideaIT, scenePrefix = "") {
-  return callLLM(IMAGE_SYSTEM_PROMPT, ideaIT, scenePrefix);
+async function translatePrompt(ideaIT, scenePrefix = "", characterContext = "") {
+  return callLLM(IMAGE_SYSTEM_PROMPT, ideaIT, scenePrefix, { characterContext });
 }
 
 /**
@@ -7056,6 +7060,12 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
   const [recallFeedback, setRecallFeedback] = useState(null);
   const recallActiveRef = useRef(false);
 
+  const charPhysicalContext = useMemo(() => {
+    const desc = appearanceToPrompt(selectedCharacter?.appearance);
+    if (!desc) return "";
+    return `\n\nCHARACTER APPEARANCE (MANDATORY — DO NOT CHANGE OR CONTRADICT THESE PHYSICAL TRAITS):\n${desc}\nYou MUST use these exact physical characteristics in the prompt. Do NOT invent different hair color, age, body type, skin color, or any other physical trait. These traits are SACRED and override any creative enrichment.`;
+  }, [selectedCharacter?.appearance]);
+
   // ── Project image update mode ──
   const appearanceSnapshotRef = useRef(null);
   const sourceImagePromptItRef = useRef(null);
@@ -7340,7 +7350,7 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
             .filter(Boolean)
             .join(", ");
           const prefix = [scenePrefixForAI(), styleContext ? `Style: ${styleContext}` : ""].filter(Boolean).join(" | ");
-          const out = await translatePrompt(currentIt, prefix);
+          const out = await translatePrompt(currentIt, prefix, charPhysicalContext);
           if (out?.prompt_en) {
             resolvedEn = out.prompt_en;
             preparedEnRef.current = { en: out.prompt_en, itSource: currentIt };
@@ -7367,6 +7377,40 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
         .map(sid => STYLE_PRESETS.find(s => s.id === sid)?.negative_prompt)
         .filter(Boolean)
         .join(", ");
+
+      // ── Sanitizzazione: rimuovi tratti fisici inventati dal LLM che contraddicono l'appearance ──
+      if (selectedCharacter?.appearance) {
+        const ap = selectedCharacter.appearance;
+        const contradictions = [];
+        if (ap.hairColor) {
+          const correctHair = appearanceToPrompt({ hairColor: ap.hairColor }).toLowerCase();
+          const wrongHairPatterns = ["grey-haired", "gray-haired", "grey hair", "gray hair", "silver hair", "white hair", "blonde hair", "blond hair", "red hair", "ginger hair", "auburn hair", "black hair", "brown hair", "dark hair", "light hair", "platinum hair"];
+          const correctKeywords = correctHair.split(/\s+/);
+          for (const pat of wrongHairPatterns) {
+            if (resolvedEn.toLowerCase().includes(pat) && !correctKeywords.some(kw => pat.includes(kw))) {
+              contradictions.push(pat);
+            }
+          }
+        }
+        if (ap.age) {
+          const wrongAgePatterns = ["elderly", "old man", "old woman", "aging", "aged", "youthful", "teenage", "young man", "young woman"];
+          const ageDesc = appearanceToPrompt({ age: ap.age }).toLowerCase();
+          for (const pat of wrongAgePatterns) {
+            if (resolvedEn.toLowerCase().includes(pat) && !ageDesc.includes(pat.split(" ")[0])) {
+              contradictions.push(pat);
+            }
+          }
+        }
+        if (contradictions.length > 0) {
+          let sanitized = resolvedEn;
+          for (const c of contradictions) {
+            sanitized = sanitized.replace(new RegExp(c, "gi"), "");
+          }
+          sanitized = sanitized.replace(/,\s*,/g, ",").replace(/\s{2,}/g, " ").trim();
+          console.log("[PROMPT SANITIZE] Removed contradicting traits:", contradictions, "from LLM output");
+          resolvedEn = sanitized;
+        }
+      }
 
       // ── Prompt scena: sempre dall'EN preparato ──
       let scenePrompt = resolvedEn;
@@ -7862,7 +7906,7 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
         .filter(Boolean)
         .join(", ");
       const prefix = [scenePrefixForAI(), styleContext ? `Style: ${styleContext}` : ""].filter(Boolean).join(" | ");
-      const out = await translatePrompt(prompt.trim(), prefix);
+      const out = await translatePrompt(prompt.trim(), prefix, charPhysicalContext);
       if (out) {
         // Salva EN internamente — la textarea IT NON viene toccata
         preparedEnRef.current = { en: out.prompt_en, itSource: prompt.trim() };
@@ -7887,7 +7931,7 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
     setTranslateErr("");
     setTranslating(true);
     try {
-      const out = await translatePrompt(editableIT.trim(), scenePrefixForAI());
+      const out = await translatePrompt(editableIT.trim(), scenePrefixForAI(), charPhysicalContext);
       if (out) {
         preparedEnRef.current = { en: out.prompt_en, itSource: editableIT.trim() };
         enIsStaleRef.current = false;
