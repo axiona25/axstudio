@@ -25,6 +25,10 @@ function createEmptyProject(name) {
     scrollX: 0,
     projectFps: 30,
     projectResolution: { width: 1920, height: 1080 },
+    playbackSpeed: 1,
+    selectedClipId: null,
+    activeTab: "media",
+    sidebarOpen: false,
   };
 }
 
@@ -45,19 +49,23 @@ export function useEditorProjects() {
     return proj;
   }, []);
 
-  const saveProject = useCallback((timelineState) => {
+  const saveProject = useCallback((editorState) => {
     if (!activeProjectId) return null;
     setProjects(prev => prev.map(p => {
       if (p.id !== activeProjectId) return p;
       return {
         ...p,
         updatedAt: new Date().toISOString(),
-        tracks: JSON.parse(JSON.stringify(timelineState.tracks)),
-        playheadTime: timelineState.playheadTime,
-        zoom: timelineState.zoom,
-        scrollX: timelineState.scrollX,
-        projectFps: timelineState.projectFps,
-        projectResolution: timelineState.projectResolution,
+        tracks: JSON.parse(JSON.stringify(editorState.tracks)),
+        playheadTime: editorState.playheadTime,
+        zoom: editorState.zoom,
+        scrollX: editorState.scrollX,
+        projectFps: editorState.projectFps,
+        projectResolution: editorState.projectResolution,
+        playbackSpeed: editorState.playbackSpeed ?? 1,
+        selectedClipId: editorState.selectedClipId ?? null,
+        activeTab: editorState.activeTab ?? "media",
+        sidebarOpen: editorState.sidebarOpen ?? false,
       };
     }));
     dirtyRef.current = false;

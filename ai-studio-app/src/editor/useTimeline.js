@@ -325,7 +325,8 @@ export function useTimeline({ fps = 30, width = 1920, height = 1080 } = {}) {
   const getState = useCallback(() => ({
     tracks, playheadTime, zoom, scrollX,
     projectFps, projectResolution,
-  }), [tracks, playheadTime, zoom, scrollX, projectFps, projectResolution]);
+    playbackSpeed, selectedClipId,
+  }), [tracks, playheadTime, zoom, scrollX, projectFps, projectResolution, playbackSpeed, selectedClipId]);
 
   const restoreState = useCallback((state) => {
     if (state.tracks) setTracks(JSON.parse(JSON.stringify(state.tracks)));
@@ -335,7 +336,8 @@ export function useTimeline({ fps = 30, width = 1920, height = 1080 } = {}) {
     setScrollX(state.scrollX || 0);
     setProjectFps(state.projectFps || 30);
     setProjectResolution(state.projectResolution || { width: 1920, height: 1080 });
-    setSelectedClipId(null);
+    setPlaybackSpeed(state.playbackSpeed || 1);
+    setSelectedClipId(state.selectedClipId || null);
     setIsPlaying(false);
     if (playTimerRef.current) cancelAnimationFrame(playTimerRef.current);
     undoStackRef.current = [];

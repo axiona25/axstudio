@@ -47,7 +47,9 @@ export default function VideoEditor({ projectName, projectMedia, history, mediaF
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [showProjectMenu, setShowProjectMenu] = useState(false);
   const [saveFlash, setSaveFlash] = useState(false);
+  const [projectMenuPos, setProjectMenuPos] = useState({ top: 0, right: 0 });
   const projectMenuRef = useRef(null);
+  const projectBtnRef = useRef(null);
 
   const addMediaBatchRef = React.useRef(mediaLib.addMediaBatch);
   addMediaBatchRef.current = mediaLib.addMediaBatch;
@@ -57,28 +59,41 @@ export default function VideoEditor({ projectName, projectMedia, history, mediaF
     }
   }, [projectMedia]);
 
+  const getFullEditorState = useCallback(() => ({
+    ...timeline.getState(),
+    activeTab,
+    sidebarOpen,
+  }), [timeline, activeTab, sidebarOpen]);
+
   const handleSaveProject = useCallback(() => {
+    const state = getFullEditorState();
     if (!editorProjects.activeProjectId) {
       const proj = editorProjects.createProject("Progetto " + new Date().toLocaleDateString("it-IT"));
-      setTimeout(() => editorProjects.saveProject(timeline.getState()), 50);
+      setTimeout(() => editorProjects.saveProject(state), 50);
       setSaveFlash(true);
       setTimeout(() => setSaveFlash(false), 1200);
       return proj;
     }
-    editorProjects.saveProject(timeline.getState());
+    editorProjects.saveProject(state);
     setSaveFlash(true);
     setTimeout(() => setSaveFlash(false), 1200);
-  }, [editorProjects, timeline]);
+  }, [editorProjects, getFullEditorState]);
 
   const handleNewProject = useCallback(() => {
     timeline.resetTimeline();
     editorProjects.closeProject();
+    setActiveTab("media");
+    setSidebarOpen(false);
     setShowProjectMenu(false);
   }, [timeline, editorProjects]);
 
   const handleLoadProject = useCallback((projectId) => {
     const proj = editorProjects.loadProject(projectId);
-    if (proj) timeline.restoreState(proj);
+    if (proj) {
+      timeline.restoreState(proj);
+      setActiveTab(proj.activeTab || "media");
+      setSidebarOpen(proj.sidebarOpen || false);
+    }
     setShowProjectMenu(false);
   }, [editorProjects, timeline]);
 
@@ -95,8 +110,13 @@ export default function VideoEditor({ projectName, projectMedia, history, mediaF
 
   useEffect(() => {
     if (!showProjectMenu) return;
+    if (projectBtnRef.current) {
+      const rect = projectBtnRef.current.getBoundingClientRect();
+      setProjectMenuPos({ top: rect.bottom + 6, right: window.innerWidth - rect.right });
+    }
     const handleClickOutside = (e) => {
-      if (projectMenuRef.current && !projectMenuRef.current.contains(e.target)) {
+      if (projectMenuRef.current && !projectMenuRef.current.contains(e.target) &&
+          projectBtnRef.current && !projectBtnRef.current.contains(e.target)) {
         setShowProjectMenu(false);
       }
     };
@@ -248,44 +268,7 @@ export default function VideoEditor({ projectName, projectMedia, history, mediaF
 
           {/* I miei progetti */}
           <div style={{ position: "relative" }}>
-            <HeaderBtn icon={<HiFolderOpen size={14} />} label="Progetti" onClick={() => setShowProjectMenu(v => !v)} active={showProjectMenu} />
-            {showProjectMenu && (
-              <div ref={projectMenuRef} style={{
-                position: "absolute", top: "calc(100% + 6px)", right: 0, zIndex: 200,
-                width: 320, maxHeight: 420, overflow: "auto",
-                background: "rgba(17,19,26,0.97)", border: `1px solid ${AX.border}`,
-                borderRadius: 12, boxShadow: "0 12px 40px rgba(0,0,0,0.6)",
-                backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)",
-              }}>
-                <div style={{
-                  padding: "12px 14px 8px", borderBottom: `1px solid ${AX.border}`,
-                  display: "flex", alignItems: "center", justifyContent: "space-between",
-                }}>
-                  <span style={{ fontSize: 12, fontWeight: 700, color: AX.text }}>I miei progetti</span>
-                  <span style={{ fontSize: 10, color: AX.muted }}>{editorProjects.projects.length} progett{editorProjects.projects.length === 1 ? "o" : "i"}</span>
-                </div>
-                {editorProjects.projects.length === 0 ? (
-                  <div style={{ padding: 24, textAlign: "center" }}>
-                    <HiFolderOpen size={28} style={{ color: AX.muted, opacity: 0.4, marginBottom: 8 }} />
-                    <div style={{ fontSize: 12, color: AX.muted }}>Nessun progetto salvato</div>
-                    <div style={{ fontSize: 10, color: AX.muted, marginTop: 4 }}>Usa "Salva" o ⌘S per creare un progetto</div>
-                  </div>
-                ) : (
-                  <div style={{ padding: "4px 6px" }}>
-                    {editorProjects.projects.map(p => (
-                      <ProjectListItem
-                        key={p.id}
-                        project={p}
-                        isActive={p.id === editorProjects.activeProjectId}
-                        onLoad={() => handleLoadProject(p.id)}
-                        onDuplicate={() => handleDuplicateProject(p.id)}
-                        onDelete={() => handleDeleteProject(p.id)}
-                      />
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
+            <HeaderBtn ref={projectBtnRef} icon={<HiFolderOpen size={14} />} label="Progetti" onClick={() => setShowProjectMenu(v => !v)} active={showProjectMenu} />
           </div>
 
           <div style={{ width: 1, height: 22, background: AX.border, margin: "0 2px" }} />
@@ -456,10 +439,89 @@ export default function VideoEditor({ projectName, projectMedia, history, mediaF
         </div>
       )}
 
+      {/* ── Progetti overlay ── */}
+      {showProjectMenu && editorProjects.projects.length <= 4 && (
+        <div ref={projectMenuRef} style={{
+          position: "fixed", top: projectMenuPos.top, right: projectMenuPos.right, zIndex: 9999,
+          width: 340, maxHeight: "min(480px, calc(100vh - 80px))", overflow: "auto",
+          background: "rgba(17,19,26,0.98)", border: `1px solid ${AX.border}`,
+          borderRadius: 12, boxShadow: "0 16px 48px rgba(0,0,0,0.7)",
+          backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)",
+        }}>
+          <ProjectListContent
+            projects={editorProjects.projects}
+            activeProjectId={editorProjects.activeProjectId}
+            onLoad={handleLoadProject}
+            onDuplicate={handleDuplicateProject}
+            onDelete={handleDeleteProject}
+          />
+        </div>
+      )}
+
+      {/* ── Progetti modale (>4 progetti) ── */}
+      {showProjectMenu && editorProjects.projects.length > 4 && (
+        <div style={{
+          position: "fixed", inset: 0, zIndex: 9999,
+          background: "rgba(0,0,0,0.6)",
+          backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          animation: "fadeIn 0.15s ease",
+        }} onClick={(e) => { if (e.target === e.currentTarget) setShowProjectMenu(false); }}>
+          <div ref={projectMenuRef} style={{
+            width: "min(520px, 90vw)", maxHeight: "min(600px, 80vh)",
+            background: "rgba(17,19,26,0.98)", border: `1px solid ${AX.border}`,
+            borderRadius: 16, boxShadow: "0 24px 64px rgba(0,0,0,0.8)",
+            backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)",
+            display: "flex", flexDirection: "column",
+            animation: "scaleIn 0.2s ease",
+          }}>
+            <div style={{
+              padding: "16px 20px 12px", borderBottom: `1px solid ${AX.border}`,
+              display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0,
+            }}>
+              <div>
+                <span style={{ fontSize: 15, fontWeight: 700, color: AX.text }}>I miei progetti</span>
+                <span style={{ fontSize: 11, color: AX.muted, marginLeft: 10 }}>
+                  {editorProjects.projects.length} progett{editorProjects.projects.length === 1 ? "o" : "i"}
+                </span>
+              </div>
+              <button type="button" onClick={() => setShowProjectMenu(false)} style={{
+                width: 28, height: 28, borderRadius: 7, border: `1px solid ${AX.border}`,
+                background: "transparent", color: AX.muted, cursor: "pointer",
+                display: "flex", alignItems: "center", justifyContent: "center",
+              }}
+                onMouseEnter={e => { e.currentTarget.style.background = AX.hover; }}
+                onMouseLeave={e => { e.currentTarget.style.background = "transparent"; }}
+              ><HiXMark size={16} /></button>
+            </div>
+            <div style={{ flex: 1, overflow: "auto", padding: "4px 8px 8px" }}>
+              {editorProjects.projects.map(p => (
+                <ProjectListItem
+                  key={p.id}
+                  project={p}
+                  isActive={p.id === editorProjects.activeProjectId}
+                  onLoad={() => handleLoadProject(p.id)}
+                  onDuplicate={() => handleDuplicateProject(p.id)}
+                  onDelete={() => handleDeleteProject(p.id)}
+                />
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
       <style>{`
         @keyframes slideInRight {
           from { transform: translateX(100%); opacity: 0; }
           to   { transform: translateX(0);    opacity: 1; }
+        }
+        @keyframes fadeIn {
+          from { opacity: 0; }
+          to   { opacity: 1; }
+        }
+        @keyframes scaleIn {
+          from { transform: scale(0.95); opacity: 0; }
+          to   { transform: scale(1);    opacity: 1; }
         }
       `}</style>
     </div>
@@ -792,9 +854,9 @@ function EditToolBtn({ icon, title, onClick, disabled }) {
   );
 }
 
-function HeaderBtn({ icon, label, onClick, active, accent }) {
+const HeaderBtn = React.forwardRef(function HeaderBtn({ icon, label, onClick, active, accent }, ref) {
   return (
-    <button type="button" onClick={onClick} style={{
+    <button ref={ref} type="button" onClick={onClick} style={{
       padding: "5px 10px", borderRadius: 8, fontSize: 11, fontWeight: 600,
       border: `1px solid ${active ? AX.violet : accent ? "rgba(76,217,100,0.4)" : AX.border}`,
       background: active ? "rgba(123,77,255,0.14)" : accent ? "rgba(76,217,100,0.12)" : "transparent",
@@ -805,6 +867,41 @@ function HeaderBtn({ icon, label, onClick, active, accent }) {
       onMouseEnter={e => { if (!active && !accent) e.currentTarget.style.background = AX.hover; }}
       onMouseLeave={e => { if (!active && !accent) e.currentTarget.style.background = "transparent"; }}
     >{icon} {label}</button>
+  );
+});
+
+function ProjectListContent({ projects, activeProjectId, onLoad, onDuplicate, onDelete }) {
+  return (
+    <>
+      <div style={{
+        padding: "12px 14px 8px", borderBottom: `1px solid ${AX.border}`,
+        display: "flex", alignItems: "center", justifyContent: "space-between",
+        position: "sticky", top: 0, background: "rgba(17,19,26,0.98)", zIndex: 1, borderRadius: "12px 12px 0 0",
+      }}>
+        <span style={{ fontSize: 12, fontWeight: 700, color: AX.text }}>I miei progetti</span>
+        <span style={{ fontSize: 10, color: AX.muted }}>{projects.length} progett{projects.length === 1 ? "o" : "i"}</span>
+      </div>
+      {projects.length === 0 ? (
+        <div style={{ padding: 24, textAlign: "center" }}>
+          <HiFolderOpen size={28} style={{ color: AX.muted, opacity: 0.4, marginBottom: 8 }} />
+          <div style={{ fontSize: 12, color: AX.muted }}>Nessun progetto salvato</div>
+          <div style={{ fontSize: 10, color: AX.muted, marginTop: 4 }}>Usa "Salva" o ⌘S per creare un progetto</div>
+        </div>
+      ) : (
+        <div style={{ padding: "4px 6px" }}>
+          {projects.map(p => (
+            <ProjectListItem
+              key={p.id}
+              project={p}
+              isActive={p.id === activeProjectId}
+              onLoad={() => onLoad(p.id)}
+              onDuplicate={() => onDuplicate(p.id)}
+              onDelete={() => onDelete(p.id)}
+            />
+          ))}
+        </div>
+      )}
+    </>
   );
 }
 
