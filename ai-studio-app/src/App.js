@@ -1119,60 +1119,85 @@ async function refineWithKontext(imageUrl, appearance) {
 }
 
 /**
- * Applica identità facciale a un'immagine via IP-Adapter FaceID + face swap + Kontext refine.
- * Pipeline: face-swap singolo (per posizionamento) → Kontext refine (per correzioni).
- * IP-Adapter non accetta un'immagine base, quindi genera un ritratto separato
- * che viene usato come reference per il face swap al posto della foto raw.
+ * Applica identità facciale a un'immagine esistente via easel-ai/advanced-face-swap.
+ * Usata quando l'immagine base esiste già (face-swap-only, post-update, set-insert).
+ * Fallback: fal-ai/face-swap classico.
  */
 async function applyFaceIdentity(baseImageUrl, faceHttpUrl, appearance, promptHint) {
   let resultUrl = baseImageUrl;
+  const gender = appearance?.gender === "Donna" ? "female" : "male";
+
   try {
-    // Step 1: IP-Adapter FaceID — genera ritratto con identità facciale corretta
-    const physDesc = appearance ? appearanceToPrompt(appearance) : "";
-    const ipPrompt = [
-      physDesc || "a person",
-      promptHint ? promptHint.slice(0, 200) : "",
-      "photorealistic portrait, natural lighting, high quality, highly detailed",
-    ].filter(Boolean).join(", ");
-
-    console.log("[IP-ADAPTER] prompt:", ipPrompt.slice(0, 120));
-    console.log("[IP-ADAPTER] face_image_url:", faceHttpUrl.slice(0, 60));
-
-    const ipResult = await falQueueRequest("fal-ai/ip-adapter-face-id", {
-      prompt: ipPrompt,
-      face_image_url: faceHttpUrl,
-      model_type: "SDXL-v2-plus",
-      guidance_scale: 5.0,
-      num_inference_steps: 40,
-      num_samples: 1,
-      width: 1024,
-      height: 1024,
-      negative_prompt: "blurry, low resolution, bad anatomy, wrong hair color, deformed face, plastic skin, cartoon, anime",
+    console.log("[FACE-ID] easel-ai/advanced-face-swap on base:", baseImageUrl.slice(0, 60));
+    console.log("[FACE-ID] face_image_0:", faceHttpUrl.slice(0, 60));
+    const swapResult = await falQueueRequest("easel-ai/advanced-face-swap", {
+      face_image_0: faceHttpUrl,
+      gender_0: gender,
+      target_image: baseImageUrl,
+      workflow_type: "target_hair",
+      upscale: false,
     });
-    const ipFaceUrl = ipResult?.image?.url || ipResult?.images?.[0]?.url || null;
-    console.log("[IP-ADAPTER] result:", ipFaceUrl?.slice(0, 60) || "null");
-
-    // Step 2: Face swap singolo — usa il ritratto IP-Adapter come swap_image
-    const swapSource = ipFaceUrl || faceHttpUrl;
-    const swapResult = await falRequest("fal-ai/face-swap", {
-      base_image_url: baseImageUrl,
-      swap_image_url: swapSource,
-    });
-    const swappedUrl = swapResult?.image?.url || swapResult?.images?.[0]?.url || null;
+    const swappedUrl = swapResult?.image?.url || null;
     if (swappedUrl) {
       resultUrl = swappedUrl;
-      console.log("[IP-ADAPTER SWAP] Applied:", swappedUrl.slice(0, 60));
-    }
-
-    // Step 3: Kontext refine — micro-correzioni capelli, pelle, artefatti
-    if (appearance) {
-      resultUrl = await refineWithKontext(resultUrl, appearance);
+      console.log("[FACE-ID] easel-ai result:", swappedUrl.slice(0, 60));
     }
   } catch (err) {
-    console.warn("[IP-ADAPTER] Pipeline failed, falling back to base image:", err.message);
+    console.warn("[FACE-ID] easel-ai failed, trying fal-ai/face-swap:", err.message);
+    try {
+      const swap = await falRequest("fal-ai/face-swap", {
+        base_image_url: baseImageUrl,
+        swap_image_url: faceHttpUrl,
+      });
+      const url = swap?.image?.url || swap?.images?.[0]?.url || null;
+      if (url) { resultUrl = url; console.log("[FACE-ID] fal-ai fallback result:", url.slice(0, 60)); }
+    } catch (e2) { console.warn("[FACE-ID] All face swap failed:", e2.message); }
+  }
+
+  if (appearance) {
+    resultUrl = await refineWithKontext(resultUrl, appearance);
   }
   return resultUrl;
 }
+
+/**
+ * Genera un'immagine con identità facciale integrata via fal-ai/flux-pulid.
+ * Usata come step principale nella creazione immagini (sostituisce FLUX Ultra + face swap).
+ * Fallback: ritorna null se fallisce (il chiamante userà FLUX Ultra + applyFaceIdentity).
+ */
+async function generateWithPulid(fullPrompt, faceHttpUrl, appearance, negativePrompt, imageSize) {
+  try {
+    const physDesc = appearance?.detailedDescription || appearanceToPrompt(appearance) || "";
+    const pulidPrompt = physDesc
+      ? `${fullPrompt}. The person has: ${physDesc}`
+      : fullPrompt;
+
+    console.log("[FLUX-PULID] prompt:", pulidPrompt.slice(0, 150));
+    console.log("[FLUX-PULID] reference_image_url:", faceHttpUrl.slice(0, 60));
+
+    const result = await falQueueRequest("fal-ai/flux-pulid", {
+      prompt: pulidPrompt,
+      reference_image_url: faceHttpUrl,
+      image_size: imageSize || "landscape_4_3",
+      num_inference_steps: 20,
+      guidance_scale: 4,
+      id_weight: 1,
+      negative_prompt: negativePrompt || "bad quality, worst quality, text, signature, watermark, extra limbs, blurry, deformed face",
+      enable_safety_checker: false,
+      max_sequence_length: "512",
+    });
+
+    const url = result?.images?.[0]?.url || result?.image?.url || null;
+    console.log("[FLUX-PULID] result:", url?.slice(0, 60) || "null");
+    return url;
+  } catch (err) {
+    console.warn("[FLUX-PULID] Failed:", err.message);
+    return null;
+  }
+}
+
+// LEGACY: IP-Adapter FaceID (rimosso in favore di flux-pulid + easel-ai/advanced-face-swap)
+// async function applyFaceIdentity_ipAdapter(...) { ... }
 
 /** Scarica un URL immagine fal.ai e ritorna una data URL base64 (per salvataggio su disco). */
 async function falImageUrlToBase64(url) {
@@ -8126,7 +8151,7 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
         }
         imgUrl = kontextUrl;
 
-        // ── Identità facciale post-update: IP-Adapter FaceID ──
+        // ── Identità facciale post-update: easel-ai face swap ──
         if (charImg) {
           try {
             setImageStatus && setImageStatus("🧬 Riapplicazione volto...");
@@ -8134,7 +8159,7 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
             if (faceDataUri) {
               const faceUrl = await uploadBase64ToFal(faceDataUri);
               imgUrl = await applyFaceIdentity(imgUrl, faceUrl, selectedCharacter?.appearance, prompt);
-              console.log("[UPDATE IP-ADAPTER] Applied:", imgUrl.slice(0, 80));
+              console.log("[UPDATE FACE-ID] Applied:", imgUrl.slice(0, 80));
 
               // LEGACY: doppio face swap
               // const swap1 = await falRequest("fal-ai/face-swap", { base_image_url: imgUrl, swap_image_url: faceUrl });
@@ -8146,7 +8171,7 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
               // }
             }
           } catch (faceErr) {
-            console.warn("[UPDATE IP-ADAPTER] Failed, using Kontext image:", faceErr.message);
+            console.warn("[UPDATE FACE-ID] Failed, using Kontext image:", faceErr.message);
           }
         }
 
@@ -8254,7 +8279,7 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
             if (faceDataUri) {
               const faceUrl = await uploadBase64ToFal(faceDataUri);
               imgUrl = await applyFaceIdentity(imgUrl, faceUrl, selectedCharacter?.appearance, scenePrompt);
-              console.log("[SET IP-ADAPTER] Applied:", imgUrl.slice(0, 80));
+              console.log("[SET FACE-ID] Applied:", imgUrl.slice(0, 80));
 
               // LEGACY: doppio face swap
               // const swap1 = await falRequest("fal-ai/face-swap", { base_image_url: imgUrl, swap_image_url: faceUrl });
@@ -8265,7 +8290,7 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
               //   imgUrl = swappedUrl;
               // }
             }
-          } catch (faceErr) { console.warn("[SET IP-ADAPTER] Failed:", faceErr.message); }
+          } catch (faceErr) { console.warn("[SET FACE-ID] Failed:", faceErr.message); }
         }
 
         setImageStatus && setImageStatus("✅ Completato!");
@@ -8299,50 +8324,79 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
         })();
 
       } else {
-        // ═══ RAMO CREATE: generazione normale FLUX Ultra ═══
-        setImageStatus && setImageStatus("⏳ Generazione immagine...");
-        const baseResult = await falRequest("fal-ai/flux-pro/v1.1-ultra", {
-          prompt: finalPrompt,
-          ...(finalNegativePrompt ? { negative_prompt: finalNegativePrompt } : {}),
-          aspect_ratio,
-          num_images: 1,
-          enable_safety_checker: false,
-          safety_tolerance: "6",
-        });
-        const baseImageUrl = baseResult?.images?.[0]?.url || baseResult?.image?.url || null;
+        // ═══ RAMO CREATE: flux-pulid (primario) o FLUX Ultra (fallback) ═══
+        const pulidImageSize = aspect_ratio === "1:1" ? "square_hd" : aspect_ratio === "16:9" ? "landscape_16_9" : "portrait_16_9";
 
-        if (!baseImageUrl) {
-          console.error("fal.ai FLUX: no image URL in response", baseResult);
-          setGeneratedImages(p => p.filter(x => x !== STUDIO_IMAGE_GENERATING));
-          setGenerating(false);
-          return;
-        }
-
-        imgUrl = baseImageUrl;
-
-        // ── Identità facciale: IP-Adapter FaceID ──
         if (useFaceSwap) {
-          try {
-            setImageStatus && setImageStatus("🧬 Applicazione identità facciale...");
-            const faceDataUri = await characterImageToDataUri(charImg).catch(() => null);
-            if (faceDataUri) {
-              const faceUrl = await uploadBase64ToFal(faceDataUri);
-              imgUrl = await applyFaceIdentity(imgUrl, faceUrl, selectedCharacter?.appearance, resolvedEn || prompt);
-              console.log("[CREATE IP-ADAPTER] Applied:", imgUrl.slice(0, 80));
+          // ── Step 1: flux-pulid genera immagine CON identità facciale ──
+          setImageStatus && setImageStatus("🧬 Generazione con identità...");
+          const faceDataUri = await characterImageToDataUri(charImg).catch(() => null);
+          let faceUrl = null;
+          if (faceDataUri) faceUrl = await uploadBase64ToFal(faceDataUri);
 
-              // LEGACY: doppio face swap
-              // const swap1 = await falRequest("fal-ai/face-swap", { base_image_url: imgUrl, swap_image_url: faceUrl });
-              // let swappedUrl = swap1?.image?.url || swap1?.images?.[0]?.url || null;
-              // if (swappedUrl) {
-              //   const swap2 = await falRequest("fal-ai/face-swap", { base_image_url: swappedUrl, swap_image_url: faceUrl });
-              //   if (swap2?.image?.url) swappedUrl = swap2.image.url;
-              //   imgUrl = swappedUrl;
-              // }
-            }
-          } catch (faceErr) {
-            console.warn("[CREATE IP-ADAPTER] Failed, using base image:", faceErr.message);
+          let pulidUrl = null;
+          if (faceUrl) {
+            pulidUrl = await generateWithPulid(finalPrompt, faceUrl, selectedCharacter?.appearance, finalNegativePrompt, pulidImageSize);
           }
+
+          if (pulidUrl) {
+            imgUrl = pulidUrl;
+            console.log("[CREATE PULID] Generated with identity:", imgUrl.slice(0, 80));
+
+            // Step 2: Kontext refine (opzionale)
+            if (autoRefine && selectedCharacter?.appearance) {
+              setImageStatus && setImageStatus("✨ Rifinitura dettagli...");
+              imgUrl = await refineWithKontext(imgUrl, selectedCharacter.appearance);
+            }
+          } else {
+            // ── Fallback: FLUX Ultra + easel-ai face swap ──
+            console.log("[CREATE PULID] Failed, falling back to FLUX Ultra + face swap");
+            setImageStatus && setImageStatus("⏳ Generazione immagine (fallback)...");
+            const baseResult = await falRequest("fal-ai/flux-pro/v1.1-ultra", {
+              prompt: finalPrompt,
+              ...(finalNegativePrompt ? { negative_prompt: finalNegativePrompt } : {}),
+              aspect_ratio,
+              num_images: 1,
+              enable_safety_checker: false,
+              safety_tolerance: "6",
+            });
+            const baseImageUrl = baseResult?.images?.[0]?.url || baseResult?.image?.url || null;
+            if (!baseImageUrl) {
+              console.error("fal.ai FLUX fallback: no image URL", baseResult);
+              setGeneratedImages(p => p.filter(x => x !== STUDIO_IMAGE_GENERATING));
+              setGenerating(false);
+              return;
+            }
+            imgUrl = baseImageUrl;
+            if (faceUrl) {
+              setImageStatus && setImageStatus("🧬 Applicazione volto (fallback)...");
+              imgUrl = await applyFaceIdentity(imgUrl, faceUrl, selectedCharacter?.appearance, resolvedEn || prompt);
+              console.log("[CREATE FALLBACK] Face applied:", imgUrl.slice(0, 80));
+            }
+          }
+        } else {
+          // ── Nessun personaggio: FLUX Ultra classico ──
+          setImageStatus && setImageStatus("⏳ Generazione immagine...");
+          const baseResult = await falRequest("fal-ai/flux-pro/v1.1-ultra", {
+            prompt: finalPrompt,
+            ...(finalNegativePrompt ? { negative_prompt: finalNegativePrompt } : {}),
+            aspect_ratio,
+            num_images: 1,
+            enable_safety_checker: false,
+            safety_tolerance: "6",
+          });
+          const baseImageUrl = baseResult?.images?.[0]?.url || baseResult?.image?.url || null;
+          if (!baseImageUrl) {
+            console.error("fal.ai FLUX: no image URL in response", baseResult);
+            setGeneratedImages(p => p.filter(x => x !== STUDIO_IMAGE_GENERATING));
+            setGenerating(false);
+            return;
+          }
+          imgUrl = baseImageUrl;
         }
+
+        // LEGACY: IP-Adapter FaceID pipeline
+        // imgUrl = await applyFaceIdentity(imgUrl, faceUrl, selectedCharacter?.appearance, resolvedEn || prompt);
 
         setImageStatus && setImageStatus("✅ Completato!");
         setTimeout(() => setImageStatus && setImageStatus(""), 2000);
