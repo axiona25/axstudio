@@ -243,8 +243,8 @@ const STYLE_PRESETS = [
     thumbnailImage: "cinematic.jpg",
     thumbnailPrompt: "cinematic movie frame, moody neon alley, dramatic lighting, anamorphic feel, strong composition, premium color grading, highly legible thumbnail",
     thumbnailNegativePrompt: "ugly face, animal, mascot, cartoon, cluttered background, text, watermark, blurry",
-    prompt: "cinematic live-action still, dramatic lighting, rich color grading, atmospheric depth, soft film grain, anamorphic composition, realistic human proportions, moody exposure",
-    negative_prompt: "cartoon, anime, CGI, illustration, deformed anatomy, animal, anthropomorphic, furry, mascot, toy-like character", category: "photo",
+    prompt: "cinematic photography, photorealistic, live-action film still, real camera shot, professional portrait photography, natural skin texture, realistic facial proportions, subtle cinematic lighting, high detail, rich color grading, atmospheric depth, soft film grain, anamorphic composition",
+    negative_prompt: "illustration, digital painting, painting, drawn, cartoon, anime, comic, manga, 3d render, cgi, concept art, poster art, stylized, vector art, airbrushed skin, beautified face, doll face, overprocessed, deformed anatomy, animal, anthropomorphic, furry, mascot, toy-like character", category: "photo",
   },
   {
     id: "fashion",    tag: "@fashion",    label: "Fashion",         icon: "👠",
@@ -454,6 +454,39 @@ const STYLE_CATEGORIES = [
   { id: "art", label: "Arte" },
   { id: "genre", label: "Genere" },
 ];
+
+/** Mappa rapida id → preset per lookup O(1). */
+const STYLE_PRESETS_MAP = Object.fromEntries(STYLE_PRESETS.map(s => [s.id, s]));
+
+/**
+ * Costruisce prompt + negativePrompt combinando la scena con gli stili selezionati.
+ * Se nessuno stile è fornito, usa "cinema" come default fotorealistico.
+ *
+ * @param {string} scenePrompt - Descrizione della scena (posa, outfit, sfondo, luce, camera angle)
+ * @param {string|string[]} style - ID stile o array di ID stili
+ * @returns {{ prompt: string, negativePrompt: string }}
+ */
+function buildStyledPrompt(scenePrompt, style = "cinematic") {
+  const ids = Array.isArray(style) ? style : [style];
+  const resolvedPresets = ids
+    .map(id => STYLE_PRESETS_MAP[id])
+    .filter(Boolean);
+
+  if (resolvedPresets.length === 0) {
+    const fallback = STYLE_PRESETS_MAP["cinematic"] || STYLE_PRESETS[0];
+    resolvedPresets.push(fallback);
+  }
+
+  const positives = resolvedPresets.map(p => p.prompt).filter(Boolean);
+  const negatives = resolvedPresets.map(p => p.negative_prompt).filter(Boolean);
+
+  const prompt = [scenePrompt, ...positives].filter(Boolean).join(", ");
+  const negativePrompt = [...new Set(
+    negatives.join(", ").split(",").map(s => s.trim()).filter(Boolean)
+  )].join(", ");
+
+  return { prompt, negativePrompt };
+}
 
 /** Stili VISIVI video — definiscono il look del video (realistico, anime, ghibli, ecc.). */
 const VIDEO_VISUAL_STYLE_PRESETS = [
@@ -1073,71 +1106,121 @@ async function falQueueRequest(endpoint, payload, onProgress) {
   }
 }
 
+// LEGACY inferGenderFromAppearance (semplificato)
+// function inferGenderFromAppearance(appearance) {
+//   const g = appearance?.gender?.toLowerCase?.();
+//   if (g === "male" || g === "female" || g === "non-binary") return g;
+//   return "male";
+// }
+
+/**
+ * Inferisce il gender dall'oggetto appearance per API che richiedono "male"/"female".
+ * Gestisce valori IT (Uomo/Donna) e EN (male/female).
+ * Fallback conservativo: "male" se non determinabile.
+ */
 function inferGenderFromAppearance(appearance) {
-  const g = appearance?.gender?.toLowerCase?.();
-  if (g === "male" || g === "female" || g === "non-binary") return g;
+  const raw = appearance?.gender;
+  if (!raw) return "male";
+  const g = raw.toLowerCase().trim();
+  if (g === "male" || g === "uomo") return "male";
+  if (g === "female" || g === "donna") return "female";
+  if (g === "non-binary" || g === "non binario") return "male";
+  const desc = (appearance?.detailedDescription || "").toLowerCase();
+  if (/\b(woman|female|donna|ragazza|signora)\b/.test(desc)) return "female";
+  if (/\b(man|male|uomo|ragazzo|signore)\b/.test(desc)) return "male";
   return "male";
 }
 
-async function applyFaceIdentity(imageUrl, faceUrl, appearance, autoRefine, finalPrompt, sceneHint) {
-  // flux-pulid prompt: ONLY appearance + scene + style — NO anchoring/lock clauses
-  const physDesc = appearance?.detailedDescription || "";
-  const pulidPrompt = [physDesc, sceneHint || ""].filter(Boolean).join(", ").slice(0, 500);
-  console.log("[PULID PROMPT]", pulidPrompt.slice(0, 200));
+/**
+ * Pipeline IMMAGINI: doppio face-swap classico + refine opzionale.
+ * FLUX Ultra genera con prompt completo → doppio fal-ai/face-swap → Kontext refine opzionale.
+ *
+ * @param {string} imageUrl - URL immagine base generata da FLUX
+ * @param {string} faceUrl - URL immagine volto del personaggio
+ * @param {object} appearance - Oggetto appearance del personaggio
+ * @param {boolean} autoRefine - Se true, applica refine con Kontext
+ */
+async function applyFaceIdentity(imageUrl, faceUrl, appearance, autoRefine) {
+  console.log("[FACE IDENTITY] Start — doppio face-swap classico, autoRefine:", autoRefine);
 
-  // STEP 1: identity-first generation with fal-ai/flux-pulid
-  try {
-    const pulIdResult = await falQueueRequest("fal-ai/flux-pulid", {
-      prompt: pulidPrompt,
-      reference_image_url: faceUrl,
-      image_size: "portrait_4_3",
-      num_inference_steps: 28,
-      guidance_scale: 4,
-      id_weight: 1.1,
-      negative_prompt: "bad quality, worst quality, distorted face, asymmetrical eyes, extra fingers, watermark, text, oversmoothed skin, gray hair, white hair",
-      enable_safety_checker: true,
-      max_sequence_length: "128",
-    });
-    let resultUrl = pulIdResult?.images?.[0]?.url;
-    if (resultUrl) {
-      if (autoRefine && appearance) {
-        resultUrl = await refineWithKontext(resultUrl, appearance);
-      }
-      return resultUrl;
-    }
-    throw new Error("flux-pulid returned no image url");
-  } catch (err) {
-    console.warn("[FLUX-PULID] Failed, falling back to face swap:", err?.message || err);
-  }
+  let finalUrl = imageUrl;
 
-  // STEP 2: fallback — easel advanced face swap
+  // ── STEP 1: primo face swap ──
   try {
-    const swap = await falQueueRequest("easel-ai/advanced-face-swap", {
-      face_image_0: faceUrl,
-      gender_0: inferGenderFromAppearance(appearance),
-      target_image: imageUrl,
-      workflow_type: "user_hair",
-      upscale: true,
-      detailer: true,
-    });
-    return swap?.image?.url || imageUrl;
-  } catch (err) {
-    console.warn("[ADVANCED-FACE-SWAP] Failed, using legacy fallback:", err?.message || err);
-  }
-
-  // LEGACY: base face swap fallback
-  try {
-    const swap = await falRequest("fal-ai/face-swap", {
+    console.log("[FACE-SWAP 1/2] Applying first pass...");
+    const swap1 = await falRequest("fal-ai/face-swap", {
       base_image_url: imageUrl,
       swap_image_url: faceUrl,
     });
-    return swap?.image?.url || imageUrl;
-  } catch (err) {
-    console.warn("[LEGACY FACE-SWAP] Failed:", err?.message || err);
-    return imageUrl;
+    const url1 = swap1?.image?.url || swap1?.images?.[0]?.url || null;
+    if (url1) {
+      finalUrl = url1;
+      console.log("[FACE-SWAP 1/2] OK:", url1.slice(0, 80));
+
+      // ── STEP 2: secondo face swap (rinforza identità) ──
+      try {
+        console.log("[FACE-SWAP 2/2] Applying second pass...");
+        const swap2 = await falRequest("fal-ai/face-swap", {
+          base_image_url: finalUrl,
+          swap_image_url: faceUrl,
+        });
+        const url2 = swap2?.image?.url || swap2?.images?.[0]?.url || null;
+        if (url2) {
+          finalUrl = url2;
+          console.log("[FACE-SWAP 2/2] OK:", url2.slice(0, 80));
+        } else {
+          console.warn("[FACE-SWAP 2/2] No image in response, using first swap result");
+        }
+      } catch (err2) {
+        console.warn("[FACE-SWAP 2/2] Failed, using first swap result:", err2?.message || err2);
+      }
+    } else {
+      console.warn("[FACE-SWAP 1/2] No image in response, using base image");
+    }
+  } catch (err1) {
+    console.warn("[FACE-SWAP 1/2] Failed, using base image:", err1?.message || err1);
   }
+
+  // ── STEP 3: refine opzionale con Kontext ──
+  if (autoRefine && appearance && finalUrl !== imageUrl) {
+    finalUrl = await refineWithKontext(finalUrl, appearance);
+  }
+
+  return finalUrl;
 }
 
+// EXPERIMENTAL: pipeline easel-ai/advanced-face-swap + flux-pulid (disattivata — doppio face-swap classico funziona meglio)
+// async function applyFaceIdentity_experimental(imageUrl, faceUrl, appearance, autoRefine, finalPrompt, sceneHint, style = "cinematic", identityMode = "swap-first") {
+//   console.log("[FACE IDENTITY EXPERIMENTAL] Start —", { identityMode, hasBaseImage: Boolean(imageUrl), autoRefine, style });
+//   let baseUrl = imageUrl;
+//   if (!baseUrl && finalPrompt) {
+//     const { prompt: styledPrompt, negativePrompt: styledNegative } = buildStyledPrompt(finalPrompt, style);
+//     const baseResult = await falRequest("fal-ai/flux-pro/v1.1-ultra", { prompt: styledPrompt, ...(styledNegative ? { negative_prompt: styledNegative } : {}), aspect_ratio: "3:4", num_images: 1, enable_safety_checker: false, safety_tolerance: "6" });
+//     baseUrl = baseResult?.images?.[0]?.url || baseResult?.image?.url || null;
+//     if (!baseUrl) return imageUrl;
+//   }
+//   if (identityMode === "pulid-experimental") {
+//     const physDesc = appearance?.detailedDescription || "";
+//     const { prompt: pulidStyledPrompt, negativePrompt: pulidNegative } = buildStyledPrompt([physDesc, sceneHint || finalPrompt || ""].filter(Boolean).join(", ").slice(0, 500), style);
+//     try {
+//       const pulIdResult = await falQueueRequest("fal-ai/flux-pulid", { prompt: pulidStyledPrompt, reference_image_url: faceUrl, negative_prompt: [pulidNegative, "bad quality, worst quality, distorted face, asymmetrical eyes, extra fingers, watermark, text, oversmoothed skin, gray hair, white hair"].filter(Boolean).join(", "), image_size: "portrait_4_3", num_inference_steps: 28, guidance_scale: 4, id_weight: 1.1, enable_safety_checker: true, max_sequence_length: "128" });
+//       let resultUrl = pulIdResult?.images?.[0]?.url;
+//       if (resultUrl) { if (autoRefine && appearance) resultUrl = await refineWithKontextLight(resultUrl, appearance); return resultUrl; }
+//     } catch (err) { console.warn("[FLUX-PULID EXPERIMENTAL] Failed:", err?.message || err); }
+//   }
+//   try {
+//     const gender = inferGenderFromAppearance(appearance);
+//     const swap = await falQueueRequest("easel-ai/advanced-face-swap", { face_image_0: faceUrl, gender_0: gender, target_image: baseUrl, workflow_type: "user_hair", upscale: true, detailer: true });
+//     const swappedUrl = swap?.image?.url || null;
+//     if (swappedUrl) { if (autoRefine && appearance) return await refineWithKontextLight(swappedUrl, appearance); return swappedUrl; }
+//   } catch (err) { console.warn("[ADVANCED FACE SWAP] Failed:", err?.message || err); }
+//   try {
+//     const swap = await falRequest("fal-ai/face-swap", { base_image_url: baseUrl, swap_image_url: faceUrl });
+//     return swap?.image?.url || baseUrl || imageUrl;
+//   } catch (err) { return baseUrl || imageUrl; }
+// }
+
+/** Refine opzionale con Kontext — preserva identità, corregge artefatti minori. */
 async function refineWithKontext(imageUrl, appearance) {
   const refinePrompt = [
     "Refine the image while preserving the same identity, face structure, and expression.",
@@ -1149,6 +1232,7 @@ async function refineWithKontext(imageUrl, appearance) {
       : null,
   ].filter(Boolean).join(" ");
 
+  console.log("[KONTEXT REFINE] Refining...");
   try {
     const result = await falQueueRequest("fal-ai/flux-pro/kontext/max", {
       image_url: imageUrl,
@@ -1159,15 +1243,37 @@ async function refineWithKontext(imageUrl, appearance) {
       safety_tolerance: "2",
       enhance_prompt: false,
     });
-    return result?.images?.[0]?.url || imageUrl;
+    const refinedUrl = result?.images?.[0]?.url || null;
+    if (refinedUrl) {
+      console.log("[KONTEXT REFINE] OK:", refinedUrl.slice(0, 80));
+      return refinedUrl;
+    }
+    console.warn("[KONTEXT REFINE] No image returned, using original");
+    return imageUrl;
   } catch (err) {
     console.warn("[KONTEXT REFINE] Failed:", err?.message || err);
     return imageUrl;
   }
 }
 
-// LEGACY: generateWithPulid standalone (ora integrato in applyFaceIdentity)
-// LEGACY: IP-Adapter FaceID (rimosso in favore di flux-pulid + easel-ai/advanced-face-swap)
+// EXPERIMENTAL: refineWithKontextLight (ultra-conservativo — disattivato)
+// async function refineWithKontextLight(imageUrl, appearance) {
+//   const refinePrompt = [
+//     "Preserve exact same identity, exact same face structure, exact same nose, exact same jawline,",
+//     "exact same eyes, exact same hairline, exact same expression, exact same age.",
+//     "Only remove minor visual artifacts and compression noise.",
+//     "Keep photorealistic look.",
+//     "Do not stylize. Do not repaint. Do not beautify.",
+//     "Do not change hair color. Do not change facial proportions.",
+//     "Do not change skin tone. Do not change lighting style.",
+//     "Do not add or remove any accessories, wrinkles, moles, or scars.",
+//     appearance?.detailedDescription ? `Critical identity to preserve exactly: ${appearance.detailedDescription}.` : null,
+//   ].filter(Boolean).join(" ");
+//   try {
+//     const result = await falQueueRequest("fal-ai/flux-pro/kontext/max", { image_url: imageUrl, prompt: refinePrompt, num_images: 1, output_format: "jpeg", safety_tolerance: "2", enhance_prompt: false });
+//     return result?.images?.[0]?.url || imageUrl;
+//   } catch (err) { return imageUrl; }
+// }
 
 /** Scarica un URL immagine fal.ai e ritorna una data URL base64 (per salvataggio su disco). */
 async function falImageUrlToBase64(url) {
@@ -7473,10 +7579,14 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
   const [editableIT, setEditableIT] = useState("");
   const [translateErr, setTranslateErr] = useState("");
   const [imageStatus, setImageStatus] = useState("");
-  const [autoRefine, setAutoRefine] = useState(true);
+  const [autoRefine, setAutoRefine] = useState(false);
   const [promptManuallyEdited, setPromptManuallyEdited] = useState(false);
   const [recallFeedback, setRecallFeedback] = useState(null);
   const recallActiveRef = useRef(false);
+
+  // EXPERIMENTAL: bypass swap-first rimosso — il LLM riceve SEMPRE l'appearance completa
+  // perché FLUX Ultra + doppio face-swap funziona meglio con prompt completo.
+  // const isSwapFirstMode = Boolean(selectedCharacter && charHasImage);
 
   const charPhysicalContext = useMemo(() => {
     const desc = appearanceToPrompt(selectedCharacter?.appearance);
@@ -7539,7 +7649,7 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
       const faceUrl = await uploadBase64ToFal(faceDataUri);
 
       setImageStatus("🧬 Applicazione identità facciale...");
-      let imgUrl = await applyFaceIdentity(sourceUrl, faceUrl, selectedCharacter?.appearance, autoRefine, prompt, prompt);
+      let imgUrl = await applyFaceIdentity(sourceUrl, faceUrl, selectedCharacter?.appearance, autoRefine);
 
       // LEGACY: doppio face swap
       // const swap1 = await falRequest("fal-ai/face-swap", { base_image_url: sourceUrl, swap_image_url: faceUrl });
@@ -7866,6 +7976,12 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
           subjectPrompt = physicalDesc;
         }
       }
+      // EXPERIMENTAL: swap-first minimal subject (disattivato — il prompt completo funziona meglio)
+      // if (willUseFaceSwap) {
+      //   const genderLabel = inferGenderFromAppearance(selectedCharacter?.appearance);
+      //   const minimalSubject = genderLabel === "female" ? "a woman" : "a man";
+      //   subjectPrompt = minimalSubject;
+      // }
 
       // ── Human subject lock ──
       // Usa il testo IT per rilevare soggetto/animale; il testo EN è in resolvedEn
@@ -7931,8 +8047,11 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
         reflectionClauseUsed: imgReflectionClause || null,
       });
 
+      const useFaceSwap = Boolean(selectedCharacter && charImg);
+
       // ── Composizione finale ──
-      // Ordine: charSubjectLock → subjectPrompt → visualSignature → humanLock → scenePrompt → stylePrefix → identity → style → roleBinding → antiAnimal → reflection
+      // Prompt COMPLETO con tutte le clausole (identity, anchoring, style, reflection).
+      // FLUX Ultra funziona meglio con il prompt completo — il doppio face-swap corregge l'identità dopo.
       const finalPrompt = [
         charAnchoring.subjectLockClause,
         subjectPrompt,
@@ -7946,6 +8065,10 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
         charAnchoring.antiAnimalClause,
         imgReflectionClause,
       ].filter(Boolean).join(", ");
+      // EXPERIMENTAL: swap-first clean prompt (disattivato — prompt completo funziona meglio)
+      // if (useFaceSwap) {
+      //   finalPrompt = [scenePrompt, effectiveStylePrefix].filter(Boolean).join(", ");
+      // }
 
       console.log("[PROMPT DEBUG] finalPrompt:", finalPrompt);
       console.log("[PROMPT DEBUG] finalNegativePrompt (pre-build):", [negPrompt, styleNegative].filter(Boolean).join(", "));
@@ -7959,8 +8082,6 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
           .map(s => s.trim())
           .filter(Boolean)
       )].join(", ");
-
-      const useFaceSwap = Boolean(selectedCharacter && charImg);
 
       // ── Rileva modalità update vs create ──
       const appearanceDiffObj = diffAppearance(appearanceSnapshotRef.current, selectedCharacter?.appearance);
@@ -8128,7 +8249,7 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
             const faceDataUri = await characterImageToDataUri(charImg).catch(() => null);
             if (faceDataUri) {
               const faceUrl = await uploadBase64ToFal(faceDataUri);
-              imgUrl = await applyFaceIdentity(imgUrl, faceUrl, selectedCharacter?.appearance, autoRefine, prompt, prompt);
+              imgUrl = await applyFaceIdentity(imgUrl, faceUrl, selectedCharacter?.appearance, autoRefine);
               console.log("[UPDATE FACE-ID] Applied:", imgUrl.slice(0, 80));
 
               // LEGACY: doppio face swap
@@ -8248,7 +8369,7 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
             const faceDataUri = await characterImageToDataUri(charImg).catch(() => null);
             if (faceDataUri) {
               const faceUrl = await uploadBase64ToFal(faceDataUri);
-              imgUrl = await applyFaceIdentity(imgUrl, faceUrl, selectedCharacter?.appearance, autoRefine, scenePrompt, scenePrompt);
+              imgUrl = await applyFaceIdentity(imgUrl, faceUrl, selectedCharacter?.appearance, autoRefine);
               console.log("[SET FACE-ID] Applied:", imgUrl.slice(0, 80));
 
               // LEGACY: doppio face swap
@@ -8296,6 +8417,7 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
       } else {
         // ═══ RAMO CREATE: generazione immagine ═══
         setImageStatus && setImageStatus("⏳ Generazione immagine...");
+        console.log("[BASE GEN] Generating with fal-ai/flux-pro/v1.1-ultra, style:", selectedStyles);
         const baseResult = await falRequest("fal-ai/flux-pro/v1.1-ultra", {
           prompt: finalPrompt,
           ...(finalNegativePrompt ? { negative_prompt: finalNegativePrompt } : {}),
@@ -8315,15 +8437,14 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
 
         imgUrl = baseImageUrl;
 
-        // ── Identità facciale: flux-pulid → easel-ai fallback → face-swap fallback ──
+        // ── Identità facciale: doppio face-swap classico + refine opzionale ──
         if (useFaceSwap) {
           try {
             setImageStatus && setImageStatus("🧬 Applicazione identità facciale...");
             const faceDataUri = await characterImageToDataUri(charImg).catch(() => null);
             if (faceDataUri) {
               const faceUrl = await uploadBase64ToFal(faceDataUri);
-              const pulidSceneHint = [scenePrompt, effectiveStylePrefix].filter(Boolean).join(", ");
-              imgUrl = await applyFaceIdentity(imgUrl, faceUrl, selectedCharacter?.appearance, autoRefine, finalPrompt, pulidSceneHint);
+              imgUrl = await applyFaceIdentity(imgUrl, faceUrl, selectedCharacter?.appearance, autoRefine);
               console.log("[CREATE FACE-ID] Applied:", imgUrl.slice(0, 80));
             }
           } catch (faceErr) {
@@ -8790,6 +8911,18 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
         })()}
       </div>
 
+      {selectedCharacter && (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}>
+          <label style={{ fontSize: 11, color: "#888" }}>✨ Rifinitura auto</label>
+          <button onClick={() => setAutoRefine(prev => !prev)} style={{
+            background: autoRefine ? "#8b5cf6" : "rgba(255,255,255,0.15)",
+            border: "none", borderRadius: 12, padding: "3px 10px",
+            color: "white", fontSize: 10, cursor: "pointer"
+          }}>
+            {autoRefine ? "ON" : "OFF"}
+          </button>
+        </div>
+      )}
 
       {previewImg && (
         <div onClick={() => setPreviewImg(null)} style={{ position: "fixed", inset: 0, background: "rgba(10,10,15,0.88)", backdropFilter: "blur(12px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 2000, cursor: "zoom-out" }}>
