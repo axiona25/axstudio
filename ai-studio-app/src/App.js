@@ -3972,7 +3972,7 @@ function ProjectListCard({ project, stats, onOpen, onDelete, onRename }) {
 }
 
 /** Griglia video singoli (usata sia in tab Video che dentro un gruppo sceneggiatura espanso). */
-const VideoThumbnailGrid = React.memo(function VideoThumbnailGrid({ videos, cfg, onVideoPreview, onVideoRecallPrompt, onRemoveVideo, indexOffset = 0 }) {
+const VideoThumbnailGrid = React.memo(function VideoThumbnailGrid({ videos, cfg, onVideoPreview, onVideoRecallPrompt, onRemoveVideo, indexOffset = 0, selectionMode, selectedItems, onToggleSelect }) {
   return (
     <div style={{ display: "grid", gridTemplateColumns: `repeat(${cfg.cols}, minmax(0, 1fr))`, gap: cfg.gap }}>
       {videos.map((vid, i) => {
@@ -3980,15 +3980,16 @@ const VideoThumbnailGrid = React.memo(function VideoThumbnailGrid({ videos, cfg,
         const isClipGen = isClipPlaceholder(vid);
         const isPlaceholder = isGenerating || isClipGen;
         const clipNum = isClipGen ? parseInt(vid.split("_").pop(), 10) + 1 : null;
+        const isSelected = selectionMode && selectedItems?.has(vid);
         return (
         <div
           key={isGenerating ? "axstudio-vid-gen-slot" : isClipGen ? vid : (typeof vid === "string" ? vid : `vid-${indexOffset + i}`)}
           style={{
             position: "relative",
-            aspectRatio: "16 / 11",
+            aspectRatio: "1",
             borderRadius: 10,
             overflow: "hidden",
-            border: `1px solid ${isPlaceholder ? "rgba(255,79,163,0.45)" : AX.border}`,
+            border: `1px solid ${isSelected ? "rgba(139,92,246,0.7)" : isPlaceholder ? "rgba(255,79,163,0.45)" : AX.border}`,
             background: AX.bg,
             width: "100%",
             ...(isPlaceholder ? { animation: "axstudio-glow-pulse 2.2s ease-in-out infinite" } : {}),
@@ -3996,9 +3997,13 @@ const VideoThumbnailGrid = React.memo(function VideoThumbnailGrid({ videos, cfg,
         >
           <button
             type="button"
-            onClick={() => !isPlaceholder && (onVideoRecallPrompt ? onVideoRecallPrompt(vid) : onVideoPreview?.(vid))}
+            onClick={() => {
+              if (isPlaceholder) return;
+              if (selectionMode) { onToggleSelect?.(vid); return; }
+              onVideoRecallPrompt ? onVideoRecallPrompt(vid) : onVideoPreview?.(vid);
+            }}
             disabled={isPlaceholder}
-            title={onVideoRecallPrompt ? "Carica prompt nel campo" : "Anteprima video"}
+            title={selectionMode ? "Seleziona / deseleziona" : onVideoRecallPrompt ? "Carica prompt nel campo" : "Anteprima video"}
             style={{
               position: "absolute", inset: 0, border: "none", padding: 0, margin: 0,
               cursor: isPlaceholder ? "default" : "pointer",
@@ -4028,41 +4033,59 @@ const VideoThumbnailGrid = React.memo(function VideoThumbnailGrid({ videos, cfg,
                 <span style={{ fontSize: 8, fontWeight: 600, color: AX.muted, zIndex: 1, letterSpacing: "0.06em", textTransform: "uppercase" }}>{isClipGen ? "In attesa" : "AXSTUDIO · GPU"}</span>
               </div>
             ) : (
-              <>
-                <video src={vid} muted playsInline preload="metadata" style={{ width: "100%", height: "100%", objectFit: "cover", objectPosition: THUMB_COVER_POSITION, display: "block", pointerEvents: "none" }} />
-                <span style={{ position: "absolute", bottom: 4, right: 4, background: "rgba(10,10,15,0.75)", borderRadius: 6, padding: "2px 5px", fontSize: 9, color: AX.text2 }}><HiFilm size={11} style={{ verticalAlign: "middle" }} /></span>
-              </>
+              <video src={vid} muted playsInline preload="metadata" style={{ width: "100%", height: "100%", objectFit: "cover", objectPosition: THUMB_COVER_POSITION, display: "block", pointerEvents: "none" }} />
             )}
           </button>
-          {!isPlaceholder && typeof onVideoPreview === "function" && onVideoRecallPrompt && (
-            <button
-              type="button"
-              aria-label="Anteprima"
-              onClick={e => { e.stopPropagation(); e.preventDefault(); onVideoPreview(vid); }}
+          {selectionMode && !isPlaceholder && (
+            <div
+              onClick={e => { e.stopPropagation(); onToggleSelect?.(vid); }}
               style={{
-                position: "absolute", top: 4, left: 4, zIndex: 6, width: 28, height: 28, borderRadius: 8,
-                border: `1px solid ${AX.border}`, background: "rgba(10,10,15,0.92)", color: AX.text2,
-                cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 0,
-                boxShadow: "0 4px 12px rgba(0,0,0,0.4)",
+                position: "absolute", top: 4, left: 4, zIndex: 10,
+                width: 22, height: 22, borderRadius: 4,
+                background: isSelected ? "#8b5cf6" : "rgba(0,0,0,0.55)",
+                border: isSelected ? "2px solid #a78bfa" : "2px solid rgba(255,255,255,0.85)",
+                display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer",
+                boxShadow: "0 1px 4px rgba(0,0,0,0.5)",
               }}
             >
-              <HiEye size={15} />
-            </button>
+              {isSelected && <span style={{ color: "#fff", fontSize: 14, lineHeight: 1 }}>✓</span>}
+            </div>
           )}
-          {typeof onRemoveVideo === "function" && (
-            <button
-              type="button"
-              aria-label="Rimuovi"
-              onClick={e => { e.stopPropagation(); e.preventDefault(); onRemoveVideo(indexOffset + i, vid); }}
-              style={{
-                position: "absolute", top: 4, right: 4, zIndex: 6, width: 28, height: 28, borderRadius: 8,
-                border: `1px solid ${AX.border}`, background: "rgba(10,10,15,0.92)", color: AX.text2,
-                cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 0,
-                boxShadow: "0 4px 12px rgba(0,0,0,0.4)",
-              }}
-            >
-              <HiXMark size={16} />
-            </button>
+          {!selectionMode && !isPlaceholder && (
+            <div style={{ position: "absolute", top: 4, right: 4, zIndex: 6, display: "flex", gap: 4 }}>
+              {typeof onVideoPreview === "function" && onVideoRecallPrompt && (
+                <button
+                  type="button"
+                  aria-label="Anteprima"
+                  title="Visualizza video"
+                  onClick={e => { e.stopPropagation(); e.preventDefault(); onVideoPreview(vid); }}
+                  style={{
+                    width: 28, height: 28, borderRadius: 8,
+                    border: `1px solid ${AX.border}`, background: "rgba(10,10,15,0.92)", color: AX.electric,
+                    cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 0,
+                    boxShadow: "0 4px 12px rgba(0,0,0,0.4)",
+                  }}
+                >
+                  <HiEye size={15} />
+                </button>
+              )}
+              {typeof onRemoveVideo === "function" && (
+                <button
+                  type="button"
+                  aria-label="Rimuovi"
+                  title="Elimina"
+                  onClick={e => { e.stopPropagation(); e.preventDefault(); onRemoveVideo(indexOffset + i, vid); }}
+                  style={{
+                    width: 28, height: 28, borderRadius: 8,
+                    border: `1px solid ${AX.border}`, background: "rgba(10,10,15,0.92)", color: AX.text2,
+                    cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 0,
+                    boxShadow: "0 4px 12px rgba(0,0,0,0.4)",
+                  }}
+                >
+                  <HiXMark size={16} />
+                </button>
+              )}
+            </div>
           )}
         </div>
         );
@@ -4072,11 +4095,28 @@ const VideoThumbnailGrid = React.memo(function VideoThumbnailGrid({ videos, cfg,
 });
 
 /** Sidebar fissa a destra: miniature sessione (immagini o video) con densità 2/3 colonne. */
-const StudioResultsSidebar = React.memo(function StudioResultsSidebar({ kind, images, videos, density, onDensityChange, onImagePreview, onVideoPreview, onRemoveImage, onRemoveVideo, onImageRecallPrompt, onVideoRecallPrompt, videoSidebarMode, onVideoSidebarModeChange, videoHistory, expandedScreenplays, onExpandedScreenplaysChange }) {
+const StudioResultsSidebar = React.memo(function StudioResultsSidebar({ kind, images, videos, density, onDensityChange, onImagePreview, onVideoPreview, onRemoveImage, onRemoveVideo, onImageRecallPrompt, onVideoRecallPrompt, videoSidebarMode, onVideoSidebarModeChange, videoHistory, expandedScreenplays, onExpandedScreenplaysChange, isProjectContext }) {
   const cfg = STUDIO_SIDEBAR_DENSITY[density] || STUDIO_SIDEBAR_DENSITY.medium;
   const nImg = images?.length ?? 0;
   const isVideo = kind !== "image";
-  const sidebarMode = isVideo ? (videoSidebarMode || "videos") : null;
+  const showScreenplayTabs = isVideo && Boolean(isProjectContext);
+  const sidebarMode = showScreenplayTabs ? (videoSidebarMode || "videos") : null;
+
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedItems, setSelectedItems] = useState(new Set());
+
+  const toggleSelection = useCallback((itemUrl) => {
+    setSelectedItems(prev => {
+      const next = new Set(prev);
+      if (next.has(itemUrl)) next.delete(itemUrl); else next.add(itemUrl);
+      return next;
+    });
+  }, []);
+
+  const exitSelection = useCallback(() => {
+    setSelectionMode(false);
+    setSelectedItems(new Set());
+  }, []);
 
   // URL di video che fanno parte di una sceneggiatura (per escluderli dalla tab "Video")
   const screenplayVideoUrls = useMemo(() => {
@@ -4133,6 +4173,34 @@ const StudioResultsSidebar = React.memo(function StudioResultsSidebar({ kind, im
     });
   };
 
+  const selectableItems = useMemo(() => {
+    if (kind === "image") return (images || []).filter(x => x !== STUDIO_IMAGE_GENERATING && x !== "FACE_SWAP_PENDING");
+    if (isVideo && (sidebarMode === "videos" || !showScreenplayTabs)) return (singleVideos || []).filter(x => x !== STUDIO_VIDEO_GENERATING && !isClipPlaceholder(x));
+    return [];
+  }, [kind, images, isVideo, sidebarMode, showScreenplayTabs, singleVideos]);
+
+  const handleSelectAll = useCallback(() => {
+    setSelectedItems(prev => prev.size === selectableItems.length ? new Set() : new Set(selectableItems));
+  }, [selectableItems]);
+
+  const handleDeleteSelected = useCallback(async () => {
+    if (selectedItems.size === 0) return;
+    const msg = selectedItems.size === 1
+      ? (kind === "image" ? "Eliminare l'immagine selezionata?" : "Eliminare il video selezionato?")
+      : `Eliminare ${selectedItems.size} ${kind === "image" ? "immagini" : "video"} selezionat${kind === "image" ? "e" : "i"}?`;
+    if (!window.confirm(msg)) return;
+    const removeFn = kind === "image" ? onRemoveImage : onRemoveVideo;
+    if (!removeFn) return;
+    const itemList = kind === "image" ? (images || []) : (singleVideos || []);
+    const toDelete = [...selectedItems];
+    for (const url of toDelete) {
+      const idx = itemList.indexOf(url);
+      await removeFn(idx >= 0 ? idx : 0, url);
+    }
+    setSelectedItems(new Set());
+    setSelectionMode(false);
+  }, [selectedItems, kind, images, singleVideos, onRemoveImage, onRemoveVideo]);
+
   return (
     <aside
       style={{
@@ -4141,81 +4209,122 @@ const StudioResultsSidebar = React.memo(function StudioResultsSidebar({ kind, im
       }}
       aria-label="Anteprime generazione"
     >
-      <div style={{ flexShrink: 0, padding: "12px 14px 10px", display: "flex", flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8, minWidth: 0 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0, minWidth: 0 }}>
-          <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: AX.muted }}>
-            {kind === "image" ? "Immagini" : "Video"}
-          </span>
-          <span style={{ fontSize: 12, fontWeight: 700, color: AX.electric, fontVariantNumeric: "tabular-nums" }}>{kind === "image" ? nImg : nVid}</span>
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
-          {isVideo && (
-            <div style={{ display: "inline-flex", alignItems: "center", gap: 0, flexShrink: 0, padding: "2px 3px", borderRadius: 8, border: `1px solid ${AX.border}`, background: "rgba(10,10,15,0.45)" }} role="tablist" aria-label="Modalità sidebar video">
-              {[
-                { id: "videos", label: "Video", icon: <HiFilm size={12} /> },
-                { id: "screenplays", label: "Sceneggiatura", icon: <HiClipboardDocumentList size={12} /> },
-              ].map(tab => {
-                const active = sidebarMode === tab.id;
-                return (
-                  <button
-                    key={tab.id}
-                    type="button"
-                    role="tab"
-                    aria-selected={active}
-                    title={tab.label}
-                    onClick={() => onVideoSidebarModeChange?.(tab.id)}
-                    style={{
-                      display: "flex", alignItems: "center", gap: 4, padding: "4px 8px", borderRadius: 6,
-                      border: "none", cursor: "pointer", fontSize: 10, fontWeight: 700, letterSpacing: "0.04em",
-                      background: active ? "rgba(123,77,255,0.22)" : "transparent",
-                      color: active ? AX.electric : AX.muted,
-                      transition: "all 0.15s ease",
-                    }}
-                  >
-                    {tab.icon}
-                    <span>{tab.label}</span>
-                  </button>
-                );
-              })}
-            </div>
-          )}
-          <div style={{ display: "inline-flex", alignItems: "center", gap: 3, flexShrink: 0, padding: "3px 4px", borderRadius: 10, border: `1px solid ${AX.border}`, background: "rgba(10,10,15,0.45)" }} role="group" aria-label="Dimensione miniature">
-            {[
-              { id: "large", label: "Due colonne", glyph: "large" },
-              { id: "medium", label: "Tre colonne", glyph: "medium" },
-              { id: "small", label: "Tre colonne compatte", glyph: "small" },
-            ].map(d => (
+      <div style={{ flexShrink: 0, padding: "14px 14px 6px", display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0, minWidth: 0 }}>
+            <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: AX.muted }}>
+              {kind === "image" ? "Immagini" : "Video"}
+            </span>
+            <span style={{ fontSize: 12, fontWeight: 700, color: AX.electric, fontVariantNumeric: "tabular-nums" }}>{kind === "image" ? nImg : nVid}</span>
+            {(kind === "image" || (isVideo && (sidebarMode === "videos" || !showScreenplayTabs))) && selectableItems.length > 0 && (
               <button
-                key={d.id}
                 type="button"
-                title={d.label}
-                aria-label={d.label}
-                aria-pressed={density === d.id}
-                onClick={() => onDensityChange(d.id)}
+                onClick={() => { if (selectionMode) exitSelection(); else setSelectionMode(true); }}
+                title={selectionMode ? "Esci dalla selezione" : "Seleziona"}
                 style={{
-                  display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
-                  width: 30, height: 26, padding: 0, borderRadius: 7, cursor: "pointer",
-                  border: `1px solid ${density === d.id ? AX.violet : "transparent"}`,
-                  background: density === d.id ? "rgba(123,77,255,0.22)" : "transparent",
-                  color: density === d.id ? AX.electric : AX.muted,
+                  background: selectionMode ? "rgba(239,68,68,0.2)" : "rgba(255,255,255,0.08)",
+                  border: "none", borderRadius: 6, padding: "3px 8px",
+                  cursor: "pointer", fontSize: 10, fontWeight: 600,
+                  color: selectionMode ? "#f87171" : AX.muted,
+                  transition: "all 0.15s ease",
                 }}
               >
-                <GalleryDensityGlyph variant={d.glyph} compact />
+                {selectionMode ? "✕ Annulla" : "☑ Seleziona"}
               </button>
-            ))}
+            )}
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+            {showScreenplayTabs && (
+              <div style={{ display: "inline-flex", alignItems: "center", gap: 0, flexShrink: 0, padding: "2px 3px", borderRadius: 8, border: `1px solid ${AX.border}`, background: "rgba(10,10,15,0.45)" }} role="tablist" aria-label="Modalità sidebar video">
+                {[
+                  { id: "videos", label: "Video", icon: <HiFilm size={12} /> },
+                  { id: "screenplays", label: "Sceneggiatura", icon: <HiClipboardDocumentList size={12} /> },
+                ].map(tab => {
+                  const active = sidebarMode === tab.id;
+                  return (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      role="tab"
+                      aria-selected={active}
+                      title={tab.label}
+                      onClick={() => { onVideoSidebarModeChange?.(tab.id); exitSelection(); }}
+                      style={{
+                        display: "flex", alignItems: "center", gap: 4, padding: "4px 8px", borderRadius: 6,
+                        border: "none", cursor: "pointer", fontSize: 10, fontWeight: 700, letterSpacing: "0.04em",
+                        background: active ? "rgba(123,77,255,0.22)" : "transparent",
+                        color: active ? AX.electric : AX.muted,
+                        transition: "all 0.15s ease",
+                      }}
+                    >
+                      {tab.icon}
+                      <span>{tab.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+            <div style={{ display: "inline-flex", alignItems: "center", gap: 3, flexShrink: 0, padding: "3px 4px", borderRadius: 10, border: `1px solid ${AX.border}`, background: "rgba(10,10,15,0.45)" }} role="group" aria-label="Dimensione miniature">
+              {[
+                { id: "large", label: "Due colonne", glyph: "large" },
+                { id: "medium", label: "Tre colonne", glyph: "medium" },
+                { id: "small", label: "Tre colonne compatte", glyph: "small" },
+              ].map(d => (
+                <button
+                  key={d.id}
+                  type="button"
+                  title={d.label}
+                  aria-label={d.label}
+                  aria-pressed={density === d.id}
+                  onClick={() => onDensityChange(d.id)}
+                  style={{
+                    display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
+                    width: 30, height: 26, padding: 0, borderRadius: 7, cursor: "pointer",
+                    border: `1px solid ${density === d.id ? AX.violet : "transparent"}`,
+                    background: density === d.id ? "rgba(123,77,255,0.22)" : "transparent",
+                    color: density === d.id ? AX.electric : AX.muted,
+                  }}
+                >
+                  <GalleryDensityGlyph variant={d.glyph} compact />
+                </button>
+              ))}
+            </div>
           </div>
         </div>
+        {selectionMode && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 8px", background: "rgba(255,255,255,0.04)", borderRadius: 8 }}>
+            <button
+              type="button"
+              onClick={handleSelectAll}
+              style={{ fontSize: 10, fontWeight: 600, background: "rgba(139,92,246,0.18)", color: "#c4b5fd", border: "none", borderRadius: 6, padding: "3px 8px", cursor: "pointer" }}
+            >
+              {selectedItems.size === selectableItems.length && selectableItems.length > 0 ? "Deseleziona tutti" : "Seleziona tutti"}
+            </button>
+            <span style={{ fontSize: 10, color: AX.muted }}>
+              {selectedItems.size} selezionat{kind === "image" ? (selectedItems.size === 1 ? "a" : "e") : (selectedItems.size === 1 ? "o" : "i")}
+            </span>
+            {selectedItems.size > 0 && (
+              <button
+                type="button"
+                onClick={handleDeleteSelected}
+                style={{ fontSize: 10, fontWeight: 600, background: "rgba(239,68,68,0.18)", color: "#f87171", border: "none", borderRadius: 6, padding: "3px 8px", cursor: "pointer", marginLeft: "auto" }}
+              >
+                🗑 Elimina ({selectedItems.size})
+              </button>
+            )}
+          </div>
+        )}
       </div>
       <div
         className="ax-hide-scrollbar"
         style={{
           flex: 1, minHeight: 0,
           overflowY: (isVideo && sidebarMode === "screenplays") ? (screenplayGroups.length === 0 ? "hidden" : "auto") : (empty ? "hidden" : "auto"),
-          overflowX: "hidden", padding: "12px 12px 20px", display: "flex", flexDirection: "column",
+          overflowX: "hidden", padding: "4px 14px 20px", display: "flex", flexDirection: "column",
         }}
       >
-        {/* ── Screenplays tab ── */}
-        {isVideo && sidebarMode === "screenplays" ? (
+        {/* ── Screenplays tab (only in project context) ── */}
+        {showScreenplayTabs && sidebarMode === "screenplays" ? (
           screenplayGroups.length === 0 ? (
             <div style={{ flex: 1, minHeight: 0, display: "flex", alignItems: "center", justifyContent: "center", padding: "12px 8px" }}>
               <div style={{ maxWidth: 300, width: "100%", textAlign: "center", padding: "22px 20px", borderRadius: 12, border: `1px dashed ${AX.border}`, background: AX.surface }}>
@@ -4307,28 +4416,37 @@ const StudioResultsSidebar = React.memo(function StudioResultsSidebar({ kind, im
           </div>
         ) : kind === "image" ? (
           <div style={{ display: "grid", gridTemplateColumns: `repeat(${cfg.cols}, minmax(0, 1fr))`, gap: cfg.gap }}>
-            {images.map((img, i) => (
+            {images.map((img, i) => {
+              const isGen = img === STUDIO_IMAGE_GENERATING;
+              const isSwap = img === "FACE_SWAP_PENDING";
+              const isPlaceholder = isGen || isSwap;
+              const isImgSelected = selectionMode && selectedItems.has(img);
+              return (
               <div
-                key={img === STUDIO_IMAGE_GENERATING ? "axstudio-gen-slot" : `img-${i}-${typeof img === "string" && img.startsWith("data:") ? img.length : String(img).slice(0, 24)}`}
+                key={isGen ? "axstudio-gen-slot" : `img-${i}-${typeof img === "string" && img.startsWith("data:") ? img.length : String(img).slice(0, 24)}`}
                 style={{
                   position: "relative", aspectRatio: "1", borderRadius: 10, overflow: "hidden",
-                  border: `1px solid ${img === STUDIO_IMAGE_GENERATING ? "rgba(123,77,255,0.45)" : AX.border}`,
+                  border: `1px solid ${isImgSelected ? "rgba(139,92,246,0.7)" : isGen ? "rgba(123,77,255,0.45)" : AX.border}`,
                   background: AX.bg, width: "100%",
-                  ...(img === STUDIO_IMAGE_GENERATING ? { animation: "axstudio-glow-pulse 2.2s ease-in-out infinite" } : {}),
+                  ...(isGen ? { animation: "axstudio-glow-pulse 2.2s ease-in-out infinite" } : {}),
                 }}
               >
                 <button
                   type="button"
-                  onClick={() => img !== "FACE_SWAP_PENDING" && img !== STUDIO_IMAGE_GENERATING && onImageRecallPrompt?.(img)}
-                  disabled={img === "FACE_SWAP_PENDING" || img === STUDIO_IMAGE_GENERATING}
-                  title="Carica prompt nel campo"
+                  onClick={() => {
+                    if (isPlaceholder) return;
+                    if (selectionMode) { toggleSelection(img); return; }
+                    onImageRecallPrompt?.(img);
+                  }}
+                  disabled={isPlaceholder}
+                  title={selectionMode ? "Seleziona / deseleziona" : "Carica prompt nel campo"}
                   style={{
                     position: "absolute", inset: 0, border: "none", padding: 0, margin: 0,
-                    cursor: img === "FACE_SWAP_PENDING" || img === STUDIO_IMAGE_GENERATING ? "default" : "pointer",
+                    cursor: isPlaceholder ? "default" : "pointer",
                     display: "block", width: "100%", height: "100%", background: "transparent", borderRadius: 0,
                   }}
                 >
-                  {img === STUDIO_IMAGE_GENERATING ? (
+                  {isGen ? (
                     <div
                       style={{
                         width: "100%", height: "100%", position: "relative",
@@ -4342,7 +4460,7 @@ const StudioResultsSidebar = React.memo(function StudioResultsSidebar({ kind, im
                       <span style={{ fontSize: 9, fontWeight: 800, color: AX.electric, letterSpacing: "0.12em", textTransform: "uppercase", zIndex: 1, textAlign: "center", padding: "0 6px", lineHeight: 1.35, textShadow: "0 0 12px rgba(79,216,255,0.35)" }}>Creazione in corso</span>
                       <span style={{ fontSize: 8, fontWeight: 600, color: AX.muted, zIndex: 1, letterSpacing: "0.06em", textTransform: "uppercase" }}>AXSTUDIO · GPU</span>
                     </div>
-                  ) : img === "FACE_SWAP_PENDING" ? (
+                  ) : isSwap ? (
                     <div style={{ width: "100%", height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", background: "linear-gradient(135deg, rgba(41,182,255,0.12), rgba(123,77,255,0.1))", gap: 6 }}>
                       <div style={{ width: 22, height: 22, border: "2px solid rgba(41,182,255,0.25)", borderTopColor: AX.electric, borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
                       <span style={{ fontSize: 9, fontWeight: 600, color: AX.electric, padding: "0 4px", textAlign: "center" }}>Face swap…</span>
@@ -4351,7 +4469,22 @@ const StudioResultsSidebar = React.memo(function StudioResultsSidebar({ kind, im
                     <img alt="" src={img} style={{ width: "100%", height: "100%", objectFit: "cover", objectPosition: THUMB_COVER_POSITION, display: "block" }} />
                   )}
                 </button>
-                {img !== STUDIO_IMAGE_GENERATING && img !== "FACE_SWAP_PENDING" && (
+                {selectionMode && !isPlaceholder && (
+                  <div
+                    onClick={e => { e.stopPropagation(); toggleSelection(img); }}
+                    style={{
+                      position: "absolute", top: 4, left: 4, zIndex: 10,
+                      width: 22, height: 22, borderRadius: 4,
+                      background: isImgSelected ? "#8b5cf6" : "rgba(0,0,0,0.55)",
+                      border: isImgSelected ? "2px solid #a78bfa" : "2px solid rgba(255,255,255,0.85)",
+                      display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer",
+                      boxShadow: "0 1px 4px rgba(0,0,0,0.5)",
+                    }}
+                  >
+                    {isImgSelected && <span style={{ color: "#fff", fontSize: 14, lineHeight: 1 }}>✓</span>}
+                  </div>
+                )}
+                {!selectionMode && !isPlaceholder && (
                   <div style={{ position: "absolute", top: 4, right: 4, zIndex: 6, display: "flex", gap: 4 }}>
                     {typeof onImagePreview === "function" && (
                       <button
@@ -4388,10 +4521,11 @@ const StudioResultsSidebar = React.memo(function StudioResultsSidebar({ kind, im
                   </div>
                 )}
               </div>
-            ))}
+              );
+            })}
           </div>
         ) : (
-          <VideoThumbnailGrid videos={singleVideos} cfg={cfg} onVideoPreview={onVideoPreview} onVideoRecallPrompt={onVideoRecallPrompt} onRemoveVideo={onRemoveVideo} />
+          <VideoThumbnailGrid videos={singleVideos} cfg={cfg} onVideoPreview={onVideoPreview} onVideoRecallPrompt={onVideoRecallPrompt} onRemoveVideo={onRemoveVideo} selectionMode={selectionMode} selectedItems={selectedItems} onToggleSelect={toggleSelection} />
         )}
       </div>
     </aside>
@@ -5074,12 +5208,12 @@ export default function AIStudio() {
               minHeight: 0,
               overflowX: "hidden",
               overflowY: (isProjectDetail || view === "free-video") ? "auto" : "hidden",
-              padding: "18px 28px 20px",
+              padding: view === "free-video" ? "0 18px 20px 8px" : "18px 24px 20px 24px",
               display: "flex",
               flexDirection: "column",
             }
             : mainScrollLocked
-              ? { flex: 1, minHeight: 0, minWidth: 0, overflow: "hidden", padding: "18px 28px 20px", display: "flex", flexDirection: "column" }
+              ? { flex: 1, minHeight: 0, minWidth: 0, overflow: "hidden", padding: "18px 24px 20px 24px", display: "flex", flexDirection: "column" }
               : { display: "contents" }
         }>
         {/* ═══ HOME ═══ */}
@@ -5749,6 +5883,7 @@ export default function AIStudio() {
             videoHistory={studioSidebarVideoHistory}
             expandedScreenplays={expandedScreenplays}
             onExpandedScreenplaysChange={setExpandedScreenplays}
+            isProjectContext={isProjectDetail}
           />
         ) : null}
       </main>
@@ -8248,38 +8383,31 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
         />
       ) : null}
 
-      {/* ── Sezione A — Aspetto (stile visivo) ── */}
-      <div style={{ marginBottom: vfill ? 16 : 22, flexShrink: 0, borderRadius: 12, border: `1px solid ${AX.border}`, background: "rgba(10,10,15,0.35)", overflow: "hidden" }}>
-        <button
-          type="button"
-          onClick={() => setVisualSectionOpen(p => !p)}
-          style={{
-            width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between",
-            padding: "10px 14px", border: "none", background: "transparent", cursor: "pointer",
-          }}
-        >
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <HiChevronRight size={14} style={{ color: AX.muted, transform: visualSectionOpen ? "rotate(90deg)" : "rotate(0deg)", transition: "transform 0.2s ease", flexShrink: 0 }} />
-            <span style={{ fontSize: 11, color: AX.muted, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em" }}>🎨 Aspetto</span>
-            {selectedVideoStyles.length > 0 && (
-              <span style={{ fontSize: 9, fontWeight: 700, color: AX.magenta, background: "rgba(255,79,163,0.15)", borderRadius: 6, padding: "2px 6px" }}>1</span>
+      {/* ── Sezione A — Stile (stile visivo) ── */}
+      <div style={{ marginBottom: vfill ? 20 : 28, flexShrink: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+          <button
+            type="button"
+            onClick={() => setVisualSectionOpen(p => !p)}
+            style={{ display: "flex", alignItems: "center", gap: 6, border: "none", background: "transparent", cursor: "pointer", padding: 0 }}
+          >
+            <HiChevronRight size={12} style={{ color: AX.muted, transform: visualSectionOpen ? "rotate(90deg)" : "rotate(0deg)", transition: "transform 0.2s ease", flexShrink: 0 }} />
+            <span style={{ fontSize: 11, color: AX.muted, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em" }}>Stile</span>
+            {!visualSectionOpen && selectedVideoStyles.length > 0 && (
+              <span style={{ fontSize: 9, fontWeight: 700, color: AX.magenta, background: "rgba(255,79,163,0.15)", borderRadius: 6, padding: "2px 6px" }}>{selectedVideoStyles.length}</span>
             )}
             {!visualSectionOpen && visualStyleSuggestion && selectedVideoStyles.length === 0 && (
               <span style={{ fontSize: 9, fontWeight: 600, color: AX.gold, background: "rgba(255,179,71,0.12)", borderRadius: 6, padding: "2px 6px" }}>AI</span>
             )}
-          </div>
+          </button>
           {selectedVideoStyles.length > 0 && (
-            <span
-              role="button"
-              tabIndex={0}
-              onClick={e => { e.stopPropagation(); setSelectedVideoStyles([]); setVidStyleSelectionMode("auto"); vidStyleManualOverrideForSourceRef.current = null; }}
-              onKeyDown={e => { if (e.key === "Enter") { e.stopPropagation(); setSelectedVideoStyles([]); setVidStyleSelectionMode("auto"); vidStyleManualOverrideForSourceRef.current = null; } }}
-              style={{ fontSize: 10, color: AX.muted, cursor: "pointer", padding: "2px 4px" }}
-            >Rimuovi</span>
+            <button type="button" onClick={() => { setSelectedVideoStyles([]); setVidStyleSelectionMode("auto"); vidStyleManualOverrideForSourceRef.current = null; }} style={{ fontSize: 10, color: AX.muted, background: "none", border: "none", cursor: "pointer", padding: 0 }}>
+              Rimuovi tutti
+            </button>
           )}
-        </button>
+        </div>
         {visualSectionOpen && (
-          <div style={{ padding: "4px 12px 12px" }}>
+          <div>
             {/* ── Box Aspetto suggerito dall'immagine ── */}
             {visualStyleSuggestion && (() => {
               const suggId = visualStyleSuggestion.presetId;
@@ -8322,7 +8450,7 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
                 </div>
               );
             })()}
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(100px, 1fr))", gap: 8 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(110px, 1fr))", gap: 10 }}>
               {VIDEO_VISUAL_STYLE_PRESETS.map(s => {
                 const isActive = selectedVideoStyles.includes(s.id);
                 const imgSrc = resolveStyleCardSrc(s, "video");
@@ -8333,11 +8461,15 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
                     title={s.label}
                     onClick={() => { setVidStyleSelectionMode("manual"); vidStyleManualOverrideForSourceRef.current = sourceImg; setSelectedVideoStyles(prev => prev.includes(s.id) ? [] : [s.id]); }}
                     style={{
-                      width: "100%", aspectRatio: "1 / 1", padding: 0,
-                      border: `2px solid ${isActive ? AX.magenta : "transparent"}`,
-                      borderRadius: 12, overflow: "hidden", cursor: "pointer",
+                      width: "100%",
+                      aspectRatio: "1 / 1",
+                      padding: 0,
+                      border: `2px solid ${isActive ? AX.electric : "transparent"}`,
+                      borderRadius: 12,
+                      overflow: "hidden",
+                      cursor: "pointer",
                       background: s.preview || AX.surface,
-                      boxShadow: isActive ? `0 0 0 1px ${AX.magenta}, 0 4px 20px rgba(255,79,163,0.35)` : "0 2px 8px rgba(0,0,0,0.4)",
+                      boxShadow: isActive ? `0 0 0 1px ${AX.electric}, 0 4px 20px rgba(41,182,255,0.35)` : "0 2px 8px rgba(0,0,0,0.4)",
                       transition: "border-color 0.15s, box-shadow 0.15s, transform 0.12s",
                       transform: isActive ? "translateY(-2px) scale(1.04)" : "none",
                       position: "relative",
@@ -8352,12 +8484,30 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
                         <span style={{ position: "absolute", top: "50%", left: "50%", transform: "translate(-50%,-50%)", fontSize: 28 }}>{s.icon}</span>
                       </div>
                     )}
-                    <div style={{ position: "absolute", top: 5, left: 5, width: 16, height: 16, borderRadius: 4, background: "rgba(0,0,0,0.55)", backdropFilter: "blur(4px)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 8, color: "rgba(255,255,255,0.85)", lineHeight: 1 }}>▶</div>
-                    <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, padding: "22px 5px 7px", background: "linear-gradient(180deg, transparent 0%, rgba(0,0,0,0.85) 100%)", display: "flex", alignItems: "flex-end", justifyContent: "center" }}>
-                      <span style={{ fontSize: 11, fontWeight: 700, color: isActive ? AX.magenta : "#fff", textAlign: "center", lineHeight: 1.2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", width: "100%", display: "block", textShadow: "0 1px 4px rgba(0,0,0,0.9)" }}>{s.label}</span>
+                    <div style={{
+                      position: "absolute", bottom: 0, left: 0, right: 0,
+                      padding: "22px 5px 7px",
+                      background: "linear-gradient(180deg, transparent 0%, rgba(0,0,0,0.85) 100%)",
+                      display: "flex", alignItems: "flex-end", justifyContent: "center",
+                    }}>
+                      <span style={{
+                        fontSize: 11, fontWeight: 700,
+                        color: isActive ? AX.electric : "#fff",
+                        textAlign: "center", lineHeight: 1.2,
+                        whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                        width: "100%", display: "block",
+                        textShadow: "0 1px 4px rgba(0,0,0,0.9)",
+                      }}>{s.label}</span>
                     </div>
                     {isActive && (
-                      <div style={{ position: "absolute", top: 5, right: 5, width: 18, height: 18, borderRadius: "50%", background: AX.magenta, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, color: "#fff", fontWeight: 900, boxShadow: "0 0 8px rgba(255,79,163,0.7)" }}>✓</div>
+                      <div style={{
+                        position: "absolute", top: 5, right: 5,
+                        width: 18, height: 18, borderRadius: "50%",
+                        background: AX.electric,
+                        display: "flex", alignItems: "center", justifyContent: "center",
+                        fontSize: 10, color: AX.bg, fontWeight: 900,
+                        boxShadow: "0 0 8px rgba(41,182,255,0.7)",
+                      }}>✓</div>
                     )}
                   </button>
                 );
@@ -8367,19 +8517,21 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
         )}
       </div>
 
+      {/* Separatore Stile / Regia */}
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: vfill ? 20 : 28, marginTop: vfill ? 12 : 16, flexShrink: 0 }}>
+        <div style={{ flex: 1, height: 1, background: `linear-gradient(90deg, transparent 0%, ${AX.border} 40%, ${AX.border} 60%, transparent 100%)` }} />
+      </div>
+
       {/* ── Sezione B — Regia (stile di camera/motion) ── */}
-      <div style={{ marginBottom: vfill ? 20 : 28, flexShrink: 0, borderRadius: 12, border: `1px solid ${AX.border}`, background: "rgba(10,10,15,0.35)", overflow: "hidden" }}>
-        <button
-          type="button"
-          onClick={() => setDirectionSectionOpen(p => !p)}
-          style={{
-            width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between",
-            padding: "10px 14px", border: "none", background: "transparent", cursor: "pointer",
-          }}
-        >
-          <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0, flex: 1 }}>
-            <HiChevronRight size={14} style={{ color: AX.muted, transform: directionSectionOpen ? "rotate(90deg)" : "rotate(0deg)", transition: "transform 0.2s ease", flexShrink: 0 }} />
-            <span style={{ fontSize: 11, color: AX.muted, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", flexShrink: 0 }}>🎥 Regia</span>
+      <div style={{ marginBottom: vfill ? 20 : 28, flexShrink: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+          <button
+            type="button"
+            onClick={() => setDirectionSectionOpen(p => !p)}
+            style={{ display: "flex", alignItems: "center", gap: 6, border: "none", background: "transparent", cursor: "pointer", padding: 0, minWidth: 0, flex: 1 }}
+          >
+            <HiChevronRight size={12} style={{ color: AX.muted, transform: directionSectionOpen ? "rotate(90deg)" : "rotate(0deg)", transition: "transform 0.2s ease", flexShrink: 0 }} />
+            <span style={{ fontSize: 11, color: AX.muted, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", flexShrink: 0 }}>Regia</span>
             {!directionSectionOpen && (selectedDirectionStyles || []).length > 0 && (
               <div style={{ display: "flex", gap: 4, flexWrap: "wrap", minWidth: 0 }}>
                 {(selectedDirectionStyles || []).map(id => {
@@ -8392,25 +8544,18 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
                 })}
               </div>
             )}
-            {directionSectionOpen && (selectedDirectionStyles || []).length > 0 && (
-              <span style={{ fontSize: 9, fontWeight: 700, color: AX.electric, background: "rgba(79,216,255,0.15)", borderRadius: 6, padding: "2px 6px" }}>1</span>
-            )}
             {!directionSectionOpen && directionRecommendation && (selectedDirectionStyles || []).length === 0 && (
               <span style={{ fontSize: 9, fontWeight: 600, color: AX.gold, background: "rgba(255,179,71,0.12)", borderRadius: 6, padding: "2px 6px" }}>AI</span>
             )}
-          </div>
+          </button>
           {(selectedDirectionStyles || []).length > 0 && (
-            <span
-              role="button"
-              tabIndex={0}
-              onClick={e => { e.stopPropagation(); setSelectedDirectionStyles([]); }}
-              onKeyDown={e => { if (e.key === "Enter") { e.stopPropagation(); setSelectedDirectionStyles([]); } }}
-              style={{ fontSize: 10, color: AX.muted, cursor: "pointer", padding: "2px 4px" }}
-            >Rimuovi</span>
+            <button type="button" onClick={() => setSelectedDirectionStyles([])} style={{ fontSize: 10, color: AX.muted, background: "none", border: "none", cursor: "pointer", padding: 0 }}>
+              Rimuovi tutti
+            </button>
           )}
-        </button>
+        </div>
         {directionSectionOpen && (
-          <div style={{ padding: "4px 12px 12px" }}>
+          <div>
             {/* ── Box Regia consigliata dall'AI ── */}
             {(directionRecommendation || directionRecLoading) && (
               <div style={{ marginBottom: 12, padding: "10px 14px", borderRadius: 10, background: "rgba(79,216,255,0.06)", border: `1px solid rgba(79,216,255,0.18)` }}>
@@ -8474,7 +8619,7 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
                 })()}
               </div>
             )}
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(100px, 1fr))", gap: 8 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(110px, 1fr))", gap: 10 }}>
               {VIDEO_DIRECTION_STYLE_PRESETS.map(s => {
                 const isActive = (selectedDirectionStyles || []).includes(s.id);
                 const imgSrc = resolveStyleCardSrc(s, "video-direction");
@@ -8519,7 +8664,7 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
       </div>
 
       {/* Separatore */}
-      <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: vfill ? 20 : 28, marginBottom: vfill ? 34 : 42, flexShrink: 0 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: vfill ? 48 : 60, marginTop: vfill ? 34 : 42, flexShrink: 0 }}>
         <div style={{ flex: 1, height: 1, background: `linear-gradient(90deg, transparent 0%, ${AX.border} 40%, ${AX.border} 60%, transparent 100%)` }} />
       </div>
 
