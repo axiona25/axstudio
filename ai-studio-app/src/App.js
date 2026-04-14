@@ -10764,9 +10764,10 @@ function SettingsPage({ voiceLibrary, setVoiceLibrary, elFavorites, setElFavorit
         extractedAudioPath, segmentStart, segmentDuration, trimmedPath
       );
       if (!trimResult?.success) throw new Error("Errore nel taglio audio: " + (trimResult?.error || ""));
+      console.log("[TRIM] path:", trimResult.path);
       const loadResult = await window.electronAPI.loadFile(trimResult.path);
-      if (!loadResult?.base64Data) throw new Error("Impossibile leggere il file audio tagliato");
-      const binary = atob(loadResult.base64Data);
+      if (!loadResult?.data) throw new Error("Impossibile leggere il file audio tagliato");
+      const binary = atob(loadResult.data);
       const bytes = new Uint8Array(binary.length);
       for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
       const file = new File([bytes], "voice_sample.mp3", { type: "audio/mpeg" });
@@ -11375,9 +11376,15 @@ function VoiceGen() {
 
 // ── Modal ──
 function Modal({ title, titleIcon, children, onClose, maxWidth = 480 }) {
+  const backdropRef = useRef(null);
+  const mouseDownTargetRef = useRef(null);
   return (
-    <div style={{ position: "fixed", inset: 0, background: "rgba(10,10,15,0.85)", backdropFilter: "blur(14px)", WebkitBackdropFilter: "blur(14px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 20 }} onClick={onClose} role="presentation">
-      <div onClick={e => e.stopPropagation()} style={{ background: AX.sidebar, borderRadius: 20, border: `1px solid ${AX.border}`, maxWidth, width: "100%", boxShadow: "0 32px 80px rgba(0,0,0,0.55), 0 0 0 1px rgba(255,255,255,0.03) inset", overflow: "hidden" }} role="dialog" aria-modal="true">
+    <div ref={backdropRef}
+      style={{ position: "fixed", inset: 0, background: "rgba(10,10,15,0.85)", backdropFilter: "blur(14px)", WebkitBackdropFilter: "blur(14px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 20 }}
+      onMouseDown={e => { mouseDownTargetRef.current = e.target; }}
+      onClick={e => { if (e.target === backdropRef.current && mouseDownTargetRef.current === backdropRef.current) onClose(); }}
+      role="presentation">
+      <div onClick={e => e.stopPropagation()} onMouseDown={e => e.stopPropagation()} style={{ background: AX.sidebar, borderRadius: 20, border: `1px solid ${AX.border}`, maxWidth, width: "100%", boxShadow: "0 32px 80px rgba(0,0,0,0.55), 0 0 0 1px rgba(255,255,255,0.03) inset", overflow: "hidden" }} role="dialog" aria-modal="true">
         {/* Header */}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "18px 24px", borderBottom: `1px solid ${AX.border}`, background: AX.bg }}>
           <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: AX.text, display: "flex", alignItems: "center", gap: 10, letterSpacing: "-0.01em" }}>
