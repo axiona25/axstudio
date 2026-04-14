@@ -4075,32 +4075,43 @@ const VideoThumbnailGrid = React.memo(function VideoThumbnailGrid({ videos, cfg,
 const StudioResultsSidebar = React.memo(function StudioResultsSidebar({ kind, images, videos, density, onDensityChange, onImagePreview, onVideoPreview, onRemoveImage, onRemoveVideo, onImageRecallPrompt, onVideoRecallPrompt, videoSidebarMode, onVideoSidebarModeChange, videoHistory, expandedScreenplays, onExpandedScreenplaysChange }) {
   const cfg = STUDIO_SIDEBAR_DENSITY[density] || STUDIO_SIDEBAR_DENSITY.medium;
   const nImg = images?.length ?? 0;
-  const nVid = videos?.length ?? 0;
   const isVideo = kind !== "image";
   const sidebarMode = isVideo ? (videoSidebarMode || "videos") : null;
-  const empty = kind === "image" ? nImg === 0 : nVid === 0;
+
+  // URL di video che fanno parte di una sceneggiatura (per escluderli dalla tab "Video")
+  const screenplayVideoUrls = useMemo(() => {
+    if (!isVideo || !videoHistory?.length) return new Set();
+    const urls = new Set();
+    for (const h of videoHistory) {
+      if (h.params?.screenplayId && h.filePath) urls.add(mediaFileUrl(h.filePath));
+    }
+    return urls;
+  }, [isVideo, videoHistory]);
+
+  // Tab "Video": solo video singoli (esclusi clip di sceneggiatura)
+  const singleVideos = useMemo(() => {
+    if (!isVideo) return videos;
+    return (videos || []).filter(v =>
+      v === STUDIO_VIDEO_GENERATING || isClipPlaceholder(v) || !screenplayVideoUrls.has(v)
+    );
+  }, [isVideo, videos, screenplayVideoUrls]);
 
   const screenplayGroups = useMemo(() => {
     if (!isVideo || !videoHistory?.length) return [];
     const byId = new Map();
-    const ungrouped = [];
     for (const h of videoHistory) {
       const spId = h.params?.screenplayId;
-      if (spId) {
-        if (!byId.has(spId)) {
-          byId.set(spId, { id: spId, name: h.params?.screenplayName || "Sceneggiatura", summary: h.params?.screenplaySummary || "", videos: [], lastUpdated: h.createdAt });
-        }
-        const g = byId.get(spId);
-        const url = h.filePath ? mediaFileUrl(h.filePath) : null;
-        if (url) g.videos.push({ url, createdAt: h.createdAt, clipIndex: h.params?.clipIndex ?? null, prompt: h.prompt || "" });
-        const t = h.createdAt ? new Date(h.createdAt).getTime() : 0;
-        if (t > new Date(g.lastUpdated || 0).getTime()) g.lastUpdated = h.createdAt;
-      } else {
-        const url = h.filePath ? mediaFileUrl(h.filePath) : null;
-        if (url) ungrouped.push({ url, createdAt: h.createdAt, prompt: h.prompt || "" });
+      if (!spId) continue;
+      if (!byId.has(spId)) {
+        byId.set(spId, { id: spId, name: h.params?.screenplayName || "Sceneggiatura", summary: h.params?.screenplaySummary || "", videos: [], lastUpdated: h.createdAt });
       }
+      const g = byId.get(spId);
+      const url = h.filePath ? mediaFileUrl(h.filePath) : null;
+      if (url) g.videos.push({ url, createdAt: h.createdAt, clipIndex: h.params?.clipIndex ?? null, prompt: h.prompt || "" });
+      const t = h.createdAt ? new Date(h.createdAt).getTime() : 0;
+      if (t > new Date(g.lastUpdated || 0).getTime()) g.lastUpdated = h.createdAt;
     }
-    const groups = [...byId.values()]
+    return [...byId.values()]
       .map(g => {
         g.videos.sort((a, b) => {
           if (a.clipIndex != null && b.clipIndex != null) return a.clipIndex - b.clipIndex;
@@ -4109,12 +4120,10 @@ const StudioResultsSidebar = React.memo(function StudioResultsSidebar({ kind, im
         return g;
       })
       .sort((a, b) => new Date(b.lastUpdated || 0) - new Date(a.lastUpdated || 0));
-    if (ungrouped.length) {
-      ungrouped.sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
-      groups.push({ id: "__ungrouped__", name: "Video non assegnati", videos: ungrouped, lastUpdated: ungrouped[0]?.createdAt || "" });
-    }
-    return groups;
   }, [isVideo, videoHistory]);
+
+  const nVid = singleVideos?.length ?? 0;
+  const empty = kind === "image" ? nImg === 0 : nVid === 0;
 
   const toggleScreenplay = (spId) => {
     onExpandedScreenplaysChange?.(prev => {
@@ -4222,6 +4231,14 @@ const StudioResultsSidebar = React.memo(function StudioResultsSidebar({ kind, im
               {screenplayGroups.map(group => {
                 const isOpen = expandedScreenplays?.has(group.id);
                 const coverUrl = group.videos[0]?.url;
+                const nClips = group.videos.length;
+                const totalDur = group.videos.reduce((sum, v) => {
+                  const rec = videoHistory?.find(h => h.filePath && mediaFileUrl(h.filePath) === v.url);
+                  return sum + (Number(rec?.params?.duration) || 0);
+                }, 0);
+                const dateLabel = group.lastUpdated
+                  ? new Date(group.lastUpdated).toLocaleDateString("it-IT", { day: "numeric", month: "short", year: "numeric" })
+                  : "";
                 return (
                   <div key={group.id} style={{ borderRadius: 10, border: `1px solid ${isOpen ? "rgba(123,77,255,0.35)" : AX.border}`, background: isOpen ? "rgba(123,77,255,0.04)" : AX.surface, overflow: "hidden", transition: "border-color 0.2s, background 0.2s" }}>
                     <button
@@ -4242,10 +4259,15 @@ const StudioResultsSidebar = React.memo(function StudioResultsSidebar({ kind, im
                       )}
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ fontSize: 12, fontWeight: 700, color: AX.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                          {group.id === "__ungrouped__" ? "Video non assegnati" : group.name}
+                          {group.name}{dateLabel ? ` — ${dateLabel}` : ""}
                         </div>
-                        <div style={{ fontSize: 10, color: AX.muted, marginTop: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                          {group.videos.length} video{group.summary ? ` · ${group.summary}` : ""}
+                        {group.summary && (
+                          <div style={{ fontSize: 10, color: AX.text2, marginTop: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", fontStyle: "italic" }}>
+                            {group.summary}
+                          </div>
+                        )}
+                        <div style={{ fontSize: 10, color: AX.muted, marginTop: 2 }}>
+                          {nClips} clip{totalDur > 0 ? ` — ${totalDur}s totali` : ""}
                         </div>
                       </div>
                       <HiChevronRight
@@ -4369,7 +4391,7 @@ const StudioResultsSidebar = React.memo(function StudioResultsSidebar({ kind, im
             ))}
           </div>
         ) : (
-          <VideoThumbnailGrid videos={videos} cfg={cfg} onVideoPreview={onVideoPreview} onVideoRecallPrompt={onVideoRecallPrompt} onRemoveVideo={onRemoveVideo} />
+          <VideoThumbnailGrid videos={singleVideos} cfg={cfg} onVideoPreview={onVideoPreview} onVideoRecallPrompt={onVideoRecallPrompt} onRemoveVideo={onRemoveVideo} />
         )}
       </div>
     </aside>
@@ -4760,7 +4782,28 @@ export default function AIStudio() {
     setProjectGallerySelectedEntryId(ent.id);
     setProjectVideoSourceImg(url);
     setProjectVideoProposalResetNonce(n => n + 1);
-  }, [selectedCharacter, projects]);
+
+    // Auto-select personaggio dall'immagine selezionata
+    const fp = ent.filePath;
+    if (fp) {
+      const record = history.find(h => h.type === "image" && h.filePath === fp);
+      const charId = record?.params?.characterId;
+      if (charId) {
+        const chars = currentProject?.characters || [];
+        const char = chars.find(c => c.id === charId);
+        if (char) setSelectedCharacter(char);
+      }
+      // Auto-select stili visivi (image → video mapping se disponibile)
+      const savedStyles = record?.params?.selectedStyles;
+      if (savedStyles?.length > 0) {
+        const videoPresetIds = savedStyles
+          .map(sid => resolveVideoPresetFromImageMeta?.(sid))
+          .filter(Boolean)
+          .filter(vid => VALID_VIDEO_PRESET_IDS.has(vid));
+        if (videoPresetIds.length > 0) setVidSelectedStyles(videoPresetIds);
+      }
+    }
+  }, [selectedCharacter, projects, history, currentProject, setVidSelectedStyles]);
 
   useEffect(() => {
     if (!projectGallerySelectedEntryId) return;
@@ -4963,6 +5006,7 @@ export default function AIStudio() {
       <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
       <style>{`
         @keyframes spin{to{transform:rotate(360deg)}}
+        @keyframes fadeInUp{from{opacity:0;transform:translate(-50%,12px)}to{opacity:1;transform:translate(-50%,0)}}
         @keyframes axstudio-shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
         @keyframes axstudio-glow-pulse{0%,100%{box-shadow:inset 0 0 24px rgba(79,216,255,0.06),0 0 0 1px rgba(123,77,255,0.15)}50%{box-shadow:inset 0 0 32px rgba(123,77,255,0.14),0 0 12px rgba(41,182,255,0.12)}}
         textarea:focus,input:focus{outline:none;border-color:${AX.electric}!important;box-shadow:0 0 0 2px rgba(79,216,255,0.2)!important}
@@ -5664,7 +5708,7 @@ export default function AIStudio() {
             </>
           )}
           {activeTab === "video" && (
-            <VidGen {...{ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, videoResolution, setVideoResolution, generating, setGenerating, selectedCharacter, vidTemplates: videoStylePresets, onSaveVideo: saveGeneratedVideo, generatedVideos, setGeneratedVideos, previewVideo: genPreviewVideo, setPreviewVideo: setGenPreviewVideo, layoutFill: false, history, diskMediaEntries, generatedImages, controlledSourceImg: projectVideoSourceImg, setControlledSourceImg: setProjectVideoSourceImg, proposalResetNonce: projectVideoProposalResetNonce, pickerImageEntries: projectGalleryEntryList, pickerSelectedEntryId: projectGallerySelectedEntryId, onPickerImageChange: handleProjectGallerySelection, selectedVideoStyles: vidSelectedStyles, setSelectedVideoStyles: setVidSelectedStyles, selectedDirectionStyles: vidSelectedDirectionStyles, setSelectedDirectionStyles: setVidSelectedDirectionStyles, vidAspect, setVidAspect, vidSteps, setVidSteps, recallVideoUrl, setRecallVideoUrl, videoStatus, setVideoStatus, directionRecommendation: vidDirectionRecommendation, setDirectionRecommendation: setVidDirectionRecommendation, directionRecLoading: vidDirectionRecLoading, setDirectionRecLoading: setVidDirectionRecLoading, imgSessionPromptMap }} />
+            <VidGen {...{ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, videoResolution, setVideoResolution, generating, setGenerating, selectedCharacter, vidTemplates: videoStylePresets, onSaveVideo: saveGeneratedVideo, generatedVideos, setGeneratedVideos, previewVideo: genPreviewVideo, setPreviewVideo: setGenPreviewVideo, layoutFill: false, history, diskMediaEntries, generatedImages, controlledSourceImg: projectVideoSourceImg, setControlledSourceImg: setProjectVideoSourceImg, proposalResetNonce: projectVideoProposalResetNonce, pickerImageEntries: projectGalleryEntryList, pickerSelectedEntryId: projectGallerySelectedEntryId, onPickerImageChange: handleProjectGallerySelection, selectedVideoStyles: vidSelectedStyles, setSelectedVideoStyles: setVidSelectedStyles, selectedDirectionStyles: vidSelectedDirectionStyles, setSelectedDirectionStyles: setVidSelectedDirectionStyles, vidAspect, setVidAspect, vidSteps, setVidSteps, recallVideoUrl, setRecallVideoUrl, videoStatus, setVideoStatus, directionRecommendation: vidDirectionRecommendation, setDirectionRecommendation: setVidDirectionRecommendation, directionRecLoading: vidDirectionRecLoading, setDirectionRecLoading: setVidDirectionRecLoading, imgSessionPromptMap, videoSidebarMode, setVideoSidebarMode, expandedScreenplays, setExpandedScreenplays }} />
           )}
           {activeTab === "voice" && (
             <VoiceGen />
@@ -5683,7 +5727,7 @@ export default function AIStudio() {
         {/* ═══ FREE VIDEO ═══ */}
         {view === "free-video" && (
           <div className="ax-hide-scrollbar" style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflowY: "auto", overflowX: "hidden" }}>
-            <VidGen {...{ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, videoResolution, setVideoResolution, generating, setGenerating, selectedCharacter: null, vidTemplates: videoStylePresets, onSaveVideo: saveGeneratedVideo, generatedVideos, setGeneratedVideos, previewVideo: genPreviewVideo, setPreviewVideo: setGenPreviewVideo, layoutFill: true, history, diskMediaEntries, generatedImages, freeSourceImg: vidFreeSourceImg, setFreeSourceImg: setVidFreeSourceImg, selectedVideoStyles: vidSelectedStyles, setSelectedVideoStyles: setVidSelectedStyles, selectedDirectionStyles: vidSelectedDirectionStyles, setSelectedDirectionStyles: setVidSelectedDirectionStyles, vidAspect, setVidAspect, vidSteps, setVidSteps, recallVideoUrl, setRecallVideoUrl, videoStatus, setVideoStatus, directionRecommendation: vidDirectionRecommendation, setDirectionRecommendation: setVidDirectionRecommendation, directionRecLoading: vidDirectionRecLoading, setDirectionRecLoading: setVidDirectionRecLoading, imgSessionPromptMap }} />
+            <VidGen {...{ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, videoResolution, setVideoResolution, generating, setGenerating, selectedCharacter: null, vidTemplates: videoStylePresets, onSaveVideo: saveGeneratedVideo, generatedVideos, setGeneratedVideos, previewVideo: genPreviewVideo, setPreviewVideo: setGenPreviewVideo, layoutFill: true, history, diskMediaEntries, generatedImages, freeSourceImg: vidFreeSourceImg, setFreeSourceImg: setVidFreeSourceImg, selectedVideoStyles: vidSelectedStyles, setSelectedVideoStyles: setVidSelectedStyles, selectedDirectionStyles: vidSelectedDirectionStyles, setSelectedDirectionStyles: setVidSelectedDirectionStyles, vidAspect, setVidAspect, vidSteps, setVidSteps, recallVideoUrl, setRecallVideoUrl, videoStatus, setVideoStatus, directionRecommendation: vidDirectionRecommendation, setDirectionRecommendation: setVidDirectionRecommendation, directionRecLoading: vidDirectionRecLoading, setDirectionRecLoading: setVidDirectionRecLoading, imgSessionPromptMap, videoSidebarMode, setVideoSidebarMode, expandedScreenplays, setExpandedScreenplays }} />
           </div>
         )}
         </div>
@@ -7061,7 +7105,7 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
 }
 
 // ── Video Generator ──
-function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, videoResolution, setVideoResolution, generating, setGenerating, selectedCharacter, vidTemplates, onSaveVideo, generatedVideos: _gv, setGeneratedVideos, previewVideo, setPreviewVideo, layoutFill, history, diskMediaEntries, generatedImages, controlledSourceImg, setControlledSourceImg, freeSourceImg, setFreeSourceImg, proposalResetNonce = 0, pickerImageEntries, pickerSelectedEntryId, onPickerImageChange, selectedVideoStyles, setSelectedVideoStyles, selectedDirectionStyles, setSelectedDirectionStyles, vidAspect, setVidAspect, vidSteps, setVidSteps, recallVideoUrl, setRecallVideoUrl, videoStatus, setVideoStatus, directionRecommendation, setDirectionRecommendation, directionRecLoading, setDirectionRecLoading, imgSessionPromptMap }) {
+function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, videoResolution, setVideoResolution, generating, setGenerating, selectedCharacter, vidTemplates, onSaveVideo, generatedVideos: _gv, setGeneratedVideos, previewVideo, setPreviewVideo, layoutFill, history, diskMediaEntries, generatedImages, controlledSourceImg, setControlledSourceImg, freeSourceImg, setFreeSourceImg, proposalResetNonce = 0, pickerImageEntries, pickerSelectedEntryId, onPickerImageChange, selectedVideoStyles, setSelectedVideoStyles, selectedDirectionStyles, setSelectedDirectionStyles, vidAspect, setVidAspect, vidSteps, setVidSteps, recallVideoUrl, setRecallVideoUrl, videoStatus, setVideoStatus, directionRecommendation, setDirectionRecommendation, directionRecLoading, setDirectionRecLoading, imgSessionPromptMap, videoSidebarMode, setVideoSidebarMode, expandedScreenplays, setExpandedScreenplays }) {
   const [tmpl, setTmpl] = useState(null);
   const sourceIsControlled = typeof setControlledSourceImg === "function";
   const sourceImg = sourceIsControlled ? (controlledSourceImg ?? null) : (freeSourceImg ?? null);
@@ -7080,6 +7124,20 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
   const [visualSectionOpen, setVisualSectionOpen] = useState(true);
   const [directionSectionOpen, setDirectionSectionOpen] = useState(false);
   const [recallVideoFeedback, setRecallVideoFeedback] = useState(null);
+  const [toast, setToast] = useState(null);
+  const promptFocusedOnceRef = useRef(false);
+
+  const showToast = useCallback((msg, ms = 4000) => {
+    setToast(msg);
+    setTimeout(() => setToast(null), ms);
+  }, []);
+
+  const handlePromptFocus = useCallback(() => {
+    if (promptFocusedOnceRef.current) return;
+    promptFocusedOnceRef.current = true;
+    setVisualSectionOpen(false);
+    setDirectionSectionOpen(true);
+  }, []);
   const [visualStyleSuggestion, setVisualStyleSuggestion] = useState(null);
   const [vidStyleSelectionMode, setVidStyleSelectionMode] = useState("auto");
   const vidStyleManualOverrideForSourceRef = useRef(null);
@@ -7458,6 +7516,10 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
     setVideoStatus("");
     _vidGenProgress.startTime = Date.now();
     _vidGenProgress.duration = vidDurationOverrideRef.current ?? videoDuration;
+    // Single video: ensure sidebar shows "videos" tab
+    if (!vidScreenplayCtxRef.current && typeof setVideoSidebarMode === "function") {
+      setVideoSidebarMode("videos");
+    }
     setGeneratedVideos(p => [STUDIO_VIDEO_GENERATING, ...p.filter(x => x !== STUDIO_VIDEO_GENERATING)]);
     try {
       // ── Stili video a due livelli: Aspetto (visual) + Regia (direction) ──
@@ -7878,8 +7940,8 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
 
       setGeneratedVideos(p => [displayUrl, ...p.filter(x => x !== STUDIO_VIDEO_GENERATING)]);
       setGenerating(false);
-      setVideoStatus("Video completato ✓");
-      setTimeout(() => setVideoStatus(""), 3000);
+      setVideoStatus("");
+      if (!vidScreenplayCtxRef.current) showToast("✅ Video generato con successo!");
 
       return { videoUrl: displayUrl, endFrame: result?.end_frame_url || result?.thumbnail?.url || null };
     } catch (e) {
@@ -8012,6 +8074,7 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
   // Genera tutti i clip suggeriti dall'LLM in sequenza
   const handleGenerateAllClips = async (clips) => {
     if (!clips?.length) return;
+    setGenerating(true);
     setProposedVideoPrompt(null);
     setEditableVideoIT("");
     setTranslateVideoErr("");
@@ -8019,7 +8082,13 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
     const prevDurMode = vidDurationSelectionMode;
     setVidDurationSelectionMode("manual");
 
+    // Switch sidebar alla tab Sceneggiatura e espandi il contenitore
+    if (typeof setVideoSidebarMode === "function") setVideoSidebarMode("screenplays");
+
     const spId = `sp_${Date.now()}`;
+    if (typeof setExpandedScreenplays === "function") {
+      setExpandedScreenplays(prev => new Set([...prev, spId]));
+    }
     const existingSpIds = new Set();
     for (const h of (historyVidRef.current || [])) { if (h.params?.screenplayId) existingSpIds.add(h.params.screenplayId); }
     const sceneNumber = existingSpIds.size + 1;
@@ -8137,9 +8206,10 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
     vidScreenplayCtxRef.current = null;
     vidFaceSwappedFrameRef.current = null;
     vidStartImageOverrideRef.current = null;
+    setGenerating(false);
     setVidDurationSelectionMode(prevDurMode);
-    setVideoStatus(`✅ ${clips.length} clip generati!`);
-    setTimeout(() => setVideoStatus(""), 3000);
+    setVideoStatus("");
+    showToast(`✅ Sceneggiatura completata — ${clips.length} clip generati!`);
   };
 
   const vfill = Boolean(layoutFill);
@@ -8527,6 +8597,7 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
         <textarea
           value={videoPrompt}
           onChange={e => { setVideoPrompt(e.target.value); vidEnIsStaleRef.current = true; }}
+          onFocus={handlePromptFocus}
           placeholder={videoMode === "screenplay"
             ? "Scrivi la tua sceneggiatura — descrivi tutte le scene e le azioni in dettaglio. Il sistema le dividerà automaticamente in clip ottimali…"
             : "Descrivi il movimento e l'azione del video..."}
@@ -8644,9 +8715,11 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
                         type="button"
                         onClick={() => handleGenerateAllClips(editableClips)}
                         disabled={generating || editableClips.length === 0}
-                        style={{ padding: "6px 14px", borderRadius: 8, border: "none", background: generating ? AX.border : "linear-gradient(135deg, #FF4FA3 0%, #7B4DFF 100%)", color: generating ? AX.muted : "#fff", fontWeight: 700, fontSize: 12, cursor: generating ? "not-allowed" : "pointer" }}
+                        style={{ padding: "6px 14px", borderRadius: 8, border: "none", background: generating ? AX.border : "linear-gradient(135deg, #FF4FA3 0%, #7B4DFF 100%)", color: generating ? AX.muted : "#fff", fontWeight: 700, fontSize: 12, cursor: generating ? "not-allowed" : "pointer", display: "inline-flex", alignItems: "center", gap: 6 }}
                       >
-                        🎬 Genera {editableClips.length} clip
+                        {generating
+                          ? <><div style={{ width: 12, height: 12, border: "2px solid rgba(255,255,255,0.2)", borderTopColor: "#fff", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} /> Preparazione…</>
+                          : `🎬 Genera ${editableClips.length} clip`}
                       </button>
                     </div>
                   </div>
@@ -8841,9 +8914,11 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
               type="button"
               onClick={() => handleGenerateAllClips(editableClips)}
               disabled={generating || editableClips.length === 0}
-              style={{ padding: "8px 20px", borderRadius: 8, border: "none", background: generating ? AX.surface : AX.gradPrimary, color: generating ? AX.muted : "#fff", fontWeight: 700, fontSize: 13, cursor: generating ? "not-allowed" : "pointer" }}
+              style={{ padding: "8px 20px", borderRadius: 8, border: "none", background: generating ? AX.surface : AX.gradPrimary, color: generating ? AX.muted : "#fff", fontWeight: 700, fontSize: 13, cursor: generating ? "not-allowed" : "pointer", display: "inline-flex", alignItems: "center", gap: 8 }}
             >
-              {generating ? "⏳ Generazione in corso…" : `🎬 Genera ${editableClips.length} clip`}
+              {generating
+                ? <><div style={{ width: 14, height: 14, border: "2px solid rgba(255,255,255,0.2)", borderTopColor: "#fff", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} /> Preparazione clip…</>
+                : `🎬 Genera ${editableClips.length} clip`}
             </button>
           </div>
         </div>
@@ -8857,6 +8932,18 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
           setVideoStatus={setVideoStatus}
         />
       ) : null}
+
+      {toast && (
+        <div style={{
+          position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)",
+          background: "rgba(16,185,129,0.95)", color: "#fff", padding: "12px 24px",
+          borderRadius: 12, fontSize: 14, fontWeight: 600, zIndex: 9999,
+          boxShadow: "0 4px 20px rgba(0,0,0,0.3)", backdropFilter: "blur(8px)",
+          animation: "fadeInUp 0.3s ease", whiteSpace: "nowrap",
+        }}>
+          {toast}
+        </div>
+      )}
     </div>
   );
 }
