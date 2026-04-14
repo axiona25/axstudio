@@ -4247,6 +4247,26 @@ const VideoThumbnailGrid = React.memo(function VideoThumbnailGrid({ videos, cfg,
               <video src={vid} muted playsInline preload="metadata" style={{ width: "100%", height: "100%", objectFit: "cover", objectPosition: THUMB_COVER_POSITION, display: "block", pointerEvents: "none" }} />
             )}
           </button>
+          {isPlaceholder && typeof onRemoveVideo === "function" && (
+            <button
+              type="button"
+              aria-label="Annulla generazione"
+              title="Annulla"
+              onClick={e => { e.stopPropagation(); e.preventDefault(); onRemoveVideo(indexOffset + i, vid); }}
+              style={{
+                position: "absolute", top: 5, right: 5, zIndex: 10,
+                width: 24, height: 24, borderRadius: 6,
+                background: "rgba(10,10,15,0.85)", border: `1px solid rgba(255,255,255,0.15)`,
+                color: "rgba(255,255,255,0.7)", cursor: "pointer",
+                display: "flex", alignItems: "center", justifyContent: "center", padding: 0,
+                backdropFilter: "blur(4px)", transition: "all 0.15s ease",
+              }}
+              onMouseEnter={e => { e.currentTarget.style.background = "rgba(239,68,68,0.7)"; e.currentTarget.style.color = "#fff"; }}
+              onMouseLeave={e => { e.currentTarget.style.background = "rgba(10,10,15,0.85)"; e.currentTarget.style.color = "rgba(255,255,255,0.7)"; }}
+            >
+              <HiXMark size={14} />
+            </button>
+          )}
           {selectionMode && !isPlaceholder && (
             <div
               onClick={e => { e.stopPropagation(); onToggleSelect?.(vid); }}
@@ -4685,6 +4705,26 @@ const StudioResultsSidebar = React.memo(function StudioResultsSidebar({ kind, im
                     <img alt="" src={img} style={{ width: "100%", height: "100%", objectFit: "cover", objectPosition: THUMB_COVER_POSITION, display: "block" }} />
                   )}
                 </button>
+                {isPlaceholder && (
+                  <button
+                    type="button"
+                    aria-label="Annulla generazione"
+                    title="Annulla"
+                    onClick={e => { e.stopPropagation(); e.preventDefault(); onRemoveImage(i, img); }}
+                    style={{
+                      position: "absolute", top: 5, right: 5, zIndex: 10,
+                      width: 24, height: 24, borderRadius: 6,
+                      background: "rgba(10,10,15,0.85)", border: `1px solid rgba(255,255,255,0.15)`,
+                      color: "rgba(255,255,255,0.7)", cursor: "pointer",
+                      display: "flex", alignItems: "center", justifyContent: "center", padding: 0,
+                      backdropFilter: "blur(4px)", transition: "all 0.15s ease",
+                    }}
+                    onMouseEnter={e => { e.currentTarget.style.background = "rgba(239,68,68,0.7)"; e.currentTarget.style.color = "#fff"; }}
+                    onMouseLeave={e => { e.currentTarget.style.background = "rgba(10,10,15,0.85)"; e.currentTarget.style.color = "rgba(255,255,255,0.7)"; }}
+                  >
+                    <HiXMark size={14} />
+                  </button>
+                )}
                 {selectionMode && !isPlaceholder && (
                   <div
                     onClick={e => { e.stopPropagation(); toggleSelection(img); }}
@@ -6507,7 +6547,11 @@ export default function AIStudio() {
 
           {activeTab === "image" && (
             <>
-              <ImgGen {...{ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setResolution, generating, setGenerating, generatedImages, setGeneratedImages, selectedCharacter, setSelectedCharacter, projectCharacters: currentProject?.characters || [], scenes: scenePresets, onSave: saveGeneratedImage, previewImg: genPreviewImg, setPreviewImg: setGenPreviewImg, layoutFill: false, history, recallImageUrl, setRecallImageUrl, selectedStyles: imgSelectedStyles, setSelectedStyles: setImgSelectedStyles, aspect: imgAspect, setAspect: setImgAspect, steps: imgSteps, setSteps: setImgSteps, cfg: imgCfg, setCfg: setImgCfg, adv: imgAdv, setAdv: setImgAdv, projectSourceImageUrl, setProjectSourceImageUrl, currentProjectId: currentProject?.id, imgSessionPromptMap, imgPickerEntries: projectGalleryEntryList, imgPickerSelectedId: imgGallerySelectedEntryId, onImgPickerChange: handleImgGalleryPick }} />
+              <ImgGen {...{ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setResolution, generating, setGenerating, generatedImages, setGeneratedImages, selectedCharacter, setSelectedCharacter, projectCharacters: currentProject?.characters || [], scenes: scenePresets, onSave: saveGeneratedImage, previewImg: genPreviewImg, setPreviewImg: setGenPreviewImg, layoutFill: false, history, recallImageUrl, setRecallImageUrl, selectedStyles: imgSelectedStyles, setSelectedStyles: setImgSelectedStyles, aspect: imgAspect, setAspect: setImgAspect, steps: imgSteps, setSteps: setImgSteps, cfg: imgCfg, setCfg: setImgCfg, adv: imgAdv, setAdv: setImgAdv, projectSourceImageUrl, setProjectSourceImageUrl, currentProjectId: currentProject?.id, imgSessionPromptMap, imgPickerEntries: projectGalleryEntryList, imgPickerSelectedId: imgGallerySelectedEntryId, onImgPickerChange: handleImgGalleryPick, myImagesPickedUrl, onUpdateCharacterAppearance: (charId, appearance) => {
+                if (!currentProject) return;
+                const updChars = currentProject.characters.map(c => c.id === charId ? { ...c, appearance: { ...(c.appearance || {}), ...appearance } } : c);
+                updateProject({ ...currentProject, characters: updChars });
+              } }} />
             </>
           )}
           {activeTab === "video" && (
@@ -6999,7 +7043,7 @@ const VideoPreviewModal = React.memo(function VideoPreviewModal({ src, onClose, 
 });
 
 // ── Image Generator ──
-function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setResolution, generating, setGenerating, generatedImages, setGeneratedImages, selectedCharacter, setSelectedCharacter, projectCharacters, scenes, onSave, previewImg, setPreviewImg, layoutFill, history, recallImageUrl, setRecallImageUrl, selectedStyles, setSelectedStyles, aspect, setAspect, steps, setSteps, cfg, setCfg, adv, setAdv, projectSourceImageUrl, setProjectSourceImageUrl, currentProjectId, imgSessionPromptMap, imgPickerEntries, imgPickerSelectedId, onImgPickerChange }) {
+function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setResolution, generating, setGenerating, generatedImages, setGeneratedImages, selectedCharacter, setSelectedCharacter, projectCharacters, scenes, onSave, previewImg, setPreviewImg, layoutFill, history, recallImageUrl, setRecallImageUrl, selectedStyles, setSelectedStyles, aspect, setAspect, steps, setSteps, cfg, setCfg, adv, setAdv, projectSourceImageUrl, setProjectSourceImageUrl, currentProjectId, imgSessionPromptMap, imgPickerEntries, imgPickerSelectedId, onImgPickerChange, myImagesPickedUrl, onUpdateCharacterAppearance }) {
   const [tmpl, setTmpl] = useState(null);
   const [imgLibraryOpen, setImgLibraryOpen] = useState(false);
   const imgFileRef = useRef(null);
@@ -7041,7 +7085,7 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
   const isFaceSwapOnlyMode = Boolean(
     selectedCharacter &&
     (selectedCharacter.image || selectedCharacter.imagePath || selectedCharacter.imageUrl) &&
-    projectSourceImageUrl
+    myImagesPickedUrl
   );
 
   const handleFaceSwapOnly = async () => {
@@ -7052,7 +7096,7 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
       const charImg = selectedCharacter?.image || selectedCharacter?.imagePath || selectedCharacter?.imageUrl || null;
       if (!charImg) throw new Error("Nessuna foto personaggio trovata");
 
-      let sourceUrl = projectSourceImageUrl;
+      let sourceUrl = myImagesPickedUrl || projectSourceImageUrl;
       if (sourceUrl && sourceUrl.startsWith("axstudio-local://")) {
         const b64 = await characterImageToDataUri(sourceUrl).catch(() => null);
         if (b64) {
@@ -7320,6 +7364,27 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
       const t = scenes.find(s => s.id === tmpl);
       if (t) scenePrompt = t.prefix + scenePrompt;
 
+      // ── Foto personaggio (definita qui perché serve anche per auto-detect) ──
+      const charImg = selectedCharacter?.image || selectedCharacter?.imagePath || selectedCharacter?.imageUrl || null;
+
+      // ── Auto-detect appearance se mancante ──
+      if (selectedCharacter && charImg && (!selectedCharacter.appearance || Object.keys(selectedCharacter.appearance).filter(k => selectedCharacter.appearance[k]).length < 3)) {
+        try {
+          setImageStatus("⏳ Analisi aspetto personaggio…");
+          const photoUri = await characterImageToDataUri(charImg).catch(() => null);
+          if (photoUri) {
+            const detected = await analyzePhotoAppearance(photoUri);
+            if (detected && detected.gender) {
+              console.log("[AUTO-DETECT] Appearance populated:", detected);
+              const mergedAppearance = { ...(selectedCharacter.appearance || {}), ...detected };
+              selectedCharacter.appearance = mergedAppearance;
+              if (typeof setSelectedCharacter === "function") setSelectedCharacter({ ...selectedCharacter });
+              if (typeof onUpdateCharacterAppearance === "function") onUpdateCharacterAppearance(selectedCharacter.id, mergedAppearance);
+            }
+          }
+        } catch (e) { console.warn("[AUTO-DETECT] Failed:", e.message); }
+      }
+
       // ── Descrizione fisica dal Character Creator ──
       const physicalDesc = appearanceToPrompt(selectedCharacter?.appearance);
       let subjectPrompt = "";
@@ -7428,7 +7493,6 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
           .filter(Boolean)
       )].join(", ");
 
-      const charImg = selectedCharacter?.image || selectedCharacter?.imagePath || selectedCharacter?.imageUrl || null;
       const useFaceSwap = Boolean(selectedCharacter && charImg);
 
       // ── Rileva modalità update vs create ──
