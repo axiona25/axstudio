@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState, useRef } from "react";
 import {
   HiPhoto, HiMusicalNote, HiLanguage, HiSquare2Stack, HiSparkles,
   HiAdjustmentsHorizontal, HiArrowDownTray, HiScissors, HiTrash,
@@ -9,9 +9,12 @@ import {
   HiDocumentText, HiArrowPath, HiPaintBrush, HiCamera, HiSwatch,
   HiMoon, HiVideoCamera, HiClock, HiArrowsUpDown,
   HiViewfinderCircle, HiRectangleGroup,
+  HiPlus, HiBookmarkSquare, HiDocumentDuplicate,
+  HiFolderOpen, HiCheck, HiEllipsisVertical,
 } from "react-icons/hi2";
 import { useTimeline } from "./useTimeline";
 import { useMediaLibrary } from "./useMediaLibrary";
+import { useEditorProjects } from "./useEditorProjects";
 import Timeline from "./Timeline";
 import PreviewPlayer from "./PreviewPlayer";
 import MediaLibraryPanel from "./MediaLibraryPanel";
@@ -39,8 +42,12 @@ const TOP_TABS = [
 export default function VideoEditor({ projectName, projectMedia, history, mediaFileUrl }) {
   const timeline = useTimeline({ fps: 30, width: 1920, height: 1080 });
   const mediaLib = useMediaLibrary();
+  const editorProjects = useEditorProjects();
   const [activeTab, setActiveTab] = useState("media");
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [showProjectMenu, setShowProjectMenu] = useState(false);
+  const [saveFlash, setSaveFlash] = useState(false);
+  const projectMenuRef = useRef(null);
 
   const addMediaBatchRef = React.useRef(mediaLib.addMediaBatch);
   addMediaBatchRef.current = mediaLib.addMediaBatch;
@@ -49,6 +56,53 @@ export default function VideoEditor({ projectName, projectMedia, history, mediaF
       addMediaBatchRef.current(projectMedia);
     }
   }, [projectMedia]);
+
+  const handleSaveProject = useCallback(() => {
+    if (!editorProjects.activeProjectId) {
+      const proj = editorProjects.createProject("Progetto " + new Date().toLocaleDateString("it-IT"));
+      setTimeout(() => editorProjects.saveProject(timeline.getState()), 50);
+      setSaveFlash(true);
+      setTimeout(() => setSaveFlash(false), 1200);
+      return proj;
+    }
+    editorProjects.saveProject(timeline.getState());
+    setSaveFlash(true);
+    setTimeout(() => setSaveFlash(false), 1200);
+  }, [editorProjects, timeline]);
+
+  const handleNewProject = useCallback(() => {
+    timeline.resetTimeline();
+    editorProjects.closeProject();
+    setShowProjectMenu(false);
+  }, [timeline, editorProjects]);
+
+  const handleLoadProject = useCallback((projectId) => {
+    const proj = editorProjects.loadProject(projectId);
+    if (proj) timeline.restoreState(proj);
+    setShowProjectMenu(false);
+  }, [editorProjects, timeline]);
+
+  const handleDeleteProject = useCallback((projectId) => {
+    editorProjects.deleteProject(projectId);
+    if (editorProjects.activeProjectId === projectId) {
+      timeline.resetTimeline();
+    }
+  }, [editorProjects, timeline]);
+
+  const handleDuplicateProject = useCallback((projectId) => {
+    editorProjects.duplicateProject(projectId);
+  }, [editorProjects]);
+
+  useEffect(() => {
+    if (!showProjectMenu) return;
+    const handleClickOutside = (e) => {
+      if (projectMenuRef.current && !projectMenuRef.current.contains(e.target)) {
+        setShowProjectMenu(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [showProjectMenu]);
 
   const handleDropMedia = useCallback((mediaData, trackId) => {
     const trackType = trackId.startsWith("V") ? "video" : trackId.startsWith("A") ? "audio" : "text";
@@ -83,6 +137,7 @@ export default function VideoEditor({ projectName, projectMedia, history, mediaF
       if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || e.target.tagName === "SELECT") return;
       const mod = e.metaKey || e.ctrlKey;
 
+      if (mod && e.code === "KeyS") { e.preventDefault(); handleSaveProject(); return; }
       if (mod && e.code === "KeyZ" && e.shiftKey) { e.preventDefault(); timeline.redo(); return; }
       if (mod && e.code === "KeyZ") { e.preventDefault(); timeline.undo(); return; }
       if (mod && e.code === "KeyC") { e.preventDefault(); timeline.copyClip(); return; }
@@ -95,7 +150,7 @@ export default function VideoEditor({ projectName, projectMedia, history, mediaF
           timeline.isPlaying ? timeline.pause() : timeline.play();
           break;
         case "KeyS":
-          if (!mod && timeline.selectedClipId)
+          if (timeline.selectedClipId)
             timeline.splitClip(timeline.selectedClipId, timeline.playheadTime);
           break;
         case "Delete": case "Backspace":
@@ -113,7 +168,7 @@ export default function VideoEditor({ projectName, projectMedia, history, mediaF
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [timeline]);
+  }, [timeline, handleSaveProject]);
 
   const selectedClip = timeline.getSelectedClip();
 
@@ -157,18 +212,84 @@ export default function VideoEditor({ projectName, projectMedia, history, mediaF
     }}>
       {/* ── Header ── */}
       <header style={{
-        padding: "16px 28px", display: "flex", alignItems: "center",
+        padding: "12px 28px", display: "flex", alignItems: "center",
         justifyContent: "space-between", gap: 16,
         borderBottom: `1px solid ${AX.border}`, background: AX.bg, flexShrink: 0,
       }}>
-        <div style={{ minWidth: 0 }}>
-          <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: AX.text, letterSpacing: "-0.02em" }}>Video Editor</h1>
-          <p style={{ margin: "4px 0 0", fontSize: 13, color: AX.muted }}>Crea i tuoi video professionali</p>
+        <div style={{ minWidth: 0, display: "flex", alignItems: "center", gap: 14 }}>
+          <div>
+            <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: AX.text, letterSpacing: "-0.02em" }}>Video Editor</h1>
+            <p style={{ margin: "4px 0 0", fontSize: 13, color: AX.muted }}>Crea i tuoi video professionali</p>
+          </div>
+          {editorProjects.activeProject && (
+            <div style={{
+              marginLeft: 8, padding: "3px 10px", borderRadius: 6,
+              background: "rgba(123,77,255,0.12)", border: `1px solid rgba(123,77,255,0.25)`,
+              fontSize: 11, fontWeight: 600, color: AX.violet, maxWidth: 200,
+              whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+            }}>{editorProjects.activeProject.name}</div>
+          )}
         </div>
-        <div style={{ flexShrink: 0, display: "flex", alignItems: "center", gap: 8 }}>
+        <div style={{ flexShrink: 0, display: "flex", alignItems: "center", gap: 6 }}>
           <span style={{ fontSize: 11, color: AX.muted, marginRight: 4 }}>
             {timeline.projectResolution.width}×{timeline.projectResolution.height} · {timeline.projectFps}fps
           </span>
+
+          {/* Nuovo progetto */}
+          <HeaderBtn icon={<HiPlus size={14} />} label="Nuovo" onClick={handleNewProject} />
+
+          {/* Salva progetto */}
+          <HeaderBtn
+            icon={saveFlash ? <HiCheck size={14} /> : <HiBookmarkSquare size={14} />}
+            label={saveFlash ? "Salvato!" : "Salva"}
+            accent={saveFlash}
+            onClick={handleSaveProject}
+          />
+
+          {/* I miei progetti */}
+          <div style={{ position: "relative" }}>
+            <HeaderBtn icon={<HiFolderOpen size={14} />} label="Progetti" onClick={() => setShowProjectMenu(v => !v)} active={showProjectMenu} />
+            {showProjectMenu && (
+              <div ref={projectMenuRef} style={{
+                position: "absolute", top: "calc(100% + 6px)", right: 0, zIndex: 200,
+                width: 320, maxHeight: 420, overflow: "auto",
+                background: "rgba(17,19,26,0.97)", border: `1px solid ${AX.border}`,
+                borderRadius: 12, boxShadow: "0 12px 40px rgba(0,0,0,0.6)",
+                backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)",
+              }}>
+                <div style={{
+                  padding: "12px 14px 8px", borderBottom: `1px solid ${AX.border}`,
+                  display: "flex", alignItems: "center", justifyContent: "space-between",
+                }}>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: AX.text }}>I miei progetti</span>
+                  <span style={{ fontSize: 10, color: AX.muted }}>{editorProjects.projects.length} progett{editorProjects.projects.length === 1 ? "o" : "i"}</span>
+                </div>
+                {editorProjects.projects.length === 0 ? (
+                  <div style={{ padding: 24, textAlign: "center" }}>
+                    <HiFolderOpen size={28} style={{ color: AX.muted, opacity: 0.4, marginBottom: 8 }} />
+                    <div style={{ fontSize: 12, color: AX.muted }}>Nessun progetto salvato</div>
+                    <div style={{ fontSize: 10, color: AX.muted, marginTop: 4 }}>Usa "Salva" o ⌘S per creare un progetto</div>
+                  </div>
+                ) : (
+                  <div style={{ padding: "4px 6px" }}>
+                    {editorProjects.projects.map(p => (
+                      <ProjectListItem
+                        key={p.id}
+                        project={p}
+                        isActive={p.id === editorProjects.activeProjectId}
+                        onLoad={() => handleLoadProject(p.id)}
+                        onDuplicate={() => handleDuplicateProject(p.id)}
+                        onDelete={() => handleDeleteProject(p.id)}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          <div style={{ width: 1, height: 22, background: AX.border, margin: "0 2px" }} />
+
           <button type="button" onClick={() => setSidebarOpen(!sidebarOpen)} style={{
             padding: "6px 12px", borderRadius: 8, fontSize: 11, fontWeight: 600,
             border: `1px solid ${sidebarOpen ? AX.violet : AX.border}`,
@@ -668,6 +789,111 @@ function EditToolBtn({ icon, title, onClick, disabled }) {
       onMouseEnter={e => { if (!disabled) e.currentTarget.style.background = "rgba(123,77,255,0.15)"; }}
       onMouseLeave={e => { e.currentTarget.style.background = "none"; }}
     >{icon}</button>
+  );
+}
+
+function HeaderBtn({ icon, label, onClick, active, accent }) {
+  return (
+    <button type="button" onClick={onClick} style={{
+      padding: "5px 10px", borderRadius: 8, fontSize: 11, fontWeight: 600,
+      border: `1px solid ${active ? AX.violet : accent ? "rgba(76,217,100,0.4)" : AX.border}`,
+      background: active ? "rgba(123,77,255,0.14)" : accent ? "rgba(76,217,100,0.12)" : "transparent",
+      color: active ? AX.electric : accent ? "#4CD964" : AX.text2,
+      cursor: "pointer", transition: "all 0.2s",
+      display: "inline-flex", alignItems: "center", gap: 5,
+    }}
+      onMouseEnter={e => { if (!active && !accent) e.currentTarget.style.background = AX.hover; }}
+      onMouseLeave={e => { if (!active && !accent) e.currentTarget.style.background = "transparent"; }}
+    >{icon} {label}</button>
+  );
+}
+
+function ProjectListItem({ project, isActive, onLoad, onDuplicate, onDelete }) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef(null);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const h = (e) => { if (menuRef.current && !menuRef.current.contains(e.target)) setMenuOpen(false); };
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, [menuOpen]);
+
+  const clipCount = project.tracks
+    ? project.tracks.reduce((sum, t) => sum + (t.clips ? t.clips.length : 0), 0)
+    : 0;
+
+  return (
+    <div style={{
+      display: "flex", alignItems: "center", gap: 8, padding: "8px 10px",
+      borderRadius: 8, cursor: "pointer", transition: "all 0.15s",
+      background: isActive ? "rgba(123,77,255,0.1)" : "transparent",
+      border: `1px solid ${isActive ? "rgba(123,77,255,0.25)" : "transparent"}`,
+    }}
+      onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = AX.hover; }}
+      onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = isActive ? "rgba(123,77,255,0.1)" : "transparent"; }}
+      onClick={onLoad}
+    >
+      <div style={{
+        width: 32, height: 32, borderRadius: 8, flexShrink: 0,
+        background: isActive
+          ? "linear-gradient(135deg, rgba(123,77,255,0.3), rgba(41,182,255,0.3))"
+          : AX.surface,
+        display: "flex", alignItems: "center", justifyContent: "center",
+      }}>
+        <HiFilm size={16} style={{ color: isActive ? AX.electric : AX.muted }} />
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{
+          fontSize: 12, fontWeight: 600, color: AX.text,
+          whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+        }}>{project.name}</div>
+        <div style={{ fontSize: 9, color: AX.muted, marginTop: 2 }}>
+          {clipCount} clip · {new Date(project.updatedAt).toLocaleDateString("it-IT", { day: "2-digit", month: "short", year: "2-digit", hour: "2-digit", minute: "2-digit" })}
+        </div>
+      </div>
+      {isActive && (
+        <span style={{
+          fontSize: 7, fontWeight: 700, padding: "2px 5px", borderRadius: 4,
+          background: "rgba(123,77,255,0.2)", color: AX.violet, textTransform: "uppercase",
+        }}>Attivo</span>
+      )}
+      <div style={{ position: "relative" }}>
+        <button type="button" onClick={(e) => { e.stopPropagation(); setMenuOpen(v => !v); }} style={{
+          width: 22, height: 22, borderRadius: 5, border: "none",
+          background: "transparent", color: AX.muted, cursor: "pointer",
+          display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14,
+        }}
+          onMouseEnter={e => { e.currentTarget.style.background = AX.surface; }}
+          onMouseLeave={e => { e.currentTarget.style.background = "transparent"; }}
+        ><HiEllipsisVertical size={14} /></button>
+        {menuOpen && (
+          <div ref={menuRef} style={{
+            position: "absolute", top: "100%", right: 0, zIndex: 300,
+            background: AX.sidebar, border: `1px solid ${AX.border}`,
+            borderRadius: 8, boxShadow: "0 8px 24px rgba(0,0,0,0.5)",
+            padding: 4, minWidth: 130,
+          }}>
+            <CtxBtn icon={<HiDocumentDuplicate size={13} />} label="Duplica" onClick={(e) => { e.stopPropagation(); onDuplicate(); setMenuOpen(false); }} />
+            <CtxBtn icon={<HiTrash size={13} />} label="Elimina" danger onClick={(e) => { e.stopPropagation(); onDelete(); setMenuOpen(false); }} />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CtxBtn({ icon, label, onClick, danger }) {
+  return (
+    <button type="button" onClick={onClick} style={{
+      display: "flex", alignItems: "center", gap: 7, width: "100%",
+      padding: "6px 10px", borderRadius: 6, border: "none",
+      background: "transparent", color: danger ? "#FF4F4F" : AX.text2,
+      fontSize: 11, fontWeight: 500, cursor: "pointer", textAlign: "left",
+    }}
+      onMouseEnter={e => { e.currentTarget.style.background = danger ? "rgba(255,79,79,0.1)" : AX.hover; }}
+      onMouseLeave={e => { e.currentTarget.style.background = "transparent"; }}
+    >{icon} {label}</button>
   );
 }
 

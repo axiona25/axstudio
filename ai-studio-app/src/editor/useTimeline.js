@@ -322,6 +322,43 @@ export function useTimeline({ fps = 30, width = 1920, height = 1080 } = {}) {
     setTracks(prev => prev.map(t => t.id === trackId ? { ...t, locked: !t.locked } : t));
   }, []);
 
+  const getState = useCallback(() => ({
+    tracks, playheadTime, zoom, scrollX,
+    projectFps, projectResolution,
+  }), [tracks, playheadTime, zoom, scrollX, projectFps, projectResolution]);
+
+  const restoreState = useCallback((state) => {
+    if (state.tracks) setTracks(JSON.parse(JSON.stringify(state.tracks)));
+    else setTracks(createDefaultTracks());
+    setPlayheadTime(state.playheadTime || 0);
+    setZoom(state.zoom ?? 0.8);
+    setScrollX(state.scrollX || 0);
+    setProjectFps(state.projectFps || 30);
+    setProjectResolution(state.projectResolution || { width: 1920, height: 1080 });
+    setSelectedClipId(null);
+    setIsPlaying(false);
+    if (playTimerRef.current) cancelAnimationFrame(playTimerRef.current);
+    undoStackRef.current = [];
+    redoStackRef.current = [];
+    clipboardRef.current = null;
+    setHistoryTick(v => v + 1);
+  }, []);
+
+  const resetTimeline = useCallback(() => {
+    setTracks(createDefaultTracks());
+    setPlayheadTime(0);
+    setZoom(0.8);
+    setScrollX(0);
+    setSelectedClipId(null);
+    setIsPlaying(false);
+    setPlaybackSpeed(1);
+    if (playTimerRef.current) cancelAnimationFrame(playTimerRef.current);
+    undoStackRef.current = [];
+    redoStackRef.current = [];
+    clipboardRef.current = null;
+    setHistoryTick(v => v + 1);
+  }, []);
+
   return {
     tracks, setTracks,
     playheadTime, setPlayheadTime: seekTo,
@@ -340,6 +377,7 @@ export function useTimeline({ fps = 30, width = 1920, height = 1080 } = {}) {
     toggleTrackMute, toggleTrackLock,
     undo, redo, canUndo, canRedo,
     copyClip, cutClip, pasteClip,
+    getState, restoreState, resetTimeline,
     TRACK_TYPES,
   };
 }
