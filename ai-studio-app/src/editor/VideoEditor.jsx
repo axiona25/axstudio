@@ -185,6 +185,11 @@ export default function VideoEditor({ projectName, projectMedia, history, mediaF
           if (timeline.selectedClipIds.length > 1) timeline.removeSelectedClips();
           else if (timeline.selectedClipId) timeline.removeClip(timeline.selectedClipId);
           break;
+        case "Enter":
+          e.preventDefault();
+          if (timeline.isPlaying) timeline.pause();
+          timeline.seekTo(0);
+          break;
         case "ArrowLeft": e.preventDefault(); timeline.stepFrame(-1); break;
         case "ArrowRight": e.preventDefault(); timeline.stepFrame(1); break;
         case "Equal": case "NumpadAdd": timeline.setZoom(Math.min(10, timeline.zoom * 1.25)); break;
@@ -607,6 +612,43 @@ function PanelListItem({ icon, label, desc, onClick, tag }) {
   );
 }
 
+function PanelGridCard({ icon, label, desc, onClick, tag, accent }) {
+  const accentColor = accent || AX.electric;
+  return (
+    <button type="button" onClick={onClick} style={{
+      display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+      gap: 5, padding: "12px 6px 10px",
+      borderRadius: 10, border: `1px solid transparent`,
+      background: AX.surface, cursor: "pointer", textAlign: "center",
+      transition: "all 0.15s", fontFamily: "'DM Sans', sans-serif",
+      position: "relative", overflow: "hidden", minHeight: 80,
+    }}
+      onMouseEnter={e => { e.currentTarget.style.background = AX.hover; e.currentTarget.style.borderColor = accentColor + "50"; }}
+      onMouseLeave={e => { e.currentTarget.style.background = AX.surface; e.currentTarget.style.borderColor = "transparent"; }}
+    >
+      <div style={{
+        width: 34, height: 34, borderRadius: 8,
+        background: accentColor + "18",
+        display: "flex", alignItems: "center", justifyContent: "center",
+        color: accentColor, flexShrink: 0,
+      }}>{icon}</div>
+      <div style={{ fontSize: 10, fontWeight: 600, color: AX.text, lineHeight: 1.2,
+        whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "100%",
+      }}>{label}</div>
+      {desc && <div style={{ fontSize: 8, color: AX.muted, lineHeight: 1.2, maxWidth: "100%",
+        overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+      }}>{desc}</div>}
+      {tag && (
+        <span style={{
+          position: "absolute", top: 4, right: 4,
+          fontSize: 6, padding: "1px 4px", borderRadius: 3, fontWeight: 700,
+          background: "rgba(123,77,255,0.2)", color: AX.violet, textTransform: "uppercase",
+        }}>{tag}</span>
+      )}
+    </button>
+  );
+}
+
 /* ── Audio Panel ── */
 function AudioPanel({ onAddMedia }) {
   const fileRef = React.useRef(null);
@@ -648,11 +690,11 @@ function AudioPanel({ onAddMedia }) {
 function TextPanel({ onAddText }) {
   const [textValue, setTextValue] = useState("");
   const TEXT_PRESETS = [
-    { icon: <HiLanguage size={18} />, label: "Titolo", desc: "Grande, centrato", defaultText: "Titolo" },
-    { icon: <HiChatBubbleBottomCenterText size={18} />, label: "Sottotitolo", desc: "Piccolo, in basso", defaultText: "Sottotitolo" },
-    { icon: <HiRectangleGroup size={18} />, label: "Lower Third", desc: "Nome con barra colorata", defaultText: "Nome Cognome" },
-    { icon: <HiPencil size={18} />, label: "Testo libero", desc: "Posizionabile ovunque", defaultText: "Testo" },
-    { icon: <HiFilm size={18} />, label: "Titolo cinematografico", desc: "Effetto typewriter", defaultText: "Il mio film" },
+    { icon: <HiLanguage size={20} />, label: "Titolo", desc: "Grande, centrato", defaultText: "Titolo" },
+    { icon: <HiChatBubbleBottomCenterText size={20} />, label: "Sottotitolo", desc: "Piccolo, in basso", defaultText: "Sottotitolo" },
+    { icon: <HiRectangleGroup size={20} />, label: "Lower Third", desc: "Barra nome", defaultText: "Nome Cognome" },
+    { icon: <HiPencil size={20} />, label: "Testo libero", desc: "Ovunque", defaultText: "Testo" },
+    { icon: <HiFilm size={20} />, label: "Cinematografico", desc: "Typewriter", defaultText: "Il mio film" },
   ];
   return (
     <PanelShell>
@@ -678,14 +720,16 @@ function TextPanel({ onAddText }) {
           }}>Aggiungi</button>
         </div>
       </div>
-      <div style={{ flex: 1, overflow: "auto", padding: "4px 6px" }}>
-        <div style={{ padding: "8px 8px 4px" }}>
+      <div style={{ flex: 1, overflow: "auto", padding: "8px 10px" }}>
+        <div style={{ padding: "4px 2px 8px" }}>
           <span style={{ fontSize: 10, fontWeight: 600, color: AX.muted, letterSpacing: "0.08em", textTransform: "uppercase" }}>Modelli di testo</span>
         </div>
-        {TEXT_PRESETS.map(p => (
-          <PanelListItem key={p.label} icon={p.icon} label={p.label} desc={p.desc}
-            onClick={() => onAddText(p.defaultText)} />
-        ))}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 6 }}>
+          {TEXT_PRESETS.map(p => (
+            <PanelGridCard key={p.label} icon={p.icon} label={p.label} desc={p.desc}
+              accent={AX.magenta} onClick={() => onAddText(p.defaultText)} />
+          ))}
+        </div>
       </div>
     </PanelShell>
   );
@@ -694,29 +738,32 @@ function TextPanel({ onAddText }) {
 /* ── Transitions Panel ── */
 function TransitionsPanel() {
   const TRANSITIONS = [
-    { icon: <HiEye size={18} />, label: "Dissolvenza", desc: "Fade In / Fade Out / Cross Dissolve" },
-    { icon: <HiArrowRight size={18} />, label: "Wipe", desc: "Sinistra, Destra, Alto, Basso" },
-    { icon: <HiArrowsRightLeft size={18} />, label: "Slide", desc: "Push in tutte le direzioni" },
-    { icon: <HiMagnifyingGlass size={18} />, label: "Zoom", desc: "Zoom In / Zoom Out" },
-    { icon: <HiViewfinderCircle size={18} />, label: "Blur", desc: "Transizione sfocatura" },
-    { icon: <HiBolt size={18} />, label: "Glitch", desc: "Disturbo digitale" },
-    { icon: <HiLightBulb size={18} />, label: "Flash", desc: "Flash bianco / nero" },
-    { icon: <HiSparkles size={18} />, label: "Shape", desc: "Cerchio, diamante, stella" },
-    { icon: <HiDocumentText size={18} />, label: "Page Turn", desc: "Gira pagina" },
-    { icon: <HiArrowPath size={18} />, label: "Morph", desc: "Tra clip simili" },
+    { icon: <HiEye size={20} />, label: "Dissolvenza", desc: "Fade In/Out" },
+    { icon: <HiArrowRight size={20} />, label: "Wipe", desc: "Direzione" },
+    { icon: <HiArrowsRightLeft size={20} />, label: "Slide", desc: "Push" },
+    { icon: <HiMagnifyingGlass size={20} />, label: "Zoom", desc: "In / Out" },
+    { icon: <HiViewfinderCircle size={20} />, label: "Blur", desc: "Sfocatura" },
+    { icon: <HiBolt size={20} />, label: "Glitch", desc: "Digitale" },
+    { icon: <HiLightBulb size={20} />, label: "Flash", desc: "Bianco/Nero" },
+    { icon: <HiSparkles size={20} />, label: "Shape", desc: "Forme" },
+    { icon: <HiDocumentText size={20} />, label: "Page Turn", desc: "Pagina" },
+    { icon: <HiArrowPath size={20} />, label: "Morph", desc: "Simili" },
   ];
   return (
     <PanelShell>
       <PanelHeader title="Transizioni" />
-      <div style={{ flex: 1, overflow: "auto", padding: "4px 6px" }}>
-        <div style={{ padding: "6px 8px" }}>
+      <div style={{ flex: 1, overflow: "auto", padding: "8px 10px" }}>
+        <div style={{ padding: "4px 2px 8px" }}>
           <span style={{ fontSize: 10, color: AX.muted, lineHeight: 1.5 }}>
             Trascina una transizione tra due clip sulla timeline
           </span>
         </div>
-        {TRANSITIONS.map(t => (
-          <PanelListItem key={t.label} icon={t.icon} label={t.label} desc={t.desc} tag="Fase 2" onClick={() => {}} />
-        ))}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 6 }}>
+          {TRANSITIONS.map(t => (
+            <PanelGridCard key={t.label} icon={t.icon} label={t.label} desc={t.desc}
+              tag="Fase 2" accent={AX.gold} onClick={() => {}} />
+          ))}
+        </div>
       </div>
     </PanelShell>
   );
@@ -725,26 +772,29 @@ function TransitionsPanel() {
 /* ── Effects Panel ── */
 function EffectsPanel() {
   const EFFECTS = [
-    { icon: <HiPaintBrush size={18} />, label: "Correzione colore", desc: "Luminosità, contrasto, saturazione" },
-    { icon: <HiSun size={18} />, label: "Temperatura", desc: "Caldo / Freddo" },
-    { icon: <HiCamera size={18} />, label: "LUT Cinematografici", desc: "Look professionali preset" },
-    { icon: <HiViewfinderCircle size={18} />, label: "Blur", desc: "Gaussiano, motion, radiale" },
-    { icon: <HiSparkles size={18} />, label: "Sharpen", desc: "Aumenta nitidezza" },
-    { icon: <HiBolt size={18} />, label: "Glitch / Distortion", desc: "Distorsione digitale" },
-    { icon: <HiClock size={18} />, label: "Speed Ramping", desc: "Slow motion / Fast forward" },
-    { icon: <HiArrowPath size={18} />, label: "Reverse", desc: "Inverti la riproduzione" },
-    { icon: <HiArrowsUpDown size={18} />, label: "Mirror / Flip", desc: "Specchio orizzontale / verticale" },
-    { icon: <HiSwatch size={18} />, label: "Aberrazione cromatica", desc: "Separazione canali RGB" },
-    { icon: <HiFilm size={18} />, label: "Film Grain", desc: "Rumore pellicola vintage" },
-    { icon: <HiMoon size={18} />, label: "Vignette", desc: "Oscuramento bordi" },
+    { icon: <HiPaintBrush size={20} />, label: "Colore", desc: "Luminosità, contrasto" },
+    { icon: <HiSun size={20} />, label: "Temperatura", desc: "Caldo / Freddo" },
+    { icon: <HiCamera size={20} />, label: "LUT Cinema", desc: "Look preset" },
+    { icon: <HiViewfinderCircle size={20} />, label: "Blur", desc: "Gaussiano, motion" },
+    { icon: <HiSparkles size={20} />, label: "Sharpen", desc: "Nitidezza" },
+    { icon: <HiBolt size={20} />, label: "Glitch", desc: "Distorsione" },
+    { icon: <HiClock size={20} />, label: "Speed Ramp", desc: "Slow/Fast" },
+    { icon: <HiArrowPath size={20} />, label: "Reverse", desc: "Inverti" },
+    { icon: <HiArrowsUpDown size={20} />, label: "Mirror/Flip", desc: "Specchio" },
+    { icon: <HiSwatch size={20} />, label: "Aberrazione", desc: "RGB split" },
+    { icon: <HiFilm size={20} />, label: "Film Grain", desc: "Pellicola" },
+    { icon: <HiMoon size={20} />, label: "Vignette", desc: "Bordi scuri" },
   ];
   return (
     <PanelShell>
       <PanelHeader title="Effetti Video" />
-      <div style={{ flex: 1, overflow: "auto", padding: "4px 6px" }}>
-        {EFFECTS.map(ef => (
-          <PanelListItem key={ef.label} icon={ef.icon} label={ef.label} desc={ef.desc} tag="Fase 4" onClick={() => {}} />
-        ))}
+      <div style={{ flex: 1, overflow: "auto", padding: "8px 10px" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 6 }}>
+          {EFFECTS.map(ef => (
+            <PanelGridCard key={ef.label} icon={ef.icon} label={ef.label} desc={ef.desc}
+              tag="Fase 4" accent={AX.blue} onClick={() => {}} />
+          ))}
+        </div>
       </div>
     </PanelShell>
   );
@@ -753,21 +803,24 @@ function EffectsPanel() {
 /* ── Filters Panel ── */
 function FiltersPanel() {
   const FILTERS = [
-    { icon: <HiVideoCamera size={18} />, label: "Cinematic", desc: "Letterbox + color grade" },
-    { icon: <HiFilm size={18} />, label: "Film Vintage", desc: "Grain + toni caldi" },
-    { icon: <HiBolt size={18} />, label: "Neon / Cyberpunk", desc: "Bagliore neon colorato" },
-    { icon: <HiSun size={18} />, label: "Sepia", desc: "Toni seppia classici" },
-    { icon: <HiMoon size={18} />, label: "Bianco e Nero", desc: "Monocromatico" },
-    { icon: <HiSparkles size={18} />, label: "Comic / Cartoon", desc: "Stile fumetto" },
-    { icon: <HiPencil size={18} />, label: "Sketch / Pencil", desc: "Effetto disegno a matita" },
+    { icon: <HiVideoCamera size={20} />, label: "Cinematic", desc: "Letterbox" },
+    { icon: <HiFilm size={20} />, label: "Film Vintage", desc: "Grain caldo" },
+    { icon: <HiBolt size={20} />, label: "Neon", desc: "Cyberpunk" },
+    { icon: <HiSun size={20} />, label: "Sepia", desc: "Toni classici" },
+    { icon: <HiMoon size={20} />, label: "B&N", desc: "Monocromatico" },
+    { icon: <HiSparkles size={20} />, label: "Comic", desc: "Cartoon" },
+    { icon: <HiPencil size={20} />, label: "Sketch", desc: "Disegno" },
   ];
   return (
     <PanelShell>
       <PanelHeader title="Filtri Stile" />
-      <div style={{ flex: 1, overflow: "auto", padding: "4px 6px" }}>
-        {FILTERS.map(f => (
-          <PanelListItem key={f.label} icon={f.icon} label={f.label} desc={f.desc} tag="Fase 4" onClick={() => {}} />
-        ))}
+      <div style={{ flex: 1, overflow: "auto", padding: "8px 10px" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 6 }}>
+          {FILTERS.map(f => (
+            <PanelGridCard key={f.label} icon={f.icon} label={f.label} desc={f.desc}
+              tag="Fase 4" accent={AX.violet} onClick={() => {}} />
+          ))}
+        </div>
       </div>
     </PanelShell>
   );

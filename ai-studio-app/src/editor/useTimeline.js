@@ -226,6 +226,26 @@ export function useTimeline({ fps = 30, width = 1920, height = 1080 } = {}) {
     }));
   }, [reflowTrack, withUndo]);
 
+  const clampToFreeSpace = useCallback((desiredStart, duration, trackClips, excludeIds) => {
+    const others = trackClips
+      .filter(c => !excludeIds.has(c.id))
+      .sort((a, b) => a.startTime - b.startTime);
+    let start = Math.max(0, desiredStart);
+    const end = start + duration;
+    for (const o of others) {
+      const oEnd = o.startTime + o.duration;
+      if (start < oEnd && end > o.startTime) {
+        if (desiredStart >= o.startTime) {
+          start = oEnd;
+        } else {
+          start = o.startTime - duration;
+          if (start < 0) start = oEnd;
+        }
+      }
+    }
+    return Math.max(0, Math.round(start * 100) / 100);
+  }, []);
+
   const moveClip = useCallback((clipId, newTrackId, newStartTime) => {
     let movedClip = null;
     withUndo(prev => {
@@ -235,7 +255,10 @@ export function useTimeline({ fps = 30, width = 1920, height = 1080 } = {}) {
         if (clip) break;
       }
       if (!clip) return prev;
-      movedClip = { ...clip, trackId: newTrackId, startTime: Math.max(0, newStartTime) };
+      const targetTrack = prev.find(t => t.id === newTrackId);
+      const targetClips = targetTrack ? targetTrack.clips : [];
+      const clamped = clampToFreeSpace(newStartTime, clip.duration, targetClips, new Set([clipId]));
+      movedClip = { ...clip, trackId: newTrackId, startTime: clamped };
       return prev.map(t => {
         let clips = t.clips.filter(c => c.id !== clipId);
         if (t.id === newTrackId) clips = [...clips, movedClip];
@@ -243,7 +266,7 @@ export function useTimeline({ fps = 30, width = 1920, height = 1080 } = {}) {
       });
     });
     return movedClip;
-  }, [withUndo]);
+  }, [withUndo, clampToFreeSpace]);
 
   const removeSelectedClips = useCallback(() => {
     if (selectedClipIds.length === 0) return;
@@ -278,21 +301,22 @@ export function useTimeline({ fps = 30, width = 1920, height = 1080 } = {}) {
       pushUndo(JSON.parse(JSON.stringify(tracks)));
       snap.undoPushed = true;
     }
+    const movingIds = new Set(snap.snapshot.map(s => s.id));
     setTracks(prev => {
-      const idsToMove = new Set(snap.snapshot.map(s => s.id));
-      let result = prev.map(t => ({ ...t, clips: t.clips.filter(c => !idsToMove.has(c.id)) }));
+      let result = prev.map(t => ({ ...t, clips: t.clips.filter(c => !movingIds.has(c.id)) }));
       for (const s of snap.snapshot) {
-        const newStart = Math.max(0, Math.round((s.origStart + deltaTime) * 100) / 100);
+        const desiredStart = Math.max(0, Math.round((s.origStart + deltaTime) * 100) / 100);
         let newIdx = Math.max(0, Math.min(result.length - 1, s.origTrackIdx + deltaTrackShift));
         if (result[newIdx].type !== prev[s.origTrackIdx].type) newIdx = s.origTrackIdx;
         const origClip = prev.flatMap(t => t.clips).find(c => c.id === s.id);
         if (!origClip) continue;
-        const placed = { ...origClip, startTime: newStart, trackId: result[newIdx].id };
+        const clamped = clampToFreeSpace(desiredStart, origClip.duration, result[newIdx].clips, movingIds);
+        const placed = { ...origClip, startTime: clamped, trackId: result[newIdx].id };
         result = result.map((t, i) => i === newIdx ? { ...t, clips: [...t.clips, placed] } : t);
       }
       return result;
     });
-  }, [tracks, pushUndo]);
+  }, [tracks, pushUndo, clampToFreeSpace]);
 
   const endMultiDrag = useCallback(() => {
     multiDragSnapshotRef.current = null;
