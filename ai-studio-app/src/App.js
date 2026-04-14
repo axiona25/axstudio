@@ -7064,10 +7064,11 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
 
       const faceDataUri = await characterImageToDataUri(charImg).catch(() => null);
       if (!faceDataUri) throw new Error("Impossibile caricare la foto del personaggio");
+      const faceUrl = await uploadBase64ToFal(faceDataUri);
 
       const swapResult = await falRequest("fal-ai/face-swap", {
         base_image_url: sourceUrl,
-        swap_image_url: faceDataUri,
+        swap_image_url: faceUrl,
       });
       const imgUrl = swapResult?.image?.url || swapResult?.images?.[0]?.url || null;
       if (!imgUrl) throw new Error("Nessun risultato dal face swap");
@@ -7595,9 +7596,10 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
             setImageStatus && setImageStatus("⏳ Riapplicazione volto...");
             const faceDataUri = await characterImageToDataUri(charImg).catch(() => null);
             if (faceDataUri) {
+              const faceUrl = await uploadBase64ToFal(faceDataUri);
               const swapResult = await falRequest("fal-ai/face-swap", {
                 base_image_url: imgUrl,
-                swap_image_url: faceDataUri,
+                swap_image_url: faceUrl,
               });
               const swappedUrl = swapResult?.image?.url || swapResult?.images?.[0]?.url || null;
               if (swappedUrl) {
@@ -7692,9 +7694,10 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
             setImageStatus && setImageStatus("⏳ Applicazione volto...");
             const faceDataUri = await characterImageToDataUri(charImg).catch(() => null);
             if (faceDataUri) {
+              const faceUrl = await uploadBase64ToFal(faceDataUri);
               const swapResult = await falRequest("fal-ai/face-swap", {
                 base_image_url: imgUrl,
-                swap_image_url: faceDataUri,
+                swap_image_url: faceUrl,
               });
               const swappedUrl = swapResult?.image?.url || swapResult?.images?.[0]?.url || null;
               if (swappedUrl) {
@@ -9066,9 +9069,10 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
               setVideoStatus("Applicazione volto sul frame…");
               const faceDataUri = await characterImageToDataUri(charImg).catch(() => null);
               if (faceDataUri) {
+                const faceUrl = await uploadBase64ToFal(faceDataUri);
                 const swapResult = await falRequest("fal-ai/face-swap", {
                   base_image_url: imageUrl,
-                  swap_image_url: faceDataUri,
+                  swap_image_url: faceUrl,
                 });
                 const swappedUrl = swapResult?.image?.url || swapResult?.images?.[0]?.url || null;
                 if (swappedUrl) {
@@ -9446,9 +9450,10 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
           if (frameUrl) {
             const faceDataUri = await characterImageToDataUri(charImg).catch(() => null);
             if (faceDataUri) {
+              const faceUrl = await uploadBase64ToFal(faceDataUri);
               const swapResult = await falRequest("fal-ai/face-swap", {
                 base_image_url: frameUrl,
-                swap_image_url: faceDataUri,
+                swap_image_url: faceUrl,
               });
               const swappedUrl = swapResult?.image?.url || swapResult?.images?.[0]?.url || null;
               if (swappedUrl) {
