@@ -1728,7 +1728,24 @@ async function classifyExternalImageStyle(base64DataUrl) {
  * @param {string} systemPrompt - system message
  * @param {string} [scenePrefix]
  */
-async function callLLM(systemPrompt, ideaIT, scenePrefix = "") {
+async function callLLM(systemPrompt, ideaIT, scenePrefixOrOpts = "", opts = {}) {
+  // Supporta sia la firma legacy (scenePrefix string) che la nuova (options object)
+  let scenePrefix = "";
+  let temperature = 0.6;
+  let maxTokens = 500;
+  let validator = null;
+  if (typeof scenePrefixOrOpts === "object" && scenePrefixOrOpts !== null) {
+    scenePrefix = scenePrefixOrOpts.scenePrefix || "";
+    temperature = scenePrefixOrOpts.temperature ?? 0.6;
+    maxTokens = scenePrefixOrOpts.maxTokens ?? 500;
+    validator = scenePrefixOrOpts.validator || null;
+  } else {
+    scenePrefix = scenePrefixOrOpts || "";
+    temperature = opts.temperature ?? 0.6;
+    maxTokens = opts.maxTokens ?? 500;
+    validator = opts.validator || null;
+  }
+
   const userMsg = scenePrefix
     ? `Scene style: ${scenePrefix}\n\nIdea: ${ideaIT}`
     : `Idea: ${ideaIT}`;
@@ -1749,8 +1766,8 @@ async function callLLM(systemPrompt, ideaIT, scenePrefix = "") {
             { role: "system", content: systemPrompt },
             { role: "user", content: userMsg },
           ],
-          temperature: 0.6,
-          max_tokens: 500,
+          temperature,
+          max_tokens: maxTokens,
         }),
       });
       const data = await res.json();
@@ -1761,6 +1778,13 @@ async function callLLM(systemPrompt, ideaIT, scenePrefix = "") {
       const jsonMatch = clean.match(/\{[\s\S]*\}/);
       if (!jsonMatch) continue;
       const parsed = JSON.parse(jsonMatch[0]);
+
+      if (validator && typeof validator === "function") {
+        const result = validator(parsed);
+        if (result) return result;
+        continue;
+      }
+
       if (parsed.prompt_en && parsed.prompt_it) {
         return { prompt_en: parsed.prompt_en.trim(), prompt_it: parsed.prompt_it.trim() };
       }
@@ -1878,8 +1902,28 @@ const SCREENPLAY_SYSTEM_PROMPT =
 
 /** Analizza una sceneggiatura italiana e la divide in clip ottimali. */
 async function analyzeScreenplay(screenplayIT, styleContext = "") {
-  const prefix = styleContext ? `Style: ${styleContext}` : "";
-  return callLLM(SCREENPLAY_SYSTEM_PROMPT, screenplayIT, prefix);
+  return callLLM(SCREENPLAY_SYSTEM_PROMPT, screenplayIT, {
+    scenePrefix: styleContext ? `Style: ${styleContext}` : "",
+    temperature: 0.5,
+    maxTokens: 4000,
+    validator: (parsed) => {
+      if (parsed.clips && Array.isArray(parsed.clips) && parsed.clips.length > 0) {
+        return {
+          summary_it: parsed.summary_it || "",
+          total_duration: parsed.total_duration || 0,
+          clips: parsed.clips.map(c => ({
+            scene: c.scene || "",
+            duration: String(c.duration || "5"),
+            prompt_en: c.prompt_en || "",
+            prompt_it: c.prompt_it || "",
+            camera: c.camera || "",
+            notes: c.notes || "",
+          })),
+        };
+      }
+      return null;
+    },
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2729,6 +2773,33 @@ const STUDIO_SIDEBAR_DENSITY = { large: { cols: 2, gap: 9 }, medium: { cols: 3, 
 const STUDIO_IMAGE_GENERATING = "__AXSTUDIO_IMAGE_GENERATING__";
 /** Placeholder sidebar durante generazione video (stesso pattern UX delle immagini). */
 const STUDIO_VIDEO_GENERATING = "__AXSTUDIO_VIDEO_GENERATING__";
+const STUDIO_CLIP_GENERATING_PREFIX = "__AXSTUDIO_CLIP_GEN_";
+const isClipPlaceholder = (v) => typeof v === "string" && v.startsWith(STUDIO_CLIP_GENERATING_PREFIX);
+
+const VIDEO_GEN_ESTIMATED_SECONDS = { 3: 40, 5: 60, 7: 80, 10: 100, 15: 120 };
+const _vidGenProgress = { startTime: 0, duration: 5 };
+
+function VideoGenProgressOverlay() {
+  const [pct, setPct] = useState(0);
+  useEffect(() => {
+    const tick = () => {
+      const elapsed = (Date.now() - _vidGenProgress.startTime) / 1000;
+      const est = VIDEO_GEN_ESTIMATED_SECONDS[_vidGenProgress.duration] || 60;
+      setPct(Math.min(95, Math.round((elapsed / est) * 100)));
+    };
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, []);
+  return (
+    <>
+      <span style={{ fontSize: 13, fontWeight: 900, color: "#fff", zIndex: 1, fontVariantNumeric: "tabular-nums", textShadow: "0 0 10px rgba(255,79,163,0.5)" }}>{pct}%</span>
+      <div style={{ width: "60%", height: 4, borderRadius: 2, background: "rgba(255,255,255,0.1)", zIndex: 1, overflow: "hidden" }}>
+        <div style={{ height: "100%", borderRadius: 2, background: "linear-gradient(90deg, #FF4FA3, #7B4DFF)", width: `${pct}%`, transition: "width 0.6s ease" }} />
+      </div>
+    </>
+  );
+}
 
 /** Da URL immagine di partenza video (data:, blob:, axstudio-local) a base64 grezzo per l’API. */
 async function resolveSourceImageBase64ForVideo(source) {
@@ -2778,7 +2849,7 @@ function historyRecordIsImage(h) {
 }
 
 function pushGalleryUrlEntry(out, seen, url, i, sessionHint) {
-  if (url === STUDIO_IMAGE_GENERATING || url === STUDIO_VIDEO_GENERATING || url === "FACE_SWAP_PENDING") return;
+  if (url === STUDIO_IMAGE_GENERATING || url === STUDIO_VIDEO_GENERATING || url === "FACE_SWAP_PENDING" || isClipPlaceholder(url)) return;
   if (typeof url !== "string") return;
   const fp = filePathFromAxstudioMediaUrl(url);
   if (fp) {
@@ -3855,44 +3926,57 @@ function ProjectListCard({ project, stats, onOpen, onDelete, onRename }) {
 function VideoThumbnailGrid({ videos, cfg, onVideoPreview, onVideoRecallPrompt, onRemoveVideo, indexOffset = 0 }) {
   return (
     <div style={{ display: "grid", gridTemplateColumns: `repeat(${cfg.cols}, minmax(0, 1fr))`, gap: cfg.gap }}>
-      {videos.map((vid, i) => (
+      {videos.map((vid, i) => {
+        const isGenerating = vid === STUDIO_VIDEO_GENERATING;
+        const isClipGen = isClipPlaceholder(vid);
+        const isPlaceholder = isGenerating || isClipGen;
+        const clipNum = isClipGen ? parseInt(vid.split("_").pop(), 10) + 1 : null;
+        return (
         <div
-          key={vid === STUDIO_VIDEO_GENERATING ? "axstudio-vid-gen-slot" : `vid-${indexOffset + i}-${typeof vid === "string" ? vid.slice(0, 48) : i}`}
+          key={isGenerating ? "axstudio-vid-gen-slot" : isClipGen ? vid : `vid-${indexOffset + i}-${typeof vid === "string" ? vid.slice(0, 48) : i}`}
           style={{
             position: "relative",
             aspectRatio: "16 / 11",
             borderRadius: 10,
             overflow: "hidden",
-            border: `1px solid ${vid === STUDIO_VIDEO_GENERATING ? "rgba(255,79,163,0.45)" : AX.border}`,
+            border: `1px solid ${isPlaceholder ? "rgba(255,79,163,0.45)" : AX.border}`,
             background: AX.bg,
             width: "100%",
-            ...(vid === STUDIO_VIDEO_GENERATING ? { animation: "axstudio-glow-pulse 2.2s ease-in-out infinite" } : {}),
+            ...(isPlaceholder ? { animation: "axstudio-glow-pulse 2.2s ease-in-out infinite" } : {}),
           }}
         >
           <button
             type="button"
-            onClick={() => vid !== STUDIO_VIDEO_GENERATING && (onVideoRecallPrompt ? onVideoRecallPrompt(vid) : onVideoPreview?.(vid))}
-            disabled={vid === STUDIO_VIDEO_GENERATING}
+            onClick={() => !isPlaceholder && (onVideoRecallPrompt ? onVideoRecallPrompt(vid) : onVideoPreview?.(vid))}
+            disabled={isPlaceholder}
             title={onVideoRecallPrompt ? "Carica prompt nel campo" : "Anteprima video"}
             style={{
               position: "absolute", inset: 0, border: "none", padding: 0, margin: 0,
-              cursor: vid === STUDIO_VIDEO_GENERATING ? "default" : "pointer",
+              cursor: isPlaceholder ? "default" : "pointer",
               display: "block", width: "100%", height: "100%", background: "transparent", borderRadius: 0,
             }}
           >
-            {vid === STUDIO_VIDEO_GENERATING ? (
+            {isPlaceholder ? (
               <div
                 style={{
                   width: "100%", height: "100%", position: "relative",
                   display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 7,
-                  background: "linear-gradient(145deg, rgba(255,79,163,0.22) 0%, rgba(123,77,255,0.1) 38%, rgba(41,182,255,0.06) 72%, rgba(10,10,15,0.96) 100%)",
+                  background: isClipGen
+                    ? "linear-gradient(145deg, rgba(123,77,255,0.18) 0%, rgba(255,79,163,0.08) 38%, rgba(41,182,255,0.06) 72%, rgba(10,10,15,0.96) 100%)"
+                    : "linear-gradient(145deg, rgba(255,79,163,0.22) 0%, rgba(123,77,255,0.1) 38%, rgba(41,182,255,0.06) 72%, rgba(10,10,15,0.96) 100%)",
                 }}
               >
                 <div aria-hidden style={{ position: "absolute", inset: 0, pointerEvents: "none", background: "linear-gradient(105deg, transparent 0%, rgba(255,79,163,0.12) 38%, rgba(79,216,255,0.1) 50%, transparent 58%)", backgroundSize: "220% 100%", animation: "axstudio-shimmer 2.4s ease-in-out infinite", opacity: 0.95 }} />
-                <HiFilm size={22} style={{ color: AX.magenta, opacity: 0.95, zIndex: 1, filter: "drop-shadow(0 0 8px rgba(255,79,163,0.45))" }} />
-                <div style={{ width: 26, height: 26, border: "2px solid rgba(255,79,163,0.22)", borderTopColor: AX.magenta, borderRadius: "50%", animation: "spin 0.85s linear infinite", zIndex: 1 }} />
-                <span style={{ fontSize: 9, fontWeight: 800, color: AX.electric, letterSpacing: "0.12em", textTransform: "uppercase", zIndex: 1, textAlign: "center", padding: "0 6px", lineHeight: 1.35, textShadow: "0 0 12px rgba(79,216,255,0.35)" }}>Creazione in corso</span>
-                <span style={{ fontSize: 8, fontWeight: 600, color: AX.muted, zIndex: 1, letterSpacing: "0.06em", textTransform: "uppercase" }}>AXSTUDIO · GPU</span>
+                <HiFilm size={22} style={{ color: isClipGen ? AX.violet : AX.magenta, opacity: 0.95, zIndex: 1, filter: `drop-shadow(0 0 8px ${isClipGen ? "rgba(123,77,255,0.45)" : "rgba(255,79,163,0.45)"})` }} />
+                {isClipGen ? (
+                  <span style={{ fontSize: 11, fontWeight: 800, color: AX.violet, zIndex: 1, opacity: 0.9 }}>Clip {clipNum}</span>
+                ) : (
+                  <>
+                    <div style={{ width: 22, height: 22, border: "2px solid rgba(255,79,163,0.22)", borderTopColor: AX.magenta, borderRadius: "50%", animation: "spin 0.85s linear infinite", zIndex: 1 }} />
+                    <VideoGenProgressOverlay />
+                  </>
+                )}
+                <span style={{ fontSize: 8, fontWeight: 600, color: AX.muted, zIndex: 1, letterSpacing: "0.06em", textTransform: "uppercase" }}>{isClipGen ? "In attesa" : "AXSTUDIO · GPU"}</span>
               </div>
             ) : (
               <>
@@ -3901,7 +3985,7 @@ function VideoThumbnailGrid({ videos, cfg, onVideoPreview, onVideoRecallPrompt, 
               </>
             )}
           </button>
-          {vid !== STUDIO_VIDEO_GENERATING && typeof onVideoPreview === "function" && onVideoRecallPrompt && (
+          {!isPlaceholder && typeof onVideoPreview === "function" && onVideoRecallPrompt && (
             <button
               type="button"
               aria-label="Anteprima"
@@ -3932,7 +4016,8 @@ function VideoThumbnailGrid({ videos, cfg, onVideoPreview, onVideoRecallPrompt, 
             </button>
           )}
         </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -3954,7 +4039,7 @@ function StudioResultsSidebar({ kind, images, videos, density, onDensityChange, 
       const spId = h.params?.screenplayId;
       if (spId) {
         if (!byId.has(spId)) {
-          byId.set(spId, { id: spId, name: h.params?.screenplayName || "Sceneggiatura", videos: [], lastUpdated: h.createdAt });
+          byId.set(spId, { id: spId, name: h.params?.screenplayName || "Sceneggiatura", summary: h.params?.screenplaySummary || "", videos: [], lastUpdated: h.createdAt });
         }
         const g = byId.get(spId);
         const url = h.filePath ? mediaFileUrl(h.filePath) : null;
@@ -4110,8 +4195,8 @@ function StudioResultsSidebar({ kind, images, videos, density, onDensityChange, 
                         <div style={{ fontSize: 12, fontWeight: 700, color: AX.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                           {group.id === "__ungrouped__" ? "Video non assegnati" : group.name}
                         </div>
-                        <div style={{ fontSize: 10, color: AX.muted, marginTop: 1 }}>
-                          {group.videos.length} video
+                        <div style={{ fontSize: 10, color: AX.muted, marginTop: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                          {group.videos.length} video{group.summary ? ` · ${group.summary}` : ""}
                         </div>
                       </div>
                       <HiChevronRight
@@ -4526,9 +4611,9 @@ export default function AIStudio() {
   }, []);
 
   const handleRemoveStudioVideo = useCallback((index, item) => {
-    if (item === STUDIO_VIDEO_GENERATING) {
+    if (item === STUDIO_VIDEO_GENERATING || isClipPlaceholder(item)) {
       setGeneratedVideos(p => p.filter((_, i) => i !== index));
-      setGenerating(false);
+      if (item === STUDIO_VIDEO_GENERATING) setGenerating(false);
       setVideoStatus("");
       return;
     }
@@ -5630,7 +5715,7 @@ export default function AIStudio() {
                     return filePathFromAxstudioMediaUrl(x) !== fp;
                   }));
                   setGeneratedVideos(p => p.filter(x => {
-                    if (x === STUDIO_VIDEO_GENERATING) return true;
+                    if (x === STUDIO_VIDEO_GENERATING || isClipPlaceholder(x)) return true;
                     return filePathFromAxstudioMediaUrl(x) !== fp;
                   }));
                   setGenPreviewImg(prev => (prev && filePathFromAxstudioMediaUrl(prev) === fp ? null : prev));
@@ -6901,6 +6986,7 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
   const vidPreparedEnRef = useRef(null);       // { en: string, itSource: string } — cache EN per traduzione silente
   const vidEnIsStaleRef = useRef(true);        // true quando il testo IT è cambiato dopo l'ultima preparazione
   const vidScreenplayCtxRef = useRef(null);    // { screenplayId, screenplayName, clipIndex, clipTotal } — set by handleGenerateAllClips
+  const vidFaceSwappedFrameRef = useRef(null); // URL del frame con face swap pre-applicato (screenplay: una volta sola)
   const proposalResetSeenRef = useRef(0);
   const dirRecAbortRef = useRef(0);
   const dirRecLastInputRef = useRef("");
@@ -6946,6 +7032,14 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
       setVideoDuration(sd);
     }
   }, [directionRecommendation, vidDurationSelectionMode, videoDuration, setVideoDuration]);
+
+  // ── Auto-select stile di regia suggerito dal LLM ──
+  useEffect(() => {
+    if (!directionRecommendation?.recommended_direction_style) return;
+    const recId = directionRecommendation.recommended_direction_style;
+    if (!VIDEO_DIRECTION_STYLE_PRESETS.find(p => p.id === recId)) return;
+    setSelectedDirectionStyles([recId]);
+  }, [directionRecommendation, setSelectedDirectionStyles]);
 
   useEffect(() => {
     if (!proposalResetNonce || proposalResetNonce <= proposalResetSeenRef.current) return;
@@ -7250,6 +7344,8 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
     if (!fromPrep && !currentVideoIT) return;
     setGenerating(true);
     setVideoStatus("");
+    _vidGenProgress.startTime = Date.now();
+    _vidGenProgress.duration = vidDurationOverrideRef.current ?? videoDuration;
     setGeneratedVideos(p => [STUDIO_VIDEO_GENERATING, ...p.filter(x => x !== STUDIO_VIDEO_GENERATING)]);
     try {
       // ── Stili video a due livelli: Aspetto (visual) + Regia (direction) ──
@@ -7529,6 +7625,39 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
         });
       }
 
+      // ── Face swap sul frame iniziale: applica volto del personaggio PRIMA di Kling ──
+      if (imageUrl && selectedCharacter) {
+        // Se handleGenerateAllClips ha già fatto il face swap, usa quello
+        const preSwapped = vidFaceSwappedFrameRef.current;
+        if (preSwapped) {
+          imageUrl = preSwapped;
+          console.log("[VIDEO FACE-SWAP] Using pre-swapped frame from screenplay");
+        } else {
+          const charImg = selectedCharacter?.image || selectedCharacter?.imagePath || selectedCharacter?.imageUrl || null;
+          if (charImg) {
+            try {
+              setVideoStatus("Applicazione volto sul frame…");
+              const faceDataUri = await characterImageToDataUri(charImg).catch(() => null);
+              if (faceDataUri) {
+                const swapResult = await falRequest("fal-ai/face-swap", {
+                  base_image_url: imageUrl,
+                  swap_image_url: faceDataUri,
+                });
+                const swappedUrl = swapResult?.image?.url || swapResult?.images?.[0]?.url || null;
+                if (swappedUrl) {
+                  console.log("[VIDEO FACE-SWAP] Applied to start frame:", swappedUrl.slice(0, 80));
+                  imageUrl = swappedUrl;
+                } else {
+                  console.warn("[VIDEO FACE-SWAP] No image in response, using original frame");
+                }
+              }
+            } catch (faceErr) {
+              console.warn("[VIDEO FACE-SWAP] Failed, using original frame:", faceErr.message);
+            }
+          }
+        }
+      }
+
       setVideoStatus("Generazione video in corso…");
 
       // Merge negative prompt: stile + action placement hints + scene plan avoids
@@ -7581,7 +7710,7 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
           });
           const spCtx = vidScreenplayCtxRef.current;
           const resolvedVideoPromptIT = videoPromptManuallyEdited ? editableVideoIT : (proposedVideoPrompt?.prompt_it || currentVideoIT);
-          const entry = await onSaveVideo(base64, fp, { resolution: videoResolution, duration, seed: result.seed || 0, userIdea: currentVideoIT, promptEN: fp, promptIT: resolvedVideoPromptIT, selectedStyles: selectedVideoStyles, selectedDirectionStyles: selectedDirectionStyles, ...(spCtx ? { screenplayId: spCtx.screenplayId, screenplayName: spCtx.screenplayName, clipIndex: spCtx.clipIndex, clipTotal: spCtx.clipTotal } : {}) });
+          const entry = await onSaveVideo(base64, fp, { resolution: videoResolution, duration, seed: result.seed || 0, userIdea: currentVideoIT, promptEN: fp, promptIT: resolvedVideoPromptIT, selectedStyles: selectedVideoStyles, selectedDirectionStyles: selectedDirectionStyles, ...(spCtx ? { screenplayId: spCtx.screenplayId, screenplayName: spCtx.screenplayName, screenplaySummary: spCtx.screenplaySummary || "", clipIndex: spCtx.clipIndex, clipTotal: spCtx.clipTotal } : {}) });
           if (entry?.filePath && isElectron) {
             const localUrl = mediaFileUrl(entry.filePath);
             // Aggiorna URL da remoto a locale nella lista e nel preview
@@ -7732,13 +7861,60 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
     setVidDurationSelectionMode("manual");
 
     const spId = `sp_${Date.now()}`;
-    const spName = screenplaySummary || videoPrompt.trim().slice(0, 60) || "Sceneggiatura";
+    const existingSpIds = new Set();
+    for (const h of (historyVidRef.current || [])) { if (h.params?.screenplayId) existingSpIds.add(h.params.screenplayId); }
+    const sceneNumber = existingSpIds.size + 1;
+    const dateStr = new Date().toLocaleDateString("it-IT", { day: "2-digit", month: "2-digit", year: "2-digit" });
+    const spName = `Scena-${String(sceneNumber).padStart(2, "0")} del ${dateStr}`;
+    const spSummary = screenplaySummary || "";
+
+    // ── Face swap UNA VOLTA SOLA prima del loop (se c'è personaggio con foto) ──
+    vidFaceSwappedFrameRef.current = null;
+    if (selectedCharacter && sourceImg) {
+      const charImg = selectedCharacter?.image || selectedCharacter?.imagePath || selectedCharacter?.imageUrl || null;
+      if (charImg) {
+        try {
+          setVideoStatus("Applicazione volto sul frame…");
+          // Risolvi sourceImg in URL pubblico
+          let frameUrl = null;
+          if (sourceImg.startsWith("http")) {
+            frameUrl = sourceImg;
+          } else {
+            const b64 = await resolveSourceImageBase64ForVideo(sourceImg);
+            if (b64) frameUrl = await uploadBase64ToFal(`data:image/png;base64,${b64}`).catch(() => null);
+          }
+          if (frameUrl) {
+            const faceDataUri = await characterImageToDataUri(charImg).catch(() => null);
+            if (faceDataUri) {
+              const swapResult = await falRequest("fal-ai/face-swap", {
+                base_image_url: frameUrl,
+                swap_image_url: faceDataUri,
+              });
+              const swappedUrl = swapResult?.image?.url || swapResult?.images?.[0]?.url || null;
+              if (swappedUrl) {
+                vidFaceSwappedFrameRef.current = swappedUrl;
+                console.log("[SCREENPLAY FACE-SWAP] Applied once to source frame:", swappedUrl.slice(0, 80));
+              }
+            }
+          }
+        } catch (faceErr) {
+          console.warn("[SCREENPLAY FACE-SWAP] Failed, will use original frame:", faceErr.message);
+        }
+      }
+    }
+
+    // Pre-inserisci N placeholder per tutti i clip in attesa
+    const placeholders = clips.map((_, idx) => `${STUDIO_CLIP_GENERATING_PREFIX}${idx}`);
+    setGeneratedVideos(prev => [...placeholders, ...prev.filter(x => !isClipPlaceholder(x))]);
 
     for (let i = 0; i < clips.length; i++) {
       const clip = clips[i];
+      const myPlaceholder = placeholders[i];
       setVideoStatus(`Generazione clip ${i + 1} di ${clips.length}…`);
 
-      // Se il clip è stato modificato dall'utente o manca il prompt EN, ritraduco silenziosamente
+      // Rimuovi il placeholder di questo clip (generateVideo aggiungerà il suo STUDIO_VIDEO_GENERATING)
+      setGeneratedVideos(prev => prev.filter(x => x !== myPlaceholder));
+
       let promptEN = clip.prompt_en;
       if (!promptEN || clip._modified) {
         try {
@@ -7753,10 +7929,18 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
       vidPromptEnOverrideRef.current = promptEN;
       vidDurationOverrideRef.current = Number(clip.duration) || 5;
       setVideoDuration(Number(clip.duration) || 5);
-      vidScreenplayCtxRef.current = { screenplayId: spId, screenplayName: spName, clipIndex: i, clipTotal: clips.length };
-      await generateVideo();
+      vidScreenplayCtxRef.current = { screenplayId: spId, screenplayName: spName, screenplaySummary: spSummary, clipIndex: i, clipTotal: clips.length };
+
+      try {
+        await generateVideo();
+      } catch (err) {
+        console.error(`[SCREENPLAY] Clip ${i + 1} failed:`, err);
+      }
     }
+    // Pulizia: rimuovi eventuali placeholder residui
+    setGeneratedVideos(prev => prev.filter(x => !isClipPlaceholder(x)));
     vidScreenplayCtxRef.current = null;
+    vidFaceSwappedFrameRef.current = null;
     setVidDurationSelectionMode(prevDurMode);
     setVideoStatus(`✅ ${clips.length} clip generati!`);
     setTimeout(() => setVideoStatus(""), 3000);
@@ -7910,10 +8094,22 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
             padding: "10px 14px", border: "none", background: "transparent", cursor: "pointer",
           }}
         >
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0, flex: 1 }}>
             <HiChevronRight size={14} style={{ color: AX.muted, transform: directionSectionOpen ? "rotate(90deg)" : "rotate(0deg)", transition: "transform 0.2s ease", flexShrink: 0 }} />
-            <span style={{ fontSize: 11, color: AX.muted, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em" }}>🎥 Regia</span>
-            {(selectedDirectionStyles || []).length > 0 && (
+            <span style={{ fontSize: 11, color: AX.muted, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", flexShrink: 0 }}>🎥 Regia</span>
+            {!directionSectionOpen && (selectedDirectionStyles || []).length > 0 && (
+              <div style={{ display: "flex", gap: 4, flexWrap: "wrap", minWidth: 0 }}>
+                {(selectedDirectionStyles || []).map(id => {
+                  const s = VIDEO_DIRECTION_STYLE_PRESETS.find(p => p.id === id);
+                  return s ? (
+                    <span key={id} style={{ fontSize: 10, fontWeight: 700, color: AX.electric, background: "rgba(79,216,255,0.15)", borderRadius: 8, padding: "2px 8px", whiteSpace: "nowrap" }}>
+                      {s.icon} {s.label}
+                    </span>
+                  ) : null;
+                })}
+              </div>
+            )}
+            {directionSectionOpen && (selectedDirectionStyles || []).length > 0 && (
               <span style={{ fontSize: 9, fontWeight: 700, color: AX.electric, background: "rgba(79,216,255,0.15)", borderRadius: 6, padding: "2px 6px" }}>1</span>
             )}
             {!directionSectionOpen && directionRecommendation && (selectedDirectionStyles || []).length === 0 && (
