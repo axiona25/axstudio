@@ -45,6 +45,44 @@ import {
 } from "react-icons/hi2";
 import VideoEditor from "./editor/VideoEditor";
 
+// ── ElevenLabs Config (voci/dialoghi TTS) ──
+const ELEVENLABS_API_KEY = process.env.REACT_APP_ELEVENLABS_API_KEY || "";
+
+async function elevenLabsGetVoices() {
+  const res = await fetch("https://api.elevenlabs.io/v1/voices", {
+    headers: { "xi-api-key": ELEVENLABS_API_KEY }
+  });
+  if (!res.ok) throw new Error(`ElevenLabs voices: ${res.status}`);
+  return (await res.json()).voices || [];
+}
+
+async function elevenLabsTTS(text, voiceId, options = {}) {
+  const { modelId = "eleven_multilingual_v2", language = null, stability = 0.5, similarityBoost = 0.75 } = options;
+  const body = { text, model_id: modelId, voice_settings: { stability, similarity_boost: similarityBoost } };
+  if (language) body.language_code = language;
+
+  const res = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
+    method: "POST",
+    headers: { "xi-api-key": ELEVENLABS_API_KEY, "Content-Type": "application/json", "Accept": "audio/mpeg" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`ElevenLabs TTS: ${res.status}`);
+  return await res.blob();
+}
+
+async function elevenLabsCloneVoice(name, audioFiles) {
+  const formData = new FormData();
+  formData.append("name", name);
+  audioFiles.forEach(f => formData.append("files", f));
+  const res = await fetch("https://api.elevenlabs.io/v1/voices/add", {
+    method: "POST",
+    headers: { "xi-api-key": ELEVENLABS_API_KEY },
+    body: formData,
+  });
+  if (!res.ok) throw new Error(`ElevenLabs clone: ${res.status}`);
+  return await res.json();
+}
+
 // ── fal.ai Config ──
 const FAL_API_KEY = process.env.REACT_APP_FAL_API_KEY || "";
 const FAL_BASE_URL = "https://fal.run";
@@ -1667,6 +1705,22 @@ No markdown, no backticks, no explanations.`;
 }
 
 const isElectron = typeof window !== "undefined" && !!(window.electronAPI);
+
+/** Salva un Blob audio su disco tramite Electron e restituisce il percorso locale */
+async function saveAudioBlobToDisk(blob, fileName) {
+  if (!isElectron) return null;
+  const base64 = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result;
+      resolve(dataUrl.startsWith("data:") ? dataUrl.split(",")[1] : dataUrl);
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+  const result = await window.electronAPI.saveFile(fileName, base64, "voices");
+  return result?.success ? result.path : null;
+}
 
 // ── OpenRouter Config (Prompt Enhancer LLM — uncensored, free tier) ──
 const OPENROUTER_API_KEY = process.env.REACT_APP_OPENROUTER_API_KEY || "";
@@ -4787,6 +4841,11 @@ export default function AIStudio() {
   // ── Voice library (Kling custom voices) ──
   const [voiceLibrary, setVoiceLibrary] = useState([]);
   const [storageReady_voices, setStorageReady_voices] = useState(false);
+  // ── ElevenLabs favorites + personal cloned voices ──
+  const [elFavorites, setElFavorites] = useState([]);
+  const [storageReady_elFav, setStorageReady_elFav] = useState(false);
+  const [myVoices, setMyVoices] = useState([]);
+  const [storageReady_myVoices, setStorageReady_myVoices] = useState(false);
 
   const [history, setHistory] = useState([]);
   /** Home — galleria recenti: immagini | video | sceneggiature */
@@ -4853,6 +4912,17 @@ export default function AIStudio() {
         setStorageReady_voices(true);
       }
 
+      const savedElFav = await storage.loadJson("elevenlabs-favorites.json", []);
+      if (!cancelled) {
+        setElFavorites(Array.isArray(savedElFav) ? savedElFav : []);
+        setStorageReady_elFav(true);
+      }
+      const savedMyVoices = await storage.loadJson("my-voices.json", []);
+      if (!cancelled) {
+        setMyVoices(Array.isArray(savedMyVoices) ? savedMyVoices : []);
+        setStorageReady_myVoices(true);
+      }
+
       setStorageReady(true);
     })();
     return () => { cancelled = true; };
@@ -4862,6 +4932,11 @@ export default function AIStudio() {
     if (!storageReady_voices) return;
     storage.saveJson("voices.json", voiceLibrary);
   }, [voiceLibrary, storageReady_voices]);
+
+  useEffect(() => {
+    if (!storageReady_elVoices) return;
+    storage.saveJson("elevenlabs-voices.json", elevenLabsVoices);
+  }, [elevenLabsVoices, storageReady_elVoices]);
 
   // ── Reset media sessione quando si cambia progetto/contesto ──
   const prevProjectIdRef = useRef(currentProject?.id ?? "__none__");
@@ -6425,7 +6500,7 @@ export default function AIStudio() {
             </>
           )}
           {activeTab === "video" && (
-            <VidGen {...{ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, videoResolution, setVideoResolution, generating, setGenerating, selectedCharacter, vidTemplates: videoStylePresets, onSaveVideo: saveGeneratedVideo, generatedVideos, setGeneratedVideos, previewVideo: genPreviewVideo, setPreviewVideo: setGenPreviewVideo, layoutFill: false, history, diskMediaEntries, generatedImages, controlledSourceImg: projectVideoSourceImg, setControlledSourceImg: setProjectVideoSourceImg, proposalResetNonce: projectVideoProposalResetNonce, pickerImageEntries: projectGalleryEntryList, pickerSelectedEntryId: projectGallerySelectedEntryId, onPickerImageChange: handleProjectGallerySelection, selectedVideoStyles: vidSelectedStyles, setSelectedVideoStyles: setVidSelectedStyles, selectedDirectionStyles: vidSelectedDirectionStyles, setSelectedDirectionStyles: setVidSelectedDirectionStyles, vidAspect, setVidAspect, vidSteps, setVidSteps, recallVideoUrl, setRecallVideoUrl, videoStatus, setVideoStatus, directionRecommendation: vidDirectionRecommendation, setDirectionRecommendation: setVidDirectionRecommendation, directionRecLoading: vidDirectionRecLoading, setDirectionRecLoading: setVidDirectionRecLoading, imgSessionPromptMap, videoSidebarMode, setVideoSidebarMode, expandedScreenplays, setExpandedScreenplays, voiceLibrary }} />
+            <VidGen {...{ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, videoResolution, setVideoResolution, generating, setGenerating, selectedCharacter, vidTemplates: videoStylePresets, onSaveVideo: saveGeneratedVideo, generatedVideos, setGeneratedVideos, previewVideo: genPreviewVideo, setPreviewVideo: setGenPreviewVideo, layoutFill: false, history, diskMediaEntries, generatedImages, controlledSourceImg: projectVideoSourceImg, setControlledSourceImg: setProjectVideoSourceImg, proposalResetNonce: projectVideoProposalResetNonce, pickerImageEntries: projectGalleryEntryList, pickerSelectedEntryId: projectGallerySelectedEntryId, onPickerImageChange: handleProjectGallerySelection, selectedVideoStyles: vidSelectedStyles, setSelectedVideoStyles: setVidSelectedStyles, selectedDirectionStyles: vidSelectedDirectionStyles, setSelectedDirectionStyles: setVidSelectedDirectionStyles, vidAspect, setVidAspect, vidSteps, setVidSteps, recallVideoUrl, setRecallVideoUrl, videoStatus, setVideoStatus, directionRecommendation: vidDirectionRecommendation, setDirectionRecommendation: setVidDirectionRecommendation, directionRecLoading: vidDirectionRecLoading, setDirectionRecLoading: setVidDirectionRecLoading, imgSessionPromptMap, videoSidebarMode, setVideoSidebarMode, expandedScreenplays, setExpandedScreenplays, voiceLibrary, elevenLabsVoices }} />
           )}
 
           </div>
@@ -6441,7 +6516,7 @@ export default function AIStudio() {
         {/* ═══ FREE VIDEO ═══ */}
         {view === "free-video" && (
           <div className="ax-hide-scrollbar" style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflowY: "auto", overflowX: "hidden" }}>
-            <VidGen {...{ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, videoResolution, setVideoResolution, generating, setGenerating, selectedCharacter: null, vidTemplates: videoStylePresets, onSaveVideo: saveGeneratedVideo, generatedVideos, setGeneratedVideos, previewVideo: genPreviewVideo, setPreviewVideo: setGenPreviewVideo, layoutFill: true, history, diskMediaEntries, generatedImages, freeSourceImg: vidFreeSourceImg, setFreeSourceImg: setVidFreeSourceImg, selectedVideoStyles: vidSelectedStyles, setSelectedVideoStyles: setVidSelectedStyles, selectedDirectionStyles: vidSelectedDirectionStyles, setSelectedDirectionStyles: setVidSelectedDirectionStyles, vidAspect, setVidAspect, vidSteps, setVidSteps, recallVideoUrl, setRecallVideoUrl, videoStatus, setVideoStatus, directionRecommendation: vidDirectionRecommendation, setDirectionRecommendation: setVidDirectionRecommendation, directionRecLoading: vidDirectionRecLoading, setDirectionRecLoading: setVidDirectionRecLoading, imgSessionPromptMap, videoSidebarMode, setVideoSidebarMode, expandedScreenplays, setExpandedScreenplays, voiceLibrary }} />
+            <VidGen {...{ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, videoResolution, setVideoResolution, generating, setGenerating, selectedCharacter: null, vidTemplates: videoStylePresets, onSaveVideo: saveGeneratedVideo, generatedVideos, setGeneratedVideos, previewVideo: genPreviewVideo, setPreviewVideo: setGenPreviewVideo, layoutFill: true, history, diskMediaEntries, generatedImages, freeSourceImg: vidFreeSourceImg, setFreeSourceImg: setVidFreeSourceImg, selectedVideoStyles: vidSelectedStyles, setSelectedVideoStyles: setVidSelectedStyles, selectedDirectionStyles: vidSelectedDirectionStyles, setSelectedDirectionStyles: setVidSelectedDirectionStyles, vidAspect, setVidAspect, vidSteps, setVidSteps, recallVideoUrl, setRecallVideoUrl, videoStatus, setVideoStatus, directionRecommendation: vidDirectionRecommendation, setDirectionRecommendation: setVidDirectionRecommendation, directionRecLoading: vidDirectionRecLoading, setDirectionRecLoading: setVidDirectionRecLoading, imgSessionPromptMap, videoSidebarMode, setVideoSidebarMode, expandedScreenplays, setExpandedScreenplays, voiceLibrary, elevenLabsVoices }} />
           </div>
         )}
 
@@ -6450,6 +6525,8 @@ export default function AIStudio() {
           <VoiceLibrarySettings
             voiceLibrary={voiceLibrary}
             setVoiceLibrary={setVoiceLibrary}
+            elevenLabsVoices={elevenLabsVoices}
+            setElevenLabsVoices={setElevenLabsVoices}
           />
         )}
         </div>
@@ -8031,7 +8108,7 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
 }
 
 // ── Video Generator ──
-function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, videoResolution, setVideoResolution, generating, setGenerating, selectedCharacter, vidTemplates, onSaveVideo, generatedVideos: _gv, setGeneratedVideos, previewVideo, setPreviewVideo, layoutFill, history, diskMediaEntries, generatedImages, controlledSourceImg, setControlledSourceImg, freeSourceImg, setFreeSourceImg, proposalResetNonce = 0, pickerImageEntries, pickerSelectedEntryId, onPickerImageChange, selectedVideoStyles, setSelectedVideoStyles, selectedDirectionStyles, setSelectedDirectionStyles, vidAspect, setVidAspect, vidSteps, setVidSteps, recallVideoUrl, setRecallVideoUrl, videoStatus, setVideoStatus, directionRecommendation, setDirectionRecommendation, directionRecLoading, setDirectionRecLoading, imgSessionPromptMap, videoSidebarMode, setVideoSidebarMode, expandedScreenplays, setExpandedScreenplays, voiceLibrary = [] }) {
+function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, videoResolution, setVideoResolution, generating, setGenerating, selectedCharacter, vidTemplates, onSaveVideo, generatedVideos: _gv, setGeneratedVideos, previewVideo, setPreviewVideo, layoutFill, history, diskMediaEntries, generatedImages, controlledSourceImg, setControlledSourceImg, freeSourceImg, setFreeSourceImg, proposalResetNonce = 0, pickerImageEntries, pickerSelectedEntryId, onPickerImageChange, selectedVideoStyles, setSelectedVideoStyles, selectedDirectionStyles, setSelectedDirectionStyles, vidAspect, setVidAspect, vidSteps, setVidSteps, recallVideoUrl, setRecallVideoUrl, videoStatus, setVideoStatus, directionRecommendation, setDirectionRecommendation, directionRecLoading, setDirectionRecLoading, imgSessionPromptMap, videoSidebarMode, setVideoSidebarMode, expandedScreenplays, setExpandedScreenplays, voiceLibrary = [], elevenLabsVoices = [] }) {
   const [tmpl, setTmpl] = useState(null);
   const sourceIsControlled = typeof setControlledSourceImg === "function";
   const sourceImg = sourceIsControlled ? (controlledSourceImg ?? null) : (freeSourceImg ?? null);
@@ -8945,15 +9022,37 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
       vidAmbientOverrideRef.current = null;
       vidVoiceIdOverrideRef.current = null;
 
+      const isElevenLabsVoice = clipVoiceId?.startsWith("el:");
+      const isKlingVoice = clipVoiceId?.startsWith("kl:");
+      const rawVoiceId = clipVoiceId ? clipVoiceId.replace(/^(el:|kl:)/, "") : "";
+      const clipDialogueLangResolved = vidScreenplayCtxRef.current
+        ? (editableClips[vidScreenplayCtxRef.current?.clipIndex]?.dialogueLang || singleDialogueLang || "en")
+        : (singleDialogueLang || "en");
+
+      // ── ElevenLabs TTS: genera audio MP3 PRIMA del video ──
+      let elevenLabsAudioPath = null;
+      if (clipDialogue && isElevenLabsVoice && rawVoiceId) {
+        try {
+          setVideoStatus("🎤 Generazione voce ElevenLabs…");
+          const ttsBlob = await elevenLabsTTS(clipDialogue, rawVoiceId, { language: clipDialogueLangResolved });
+          elevenLabsAudioPath = await saveAudioBlobToDisk(ttsBlob, `voice_${Date.now()}.mp3`);
+          console.log("[ELEVENLABS TTS] Audio saved:", elevenLabsAudioPath);
+        } catch (elErr) {
+          console.error("[ELEVENLABS TTS] Failed:", elErr.message);
+        }
+      }
+
       let finalPrompt = fp;
-      if (clipDialogue) {
+      // Se voce ElevenLabs: NON inserire il dialogo nel prompt Kling (verrà mixato dopo)
+      if (clipDialogue && !isElevenLabsVoice) {
         finalPrompt += `. The character says "${clipDialogue}"`;
       }
       if (clipAmbient) {
         finalPrompt += `. Ambient sounds: ${clipAmbient}`;
       }
 
-      const hasAudioContent = !!(clipDialogue || clipAmbient);
+      // Kling genera audio ambient; la voce arriva da ElevenLabs se selezionata
+      const hasAudioContent = isElevenLabsVoice ? !!clipAmbient : !!(clipDialogue || clipAmbient);
 
       // ── Kling O3 Reference-to-Video: preserva identità, costume, sfondo ──
       const klingPayload = {
@@ -8967,9 +9066,9 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
         ...(finalNegativeVideo ? { negative_prompt: finalNegativeVideo } : {}),
       };
 
-      if (clipVoiceId && clipDialogue) {
-        klingPayload.voice_ids = [clipVoiceId];
-        const voiceDef = KLING_SYSTEM_VOICES.find(v => v.id === clipVoiceId);
+      if (isKlingVoice && rawVoiceId && clipDialogue) {
+        klingPayload.voice_ids = [rawVoiceId];
+        const voiceDef = KLING_SYSTEM_VOICES.find(v => v.id === rawVoiceId);
         if (voiceDef) klingPayload.voice_language = voiceDef.lang === "zh" ? "zh" : "en";
         klingPayload.prompt = klingPayload.prompt.replace(
           `The character says "${clipDialogue}"`,
@@ -9059,6 +9158,24 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
                 console.warn("[VIDEO TRIM] Error:", trimErr.message);
               }
             }
+
+            // ── Mix voce ElevenLabs sopra video Kling con ffmpeg ──
+            if (elevenLabsAudioPath && window.electronAPI?.mixAudioVideo) {
+              try {
+                setVideoStatus("🔊 Mixaggio voce ElevenLabs…");
+                const mixedPath = entry.filePath.replace(/\.mp4$/i, "_mix.mp4");
+                const mixResult = await window.electronAPI.mixAudioVideo(entry.filePath, elevenLabsAudioPath, mixedPath);
+                if (mixResult?.success) {
+                  await window.electronAPI.renameFile(mixedPath, entry.filePath);
+                  console.log("[ELEVENLABS MIX] Voice mixed into video");
+                } else {
+                  console.warn("[ELEVENLABS MIX] Failed:", mixResult?.error);
+                }
+              } catch (mixErr) {
+                console.warn("[ELEVENLABS MIX] Error:", mixErr.message);
+              }
+            }
+
             displayUrl = mediaFileUrl(entry.filePath);
           }
         } catch (err) {
@@ -9797,14 +9914,20 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
                   onChange={(e) => setSingleVoiceId(e.target.value)}
                   style={{ marginLeft: 6, background: "#1a1a2e", color: "white", border: "1px solid rgba(255,255,255,0.15)", borderRadius: 6, padding: "4px 8px", fontSize: 11 }}
                 >
-                  <option value="">Voce automatica</option>
-                  {KLING_SYSTEM_VOICES.filter(v => !singleDialogueLang || v.lang === singleDialogueLang || v.lang === "en").map(v => (
-                    <option key={v.id} value={v.id}>{v.label}{v.gender === "M" ? " ♂" : v.gender === "F" ? " ♀" : ""}</option>
-                  ))}
-                  {voiceLibrary.length > 0 && <option disabled>── Voci personalizzate ──</option>}
-                  {voiceLibrary.map(v => (
-                    <option key={v.id} value={v.id}>{v.name} — {v.language}</option>
-                  ))}
+                  <option value="">Nessuna voce</option>
+                  {elevenLabsVoices.length > 0 && <optgroup label="🔊 ElevenLabs">
+                    {elevenLabsVoices.map(v => (
+                      <option key={v.voice_id} value={`el:${v.voice_id}`}>{v.name}{v.language ? ` (${v.language})` : ""}</option>
+                    ))}
+                  </optgroup>}
+                  <optgroup label="🎤 Kling">
+                    {KLING_SYSTEM_VOICES.filter(v => !singleDialogueLang || v.lang === singleDialogueLang || v.lang === "en").map(v => (
+                      <option key={v.id} value={`kl:${v.id}`}>{v.label}{v.gender === "M" ? " ♂" : v.gender === "F" ? " ♀" : ""}</option>
+                    ))}
+                    {voiceLibrary.map(v => (
+                      <option key={v.id} value={`kl:${v.id}`}>{v.name} — {v.language}</option>
+                    ))}
+                  </optgroup>
                 </select>
               </div>
             </div>
@@ -10206,14 +10329,20 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
                         onChange={(e) => updateClipDialogue(i, "voiceId", e.target.value)}
                         style={{ marginLeft: 6, background: "#1a1a2e", color: "white", border: "1px solid rgba(255,255,255,0.15)", borderRadius: 6, padding: "4px 8px", fontSize: 11 }}
                       >
-                        <option value="">Voce automatica</option>
-                        {KLING_SYSTEM_VOICES.filter(v => { const cl = clip.dialogueLang || singleDialogueLang; return !cl || v.lang === cl || v.lang === "en"; }).map(v => (
-                          <option key={v.id} value={v.id}>{v.label}{v.gender === "M" ? " ♂" : v.gender === "F" ? " ♀" : ""}</option>
-                        ))}
-                        {voiceLibrary.length > 0 && <option disabled>── Voci personalizzate ──</option>}
-                        {voiceLibrary.map(v => (
-                          <option key={v.id} value={v.id}>{v.name} — {v.language}</option>
-                        ))}
+                        <option value="">Nessuna voce</option>
+                        {elevenLabsVoices.length > 0 && <optgroup label="🔊 ElevenLabs">
+                          {elevenLabsVoices.map(v => (
+                            <option key={v.voice_id} value={`el:${v.voice_id}`}>{v.name}{v.language ? ` (${v.language})` : ""}</option>
+                          ))}
+                        </optgroup>}
+                        <optgroup label="🎤 Kling">
+                          {KLING_SYSTEM_VOICES.filter(v => { const cl = clip.dialogueLang || singleDialogueLang; return !cl || v.lang === cl || v.lang === "en"; }).map(v => (
+                            <option key={v.id} value={`kl:${v.id}`}>{v.label}{v.gender === "M" ? " ♂" : v.gender === "F" ? " ♀" : ""}</option>
+                          ))}
+                          {voiceLibrary.map(v => (
+                            <option key={v.id} value={`kl:${v.id}`}>{v.name} — {v.language}</option>
+                          ))}
+                        </optgroup>
                       </select>
                     </div>
                   </div>
@@ -10310,7 +10439,8 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
 }
 
 // ── Voice Library Settings ──
-function VoiceLibrarySettings({ voiceLibrary, setVoiceLibrary }) {
+function VoiceLibrarySettings({ voiceLibrary, setVoiceLibrary, elevenLabsVoices, setElevenLabsVoices }) {
+  const [settingsTab, setSettingsTab] = useState("elevenlabs"); // "kling" | "elevenlabs"
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [newVoiceName, setNewVoiceName] = useState("");
   const [newVoiceLang, setNewVoiceLang] = useState("Italian");
@@ -10320,6 +10450,20 @@ function VoiceLibrarySettings({ voiceLibrary, setVoiceLibrary }) {
   const [createError, setCreateError] = useState("");
   const fileInputRef = useRef(null);
 
+  // ── ElevenLabs state ──
+  const [elVoices, setElVoices] = useState([]);
+  const [elLoading, setElLoading] = useState(false);
+  const [elError, setElError] = useState("");
+  const [elLangFilter, setElLangFilter] = useState("");
+  const [elCategoryFilter, setElCategoryFilter] = useState("");
+  const [elCloneFiles, setElCloneFiles] = useState([]);
+  const [elCloneName, setElCloneName] = useState("");
+  const [elCloning, setElCloning] = useState(false);
+  const [elCloneError, setElCloneError] = useState("");
+  const [elPreviewPlaying, setElPreviewPlaying] = useState(null);
+  const elCloneInputRef = useRef(null);
+  const elAudioRef = useRef(null);
+
   const handleAudioFile = (e) => {
     const f = e.target.files?.[0];
     if (!f) return;
@@ -10327,6 +10471,7 @@ function VoiceLibrarySettings({ voiceLibrary, setVoiceLibrary }) {
     setAudioFileName(f.name);
   };
 
+  // ── Kling: create voice ──
   const handleCreateVoice = async () => {
     if (!newVoiceName.trim() || !audioFile) return;
     setCreating(true);
@@ -10370,54 +10515,252 @@ function VoiceLibrarySettings({ voiceLibrary, setVoiceLibrary }) {
     setVoiceLibrary(prev => prev.filter(v => v.id !== voiceId));
   };
 
+  // ── ElevenLabs: fetch voices ──
+  const fetchElevenLabsVoices = async () => {
+    if (!ELEVENLABS_API_KEY) { setElError("API Key ElevenLabs non configurata"); return; }
+    setElLoading(true);
+    setElError("");
+    try {
+      const voices = await elevenLabsGetVoices();
+      setElVoices(voices);
+    } catch (e) {
+      console.error("[ELEVENLABS VOICES]", e);
+      setElError(e.message || "Errore nel caricamento voci");
+    }
+    setElLoading(false);
+  };
+
+  useEffect(() => {
+    if (settingsTab === "elevenlabs" && elVoices.length === 0 && ELEVENLABS_API_KEY) {
+      fetchElevenLabsVoices();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settingsTab]);
+
+  const elFilteredVoices = useMemo(() => {
+    let filtered = elVoices;
+    if (elLangFilter) {
+      filtered = filtered.filter(v => {
+        const labels = v.labels || {};
+        const lang = labels.language || labels.accent || "";
+        return lang.toLowerCase().includes(elLangFilter.toLowerCase());
+      });
+    }
+    if (elCategoryFilter) {
+      filtered = filtered.filter(v => v.category === elCategoryFilter);
+    }
+    return filtered;
+  }, [elVoices, elLangFilter, elCategoryFilter]);
+
+  const elLanguages = useMemo(() => {
+    const langs = new Set();
+    elVoices.forEach(v => {
+      const lang = v.labels?.language || v.labels?.accent || "";
+      if (lang) langs.add(lang);
+    });
+    return [...langs].sort();
+  }, [elVoices]);
+
+  const toggleElFavorite = (voice) => {
+    const exists = elevenLabsVoices.find(v => v.voice_id === voice.voice_id);
+    if (exists) {
+      setElevenLabsVoices(prev => prev.filter(v => v.voice_id !== voice.voice_id));
+    } else {
+      setElevenLabsVoices(prev => [...prev, { voice_id: voice.voice_id, name: voice.name, category: voice.category, language: voice.labels?.language || "", addedAt: new Date().toISOString() }]);
+    }
+  };
+
+  const isElFavorite = (voiceId) => elevenLabsVoices.some(v => v.voice_id === voiceId);
+
+  const handleElPreview = (voice) => {
+    if (elPreviewPlaying === voice.voice_id) {
+      if (elAudioRef.current) { elAudioRef.current.pause(); elAudioRef.current = null; }
+      setElPreviewPlaying(null);
+      return;
+    }
+    const previewUrl = voice.preview_url;
+    if (!previewUrl) return;
+    if (elAudioRef.current) { elAudioRef.current.pause(); }
+    const audio = new Audio(previewUrl);
+    elAudioRef.current = audio;
+    setElPreviewPlaying(voice.voice_id);
+    audio.play().catch(() => {});
+    audio.onended = () => { setElPreviewPlaying(null); elAudioRef.current = null; };
+  };
+
+  // ── ElevenLabs: clone voice ──
+  const handleElCloneVoice = async () => {
+    if (!elCloneName.trim() || elCloneFiles.length === 0) return;
+    setElCloning(true);
+    setElCloneError("");
+    try {
+      const result = await elevenLabsCloneVoice(elCloneName.trim(), elCloneFiles);
+      if (result?.voice_id) {
+        setElevenLabsVoices(prev => [...prev, { voice_id: result.voice_id, name: elCloneName.trim(), category: "cloned", language: "", addedAt: new Date().toISOString() }]);
+        setElCloneName("");
+        setElCloneFiles([]);
+        void fetchElevenLabsVoices();
+      } else {
+        throw new Error("Nessun voice_id nella risposta");
+      }
+    } catch (e) {
+      console.error("[ELEVENLABS CLONE]", e);
+      setElCloneError(e.message || "Errore nella clonazione");
+    }
+    setElCloning(false);
+  };
+
   return (
-    <div style={{ padding: "24px 28px", maxWidth: 700 }}>
+    <div style={{ padding: "24px 28px", maxWidth: 760 }}>
       <h2 style={{ fontSize: 20, fontWeight: 800, color: AX.text, marginBottom: 6 }}>🗣 Libreria Voci</h2>
-      <p style={{ fontSize: 13, color: AX.muted, marginBottom: 20, lineHeight: 1.5 }}>
-        Crea voci personalizzate per i dialoghi nei video. Le voci create saranno disponibili nel dropdown di selezione voce in ogni clip.
+      <p style={{ fontSize: 13, color: AX.muted, marginBottom: 16, lineHeight: 1.5 }}>
+        Gestisci le voci per i dialoghi nei video. ElevenLabs per voci/dialoghi di alta qualità, Kling per voci native nel video.
       </p>
 
-      <button
-        type="button"
-        onClick={() => setShowCreateModal(true)}
-        style={{ padding: "10px 20px", borderRadius: 10, border: "none", background: AX.gradPrimary, color: "#fff", fontWeight: 700, fontSize: 13, cursor: "pointer", marginBottom: 20, display: "flex", alignItems: "center", gap: 8 }}
-      >
-        <HiMicrophone size={16} /> + Crea voce
-      </button>
+      {/* Tab switcher */}
+      <div style={{ display: "flex", gap: 4, marginBottom: 20, background: AX.bg, borderRadius: 12, padding: 4, border: `1px solid ${AX.border}` }}>
+        {[{ id: "elevenlabs", label: "ElevenLabs" }, { id: "kling", label: "Kling" }].map(t => (
+          <button key={t.id} type="button" onClick={() => setSettingsTab(t.id)} style={{ flex: 1, padding: "10px 14px", borderRadius: 10, border: "none", background: settingsTab === t.id ? AX.gradPrimary : "transparent", color: settingsTab === t.id ? "#fff" : AX.muted, fontWeight: settingsTab === t.id ? 700 : 500, fontSize: 13, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, boxShadow: settingsTab === t.id ? "0 4px 20px rgba(41,182,255,0.2)" : "none" }}>
+            {t.id === "elevenlabs" ? <HiSpeakerWave size={15} /> : <HiMicrophone size={15} />} {t.label}
+          </button>
+        ))}
+      </div>
 
-      {voiceLibrary.length === 0 ? (
-        <div style={{ padding: 30, textAlign: "center", color: AX.muted, border: `1px dashed ${AX.border}`, borderRadius: 12 }}>
-          <HiSpeakerWave size={32} style={{ opacity: 0.4, marginBottom: 8 }} />
-          <p style={{ margin: 0, fontSize: 13 }}>Nessuna voce creata. Carica un audio di riferimento per clonare una voce.</p>
-        </div>
-      ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          {voiceLibrary.map(v => (
-            <div key={v.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px", borderRadius: 10, background: AX.surface, border: `1px solid ${AX.border}` }}>
-              <div style={{ width: 36, height: 36, borderRadius: "50%", background: "rgba(123,77,255,0.15)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                <HiSpeakerWave size={16} style={{ color: AX.violet }} />
-              </div>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 13, fontWeight: 700, color: AX.text }}>{v.name}</div>
-                <div style={{ fontSize: 11, color: AX.muted }}>{v.language} — {new Date(v.createdAt).toLocaleDateString("it-IT")}</div>
-              </div>
-              <span style={{ fontSize: 9, color: AX.muted, fontFamily: "monospace", opacity: 0.6 }}>{v.id.slice(0, 12)}…</span>
-              <button
-                type="button"
-                onClick={() => handleDeleteVoice(v.id)}
-                style={{ background: "none", border: "none", color: AX.muted, cursor: "pointer", fontSize: 14, opacity: 0.5, padding: 4 }}
-                title="Elimina voce"
-              >
-                <HiTrash size={16} />
+      {/* ═══ TAB ELEVENLABS ═══ */}
+      {settingsTab === "elevenlabs" && (
+        <div>
+          {!ELEVENLABS_API_KEY && (
+            <div style={{ padding: 16, borderRadius: 10, background: "rgba(255,79,163,0.08)", border: "1px solid rgba(255,79,163,0.2)", marginBottom: 16, fontSize: 12, color: AX.magenta }}>
+              ⚠ Imposta <code>REACT_APP_ELEVENLABS_API_KEY</code> nel file <code>.env</code> per utilizzare ElevenLabs.
+            </div>
+          )}
+
+          {/* Filtri */}
+          <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap", alignItems: "center" }}>
+            <select value={elLangFilter} onChange={e => setElLangFilter(e.target.value)} style={{ background: AX.surface, color: AX.text, border: `1px solid ${AX.border}`, borderRadius: 8, padding: "6px 10px", fontSize: 12 }}>
+              <option value="">Tutte le lingue</option>
+              {elLanguages.map(l => <option key={l} value={l}>{l}</option>)}
+            </select>
+            <select value={elCategoryFilter} onChange={e => setElCategoryFilter(e.target.value)} style={{ background: AX.surface, color: AX.text, border: `1px solid ${AX.border}`, borderRadius: 8, padding: "6px 10px", fontSize: 12 }}>
+              <option value="">Tutte le categorie</option>
+              <option value="premade">Premade</option>
+              <option value="cloned">Clonate</option>
+              <option value="generated">Generate</option>
+              <option value="professional">Professional</option>
+            </select>
+            <button type="button" onClick={fetchElevenLabsVoices} disabled={elLoading} style={{ padding: "6px 14px", borderRadius: 8, border: "none", background: AX.surface, color: AX.text, fontSize: 12, cursor: elLoading ? "not-allowed" : "pointer", opacity: elLoading ? 0.5 : 1 }}>
+              {elLoading ? "Caricamento…" : "🔄 Aggiorna"}
+            </button>
+          </div>
+
+          {elError && <div style={{ marginBottom: 12, fontSize: 12, color: AX.magenta }}>{elError}</div>}
+
+          {/* Clone voice section */}
+          <div style={{ padding: 14, borderRadius: 10, background: "rgba(123,77,255,0.06)", border: `1px solid rgba(123,77,255,0.2)`, marginBottom: 16 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: AX.violet, marginBottom: 10 }}>🎤 Clona la tua voce (ElevenLabs)</div>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <input value={elCloneName} onChange={e => setElCloneName(e.target.value)} placeholder="Nome voce…" style={{ flex: 1, minWidth: 120, padding: "8px 12px", borderRadius: 8, background: AX.bg, border: `1px solid ${AX.border}`, color: AX.text, fontSize: 12, outline: "none" }} />
+              <button type="button" onClick={() => elCloneInputRef.current?.click()} style={{ padding: "8px 14px", borderRadius: 8, border: `1px solid ${AX.border}`, background: "transparent", color: AX.text, fontSize: 12, cursor: "pointer" }}>
+                {elCloneFiles.length > 0 ? `${elCloneFiles.length} file` : "📁 Audio"}
+              </button>
+              <input ref={elCloneInputRef} type="file" multiple accept="audio/*,.mp3,.wav,.m4a" onChange={e => setElCloneFiles([...e.target.files])} style={{ display: "none" }} />
+              <button type="button" onClick={handleElCloneVoice} disabled={!elCloneName.trim() || elCloneFiles.length === 0 || elCloning} style={{ padding: "8px 16px", borderRadius: 8, border: "none", background: (!elCloneName.trim() || elCloneFiles.length === 0 || elCloning) ? AX.border : AX.gradPrimary, color: (!elCloneName.trim() || elCloneFiles.length === 0 || elCloning) ? AX.muted : "#fff", fontWeight: 700, fontSize: 12, cursor: (!elCloneName.trim() || elCloneFiles.length === 0 || elCloning) ? "not-allowed" : "pointer" }}>
+                {elCloning ? "⏳ Clonazione…" : "🎤 Clona"}
               </button>
             </div>
-          ))}
+            {elCloneError && <div style={{ marginTop: 8, fontSize: 11, color: AX.magenta }}>{elCloneError}</div>}
+          </div>
+
+          {/* Favorites */}
+          {elevenLabsVoices.length > 0 && (
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: AX.gold, marginBottom: 8 }}>⭐ Voci preferite ({elevenLabsVoices.length})</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {elevenLabsVoices.map(v => (
+                  <div key={v.voice_id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", borderRadius: 8, background: "rgba(255,179,71,0.06)", border: "1px solid rgba(255,179,71,0.2)" }}>
+                    <span style={{ fontSize: 12, fontWeight: 600, color: AX.text, flex: 1 }}>{v.name}</span>
+                    <span style={{ fontSize: 10, color: AX.muted }}>{v.language || v.category}</span>
+                    <button type="button" onClick={() => toggleElFavorite(v)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, padding: 2 }} title="Rimuovi dai preferiti">⭐</button>
+                    <button type="button" onClick={() => setElevenLabsVoices(prev => prev.filter(x => x.voice_id !== v.voice_id))} style={{ background: "none", border: "none", color: AX.muted, cursor: "pointer", fontSize: 13, opacity: 0.5, padding: 2 }} title="Elimina"><HiTrash size={14} /></button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Voice list */}
+          {elFilteredVoices.length > 0 ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 400, overflowY: "auto" }}>
+              {elFilteredVoices.map(v => (
+                <div key={v.voice_id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", borderRadius: 10, background: AX.surface, border: `1px solid ${isElFavorite(v.voice_id) ? "rgba(255,179,71,0.3)" : AX.border}` }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: AX.text }}>{v.name}</div>
+                    <div style={{ fontSize: 10, color: AX.muted }}>
+                      {v.labels?.language || ""} {v.labels?.accent ? `(${v.labels.accent})` : ""} — {v.category || "premade"}
+                      {v.labels?.gender ? ` — ${v.labels.gender}` : ""}
+                    </div>
+                  </div>
+                  <button type="button" onClick={() => handleElPreview(v)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 16, padding: 2 }} title="Anteprima">
+                    {elPreviewPlaying === v.voice_id ? "⏸" : "▶️"}
+                  </button>
+                  <button type="button" onClick={() => toggleElFavorite(v)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, padding: 2 }} title={isElFavorite(v.voice_id) ? "Rimuovi dai preferiti" : "Aggiungi ai preferiti"}>
+                    {isElFavorite(v.voice_id) ? "⭐" : "☆"}
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : (
+            !elLoading && <div style={{ padding: 20, textAlign: "center", color: AX.muted, fontSize: 12 }}>Nessuna voce trovata{elLangFilter || elCategoryFilter ? " con i filtri selezionati" : ""}.</div>
+          )}
         </div>
       )}
 
-      {/* Modale Crea Voce */}
+      {/* ═══ TAB KLING ═══ */}
+      {settingsTab === "kling" && (
+        <div>
+          <button
+            type="button"
+            onClick={() => setShowCreateModal(true)}
+            style={{ padding: "10px 20px", borderRadius: 10, border: "none", background: AX.gradPrimary, color: "#fff", fontWeight: 700, fontSize: 13, cursor: "pointer", marginBottom: 20, display: "flex", alignItems: "center", gap: 8 }}
+          >
+            <HiMicrophone size={16} /> + Crea voce Kling
+          </button>
+
+          {voiceLibrary.length === 0 ? (
+            <div style={{ padding: 30, textAlign: "center", color: AX.muted, border: `1px dashed ${AX.border}`, borderRadius: 12 }}>
+              <HiSpeakerWave size={32} style={{ opacity: 0.4, marginBottom: 8 }} />
+              <p style={{ margin: 0, fontSize: 13 }}>Nessuna voce Kling creata. Carica un audio di riferimento per clonare una voce.</p>
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {voiceLibrary.map(v => (
+                <div key={v.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px", borderRadius: 10, background: AX.surface, border: `1px solid ${AX.border}` }}>
+                  <div style={{ width: 36, height: 36, borderRadius: "50%", background: "rgba(123,77,255,0.15)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                    <HiSpeakerWave size={16} style={{ color: AX.violet }} />
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: AX.text }}>{v.name}</div>
+                    <div style={{ fontSize: 11, color: AX.muted }}>{v.language} — {new Date(v.createdAt).toLocaleDateString("it-IT")}</div>
+                  </div>
+                  <span style={{ fontSize: 9, color: AX.muted, fontFamily: "monospace", opacity: 0.6 }}>{v.id.slice(0, 12)}…</span>
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteVoice(v.id)}
+                    style={{ background: "none", border: "none", color: AX.muted, cursor: "pointer", fontSize: 14, opacity: 0.5, padding: 4 }}
+                    title="Elimina voce"
+                  >
+                    <HiTrash size={16} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Modale Crea Voce Kling */}
       {showCreateModal && (
-        <Modal title="Crea voce personalizzata" titleIcon={<HiMicrophone size={20} />} onClose={() => { setShowCreateModal(false); setCreateError(""); }}>
+        <Modal title="Crea voce personalizzata (Kling)" titleIcon={<HiMicrophone size={20} />} onClose={() => { setShowCreateModal(false); setCreateError(""); }}>
           <div style={{ marginBottom: 14 }}>
             <label style={{ fontSize: 12, color: AX.muted, fontWeight: 600, display: "block", marginBottom: 5 }}>Nome voce *</label>
             <input

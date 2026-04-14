@@ -35,6 +35,7 @@ ensureDir(path.join(DATA_DIR, "images"));
 ensureDir(path.join(DATA_DIR, "videos"));
 ensureDir(path.join(DATA_DIR, "projects"));
 ensureDir(path.join(DATA_DIR, "characters"));
+ensureDir(path.join(DATA_DIR, "voices"));
 
 function isPathUnderDir(filePath, rootDir) {
   const f = path.resolve(filePath);
@@ -286,6 +287,38 @@ ipcMain.handle("rename-file", async (_event, oldPath, newPath) => {
   } catch (err) {
     return { success: false, error: err.message };
   }
+});
+
+// ── Mix audio + video con ffmpeg (voce ElevenLabs sopra video Kling) ──
+ipcMain.handle("mix-audio-video", async (_event, videoPath, audioPath, outputPath) => {
+  return new Promise((resolve) => {
+    // Controlla se il video ha già una traccia audio
+    execFile("ffprobe", [
+      "-v", "error", "-select_streams", "a", "-show_entries", "stream=codec_type",
+      "-of", "csv=p=0", videoPath,
+    ], { timeout: 10000 }, (probeErr, stdout) => {
+      const hasExistingAudio = !probeErr && stdout.trim().length > 0;
+
+      const args = hasExistingAudio
+        ? ["-y", "-i", videoPath, "-i", audioPath,
+           "-filter_complex", "[0:a][1:a]amix=inputs=2:duration=first[a]",
+           "-map", "0:v", "-map", "[a]", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+           outputPath]
+        : ["-y", "-i", videoPath, "-i", audioPath,
+           "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+           "-shortest", outputPath];
+
+      execFile("ffmpeg", args, { timeout: 120000 }, (err) => {
+        if (err) {
+          console.error("[FFMPEG MIX]", err.message);
+          resolve({ success: false, error: err.message });
+        } else {
+          console.log("[FFMPEG MIX] OK:", outputPath);
+          resolve({ success: true, outputPath });
+        }
+      });
+    });
+  });
 });
 
 // ── OpenAI key from Connettori.txt (workspace / env CONNETTORI_DIR) ──

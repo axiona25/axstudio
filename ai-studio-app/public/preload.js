@@ -32,6 +32,10 @@ contextBridge.exposeInMainWorld("electronAPI", {
   renameFile: (oldPath, newPath) =>
     ipcRenderer.invoke("rename-file", oldPath, newPath),
 
+  /** Mix audio ElevenLabs + video Kling con ffmpeg */
+  mixAudioVideo: (videoPath, audioPath, outputPath) =>
+    ipcRenderer.invoke("mix-audio-video", videoPath, audioPath, outputPath),
+
   /** Chiave OpenAI da `Connettori.txt` (cartella progetto), se presente. */
   getOpenAiKey: () => ipcRenderer.invoke("get-openai-key"),
 });
