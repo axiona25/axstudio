@@ -36,7 +36,7 @@ const TOP_TABS = [
   { id: "export",      icon: HiArrowDownTray,          label: "Esporta" },
 ];
 
-export default function VideoEditor({ projectName, projectMedia }) {
+export default function VideoEditor({ projectName, projectMedia, history, mediaFileUrl }) {
   const timeline = useTimeline({ fps: 30, width: 1920, height: 1080 });
   const mediaLib = useMediaLibrary();
   const [activeTab, setActiveTab] = useState("media");
@@ -50,7 +50,7 @@ export default function VideoEditor({ projectName, projectMedia }) {
     }
   }, [projectMedia]);
 
-  const handleDropMedia = useCallback((mediaData, trackId, time) => {
+  const handleDropMedia = useCallback((mediaData, trackId) => {
     const trackType = trackId.startsWith("V") ? "video" : trackId.startsWith("A") ? "audio" : "text";
     const mediaType = mediaData.type || "video";
     if (
@@ -58,7 +58,7 @@ export default function VideoEditor({ projectName, projectMedia }) {
       (trackType === "audio" && mediaType === "audio") ||
       (trackType === "text")
     ) {
-      timeline.addClip(mediaData, trackId, time);
+      timeline.addClip(mediaData, trackId);
     }
   }, [timeline]);
 
@@ -75,19 +75,27 @@ export default function VideoEditor({ projectName, projectMedia }) {
       thumbnail: "",
       duration: 5,
     };
-    timeline.addClip(clip, "T1", timeline.playheadTime);
+    timeline.addClip(clip, "T1");
   }, [timeline]);
 
   useEffect(() => {
     const handleKeyDown = (e) => {
       if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || e.target.tagName === "SELECT") return;
+      const mod = e.metaKey || e.ctrlKey;
+
+      if (mod && e.code === "KeyZ" && e.shiftKey) { e.preventDefault(); timeline.redo(); return; }
+      if (mod && e.code === "KeyZ") { e.preventDefault(); timeline.undo(); return; }
+      if (mod && e.code === "KeyC") { e.preventDefault(); timeline.copyClip(); return; }
+      if (mod && e.code === "KeyX") { e.preventDefault(); timeline.cutClip(); return; }
+      if (mod && e.code === "KeyV") { e.preventDefault(); timeline.pasteClip(); return; }
+
       switch (e.code) {
         case "Space":
           e.preventDefault();
           timeline.isPlaying ? timeline.pause() : timeline.play();
           break;
         case "KeyS":
-          if (!e.ctrlKey && !e.metaKey && timeline.selectedClipId)
+          if (!mod && timeline.selectedClipId)
             timeline.splitClip(timeline.selectedClipId, timeline.playheadTime);
           break;
         case "Delete": case "Backspace":
@@ -114,11 +122,9 @@ export default function VideoEditor({ projectName, projectMedia }) {
       case "media":
         return (
           <MediaLibraryPanel
-            mediaItems={mediaLib.filteredItems}
-            filter={mediaLib.filter}
-            onFilterChange={mediaLib.setFilter}
-            onAddMedia={mediaLib.addMedia}
-            onRemoveMedia={mediaLib.removeMedia}
+            history={history}
+            mediaFileUrl={mediaFileUrl}
+            timeline={timeline}
           />
         );
       case "audio":
@@ -258,8 +264,8 @@ export default function VideoEditor({ projectName, projectMedia }) {
           if (timeline.selectedClipId) timeline.removeClip(timeline.selectedClipId);
         }} />
         <div style={{ width: 1, height: 18, background: AX.border, margin: "0 4px" }} />
-        <EditToolBtn icon={<HiArrowUturnLeft size={14} />} title="Undo" onClick={() => {}} disabled />
-        <EditToolBtn icon={<HiArrowUturnRight size={14} />} title="Redo" onClick={() => {}} disabled />
+        <EditToolBtn icon={<HiArrowUturnLeft size={14} />} title="Undo (⌘Z)" onClick={() => timeline.undo()} disabled={!timeline.canUndo} />
+        <EditToolBtn icon={<HiArrowUturnRight size={14} />} title="Redo (⌘⇧Z)" onClick={() => timeline.redo()} disabled={!timeline.canRedo} />
         <div style={{ flex: 1 }} />
         <span style={{ fontSize: 10, color: AX.muted }}>
           Durata: {timeline.totalDuration.toFixed(1)}s

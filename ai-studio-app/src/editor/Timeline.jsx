@@ -242,28 +242,44 @@ function TrackHeader({ track, onMute, onLock }) {
 function TrackLane({ track, pxPerSec, scrollX, selectedClipId, onSelectClip, onDragStart, onResizeStart, onDrop, onContextMenu }) {
   const colors = TRACK_COLORS[track.type] || TRACK_COLORS.video;
   const laneRef = useRef(null);
+  const [dropPreview, setDropPreview] = useState(null);
 
-  const handleDragOver = (e) => { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; };
-  const handleDrop = (e) => {
+  const trackEndTime = track.clips.reduce((m, c) => Math.max(m, c.startTime + c.duration), 0);
+
+  const handleDragOver = useCallback((e) => {
     e.preventDefault();
-    const rect = laneRef.current.getBoundingClientRect();
-    const x = e.clientX - rect.left + scrollX;
-    const time = Math.max(0, x / pxPerSec);
+    e.dataTransfer.dropEffect = "copy";
+    try {
+      const types = e.dataTransfer.types || [];
+      if (types.includes("application/json")) {
+        const left = trackEndTime * pxPerSec - scrollX;
+        setDropPreview({ left, width: 5 * pxPerSec });
+      }
+    } catch {}
+  }, [trackEndTime, pxPerSec, scrollX]);
+
+  const handleDragLeave = useCallback(() => { setDropPreview(null); }, []);
+
+  const handleDrop = useCallback((e) => {
+    e.preventDefault();
+    setDropPreview(null);
     const data = e.dataTransfer.getData("application/json");
     if (data) {
-      try { onDrop(JSON.parse(data), track.id, time); } catch {}
+      try { onDrop(JSON.parse(data), track.id); } catch {}
     }
-  };
+  }, [onDrop, track.id]);
 
   return (
     <div
       ref={laneRef}
       style={{
         height: TRACK_HEIGHT, position: "relative",
-        background: colors.bg, borderBottom: `1px solid ${AX.border}`,
-        minWidth: 0,
+        background: dropPreview ? colors.bg.replace(/[\d.]+\)$/, "0.35)") : colors.bg,
+        borderBottom: `1px solid ${dropPreview ? AX.electric : AX.border}`,
+        minWidth: 0, transition: "border-color 0.15s, background 0.15s",
       }}
       onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
       onDrop={handleDrop}
       onClick={() => onSelectClip(null)}
     >
@@ -281,6 +297,22 @@ function TrackLane({ track, pxPerSec, scrollX, selectedClipId, onSelectClip, onD
           onContextMenu={onContextMenu}
         />
       ))}
+
+      {dropPreview && (
+        <div style={{
+          position: "absolute",
+          left: dropPreview.left,
+          width: Math.max(dropPreview.width, 20),
+          top: 4, bottom: 4,
+          background: colors.clip.replace(/[\d.]+\)$/, "0.3)"),
+          border: `2px dashed ${AX.electric}`,
+          borderRadius: 6,
+          pointerEvents: "none",
+          display: "flex", alignItems: "center", justifyContent: "center",
+        }}>
+          <span style={{ fontSize: 9, color: AX.electric, fontWeight: 700, opacity: 0.8 }}>DROP</span>
+        </div>
+      )}
     </div>
   );
 }

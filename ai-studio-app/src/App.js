@@ -5184,6 +5184,8 @@ export default function AIStudio() {
           <VideoEditor
             projectName={currentProject?.name}
             projectMedia={[]}
+            history={history}
+            mediaFileUrl={mediaFileUrl}
           />
         ) : (<>
         <header style={st.hdr}>

@@ -53,36 +53,140 @@ export function useTimeline({ fps = 30, width = 1920, height = 1080 } = {}) {
   const playTimerRef = useRef(null);
   const lastFrameRef = useRef(null);
 
+  const undoStackRef = useRef([]);
+  const redoStackRef = useRef([]);
+  const [, setHistoryTick] = useState(0);
+  const clipboardRef = useRef(null);
+
+  const pushUndo = useCallback((snapshot) => {
+    undoStackRef.current = [...undoStackRef.current.slice(-49), snapshot];
+    redoStackRef.current = [];
+    setHistoryTick(v => v + 1);
+  }, []);
+
+  const undo = useCallback(() => {
+    const stack = undoStackRef.current;
+    if (stack.length === 0) return;
+    const snapshot = stack[stack.length - 1];
+    undoStackRef.current = stack.slice(0, -1);
+    setTracks(prev => {
+      redoStackRef.current = [...redoStackRef.current, JSON.parse(JSON.stringify(prev))];
+      return JSON.parse(JSON.stringify(snapshot));
+    });
+    setHistoryTick(v => v + 1);
+  }, []);
+
+  const redo = useCallback(() => {
+    const stack = redoStackRef.current;
+    if (stack.length === 0) return;
+    const snapshot = stack[stack.length - 1];
+    redoStackRef.current = stack.slice(0, -1);
+    setTracks(prev => {
+      undoStackRef.current = [...undoStackRef.current, JSON.parse(JSON.stringify(prev))];
+      return JSON.parse(JSON.stringify(snapshot));
+    });
+    setHistoryTick(v => v + 1);
+  }, []);
+
+  const canUndo = undoStackRef.current.length > 0;
+  const canRedo = redoStackRef.current.length > 0;
+
+  const withUndo = useCallback((fn) => {
+    setTracks(prev => {
+      pushUndo(JSON.parse(JSON.stringify(prev)));
+      return fn(prev);
+    });
+  }, [pushUndo]);
+
+  const copyClip = useCallback(() => {
+    if (!selectedClipId) return;
+    for (const t of tracks) {
+      const c = t.clips.find(cl => cl.id === selectedClipId);
+      if (c) { clipboardRef.current = { clip: JSON.parse(JSON.stringify(c)), trackId: t.id, cut: false }; return; }
+    }
+  }, [selectedClipId, tracks]);
+
+  const cutClip = useCallback(() => {
+    if (!selectedClipId) return;
+    for (const t of tracks) {
+      const c = t.clips.find(cl => cl.id === selectedClipId);
+      if (c) {
+        clipboardRef.current = { clip: JSON.parse(JSON.stringify(c)), trackId: t.id, cut: true };
+        withUndo(prev => prev.map(tr => {
+          const had = tr.clips.some(cl => cl.id === selectedClipId);
+          if (!had) return tr;
+          const remaining = tr.clips.filter(cl => cl.id !== selectedClipId);
+          const sorted = [...remaining].sort((a, b) => a.startTime - b.startTime);
+          let cursor = 0;
+          return { ...tr, clips: sorted.map(cl => { const u = { ...cl, startTime: cursor }; cursor += u.duration; return u; }) };
+        }));
+        setSelectedClipId(null);
+        return;
+      }
+    }
+  }, [selectedClipId, tracks, withUndo]);
+
+  const pasteClip = useCallback(() => {
+    if (!clipboardRef.current) return;
+    const { clip, trackId } = clipboardRef.current;
+    const newClip = { ...clip, id: genClipId(), trackId };
+    withUndo(prev => {
+      const track = prev.find(t => t.id === trackId);
+      const endTime = track ? track.clips.reduce((m, c) => Math.max(m, c.startTime + c.duration), 0) : 0;
+      newClip.startTime = endTime;
+      return prev.map(t => t.id === trackId ? { ...t, clips: [...t.clips, newClip] } : t);
+    });
+    setSelectedClipId(newClip.id);
+  }, [withUndo]);
+
   const totalDuration = tracks.reduce((max, track) => {
     const trackEnd = track.clips.reduce((m, c) => Math.max(m, c.startTime + c.duration), 0);
     return Math.max(max, trackEnd);
   }, 0);
 
-  const addClip = useCallback((media, trackId, startTime) => {
-    const clip = createClip(media, trackId, startTime, media?.duration);
-    setTracks(prev => prev.map(t => t.id === trackId ? { ...t, clips: [...t.clips, clip] } : t));
+  const addClip = useCallback((media, trackId) => {
+    const clip = createClip(media, trackId, 0, media?.duration);
+    withUndo(prev => {
+      const track = prev.find(t => t.id === trackId);
+      const endTime = track ? track.clips.reduce((m, c) => Math.max(m, c.startTime + c.duration), 0) : 0;
+      clip.startTime = endTime;
+      return prev.map(t => t.id === trackId ? { ...t, clips: [...t.clips, clip] } : t);
+    });
     setSelectedClipId(clip.id);
-    return clip;
+  }, [withUndo]);
+
+  const reflowTrack = useCallback((trackClips) => {
+    const sorted = [...trackClips].sort((a, b) => a.startTime - b.startTime);
+    let cursor = 0;
+    return sorted.map(c => {
+      const updated = { ...c, startTime: cursor };
+      cursor += updated.duration;
+      return updated;
+    });
   }, []);
 
   const removeClip = useCallback((clipId) => {
-    setTracks(prev => prev.map(t => ({
-      ...t,
-      clips: t.clips.filter(c => c.id !== clipId),
-    })));
+    withUndo(prev => prev.map(t => {
+      const hadClip = t.clips.some(c => c.id === clipId);
+      const remaining = t.clips.filter(c => c.id !== clipId);
+      if (!hadClip) return t;
+      return { ...t, clips: reflowTrack(remaining) };
+    }));
     setSelectedClipId(prev => prev === clipId ? null : prev);
-  }, []);
+  }, [reflowTrack, withUndo]);
 
   const updateClip = useCallback((clipId, updates) => {
-    setTracks(prev => prev.map(t => ({
-      ...t,
-      clips: t.clips.map(c => c.id === clipId ? { ...c, ...updates } : c),
-    })));
-  }, []);
+    withUndo(prev => prev.map(t => {
+      const hasClip = t.clips.some(c => c.id === clipId);
+      if (!hasClip) return t;
+      const updated = t.clips.map(c => c.id === clipId ? { ...c, ...updates } : c);
+      return { ...t, clips: reflowTrack(updated) };
+    }));
+  }, [reflowTrack, withUndo]);
 
   const moveClip = useCallback((clipId, newTrackId, newStartTime) => {
     let movedClip = null;
-    setTracks(prev => {
+    withUndo(prev => {
       let clip = null;
       for (const t of prev) {
         clip = t.clips.find(c => c.id === clipId);
@@ -97,10 +201,10 @@ export function useTimeline({ fps = 30, width = 1920, height = 1080 } = {}) {
       });
     });
     return movedClip;
-  }, []);
+  }, [withUndo]);
 
   const splitClip = useCallback((clipId, splitTime) => {
-    setTracks(prev => prev.map(t => {
+    withUndo(prev => prev.map(t => {
       const idx = t.clips.findIndex(c => c.id === clipId);
       if (idx === -1) return t;
       const clip = t.clips[idx];
@@ -120,7 +224,7 @@ export function useTimeline({ fps = 30, width = 1920, height = 1080 } = {}) {
       newClips.splice(idx, 1, clip1, clip2);
       return { ...t, clips: newClips };
     }));
-  }, []);
+  }, [withUndo]);
 
   const getSnapPoints = useCallback((excludeClipId) => {
     const points = [0];
@@ -234,6 +338,8 @@ export function useTimeline({ fps = 30, width = 1920, height = 1080 } = {}) {
     play, pause, stop, seekTo, stepFrame,
     getSelectedClip, getClipsAtTime,
     toggleTrackMute, toggleTrackLock,
+    undo, redo, canUndo, canRedo,
+    copyClip, cutClip, pasteClip,
     TRACK_TYPES,
   };
 }
