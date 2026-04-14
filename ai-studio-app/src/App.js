@@ -29,6 +29,7 @@ import {
   HiSquare2Stack,
   HiArrowUpTray,
   HiUserGroup,
+  HiCheck,
   HiCheckCircle,
   HiRectangleGroup,
   HiSpeakerWave,
@@ -40,6 +41,7 @@ import {
   HiEye,
   HiChevronRight,
   HiVideoCamera,
+  HiEllipsisVertical,
 } from "react-icons/hi2";
 import VideoEditor from "./editor/VideoEditor";
 
@@ -1890,19 +1892,29 @@ async function translateVideoPrompt(ideaIT, scenePrefix = "", duration = "5") {
   return callLLM(VIDEO_SYSTEM_PROMPT, ideaIT, fullPrefix);
 }
 
-const DIALOGUE_SYSTEM_PROMPT =
-  "You are a dialogue writer for AI video generation (Kling). " +
-  "The user gives you a scene description and a dialogue idea in Italian. " +
-  "Generate a natural, well-paced dialogue in English that fits within the clip duration. " +
-  "\n\nRULES:" +
-  "\n- The dialogue MUST fit within the clip duration. Rule of thumb: ~2-3 words per second." +
-  "\n- For a 5s clip: max 10-15 words. For 10s: max 20-30 words. For 15s: max 30-45 words." +
-  "\n- Keep it natural, cinematic, emotionally resonant." +
-  "\n- Use simple English words (Kling generates English speech)." +
-  "\n- For proper nouns and acronyms, use UPPERCASE." +
-  "\n- Include stage directions in brackets if needed: [whispering], [shouting], [laughing]" +
-  "\n\nReturn ONLY valid JSON:" +
-  '{"dialogue_en": "the English dialogue for Kling", "dialogue_it": "Italian translation for the user to read"}';
+const LANG_NAMES = { en: "English", zh: "Chinese (Mandarin)", ja: "Japanese", ko: "Korean", es: "Spanish", it: "Italian", fr: "French", de: "German", pt: "Portuguese", ru: "Russian" };
+
+function buildDialogueSystemPrompt(lang = "en") {
+  const langName = LANG_NAMES[lang] || "English";
+  const nativeLangs = ["en", "zh", "ja", "ko", "es"];
+  const isNative = nativeLangs.includes(lang);
+  const langNote = isNative
+    ? `Generate the dialogue in ${langName}. Kling natively supports ${langName} speech.`
+    : `Generate the dialogue in ${langName}. Note: Kling may auto-translate non-native languages to English, but write the dialogue in ${langName} as requested.`;
+  return (
+    "You are a dialogue writer for AI video generation (Kling). " +
+    "The user gives you a scene description and a dialogue idea in Italian. " +
+    langNote + " " +
+    "\n\nRULES:" +
+    "\n- The dialogue MUST fit within the clip duration. Rule of thumb: ~2-3 words per second." +
+    "\n- For a 5s clip: max 10-15 words. For 10s: max 20-30 words. For 15s: max 30-45 words." +
+    "\n- Keep it natural, cinematic, emotionally resonant." +
+    (lang === "en" ? "\n- Use simple English words. For proper nouns and acronyms, use UPPERCASE." : `\n- Write in natural ${langName}. For proper nouns and acronyms, use UPPERCASE.`) +
+    "\n- Include stage directions in brackets if needed: [whispering], [shouting], [laughing]" +
+    "\n\nReturn ONLY valid JSON:" +
+    `{"dialogue": "the ${langName} dialogue for Kling", "dialogue_it": "Italian translation for the user to read"}`
+  );
+}
 
 const AMBIENT_SYSTEM_PROMPT =
   "You are a sound designer for AI video generation. " +
@@ -1916,6 +1928,44 @@ const AMBIENT_SYSTEM_PROMPT =
   "\n- If the user left the idea empty, suggest appropriate sounds based on the scene description" +
   "\n\nReturn ONLY valid JSON:" +
   '{"ambient_en": "English sound description for Kling prompt", "ambient_it": "Italian description for the user"}';
+
+const KLING_DIALOGUE_LANGS = [
+  { id: "en", label: "Inglese" },
+  { id: "zh", label: "Cinese" },
+  { id: "ja", label: "Giapponese" },
+  { id: "ko", label: "Coreano" },
+  { id: "es", label: "Spagnolo" },
+  { id: "it", label: "Italiano" },
+  { id: "fr", label: "Francese" },
+  { id: "de", label: "Tedesco" },
+  { id: "pt", label: "Portoghese" },
+  { id: "ru", label: "Russo" },
+];
+
+const KLING_SYSTEM_VOICES = [
+  { id: "uk_boy1", label: "Ragazzo", lang: "en", gender: "M", age: "young" },
+  { id: "cartoon-boy-07", label: "Bambino", lang: "en", gender: "M", age: "child" },
+  { id: "uk_man2", label: "Uomo", lang: "en", gender: "M", age: "adult" },
+  { id: "uk_oldman3", label: "Uomo anziano", lang: "en", gender: "M", age: "old" },
+  { id: "reader_en_m-v1", label: "Narratore", lang: "en", gender: "M", age: "adult" },
+  { id: "oversea_male1", label: "Uomo intl.", lang: "en", gender: "M", age: "adult" },
+  { id: "cartoon-girl-01", label: "Bambina", lang: "en", gender: "F", age: "child" },
+  { id: "commercial_lady_en_f-v1", label: "Donna", lang: "en", gender: "F", age: "adult" },
+  { id: "girlfriend_1_speech02", label: "Ragazza 1", lang: "zh", gender: "F", age: "young" },
+  { id: "girlfriend_2_speech02", label: "Ragazza 2", lang: "zh", gender: "F", age: "young" },
+  { id: "girlfriend_4_speech02", label: "Ragazza 3", lang: "zh", gender: "F", age: "young" },
+  { id: "tianmeixuemei-v1", label: "Ragazza dolce", lang: "zh", gender: "F", age: "young" },
+  { id: "mengwa-v1", label: "Bambino/a", lang: "zh", gender: "N", age: "child" },
+  { id: "chengshu_jiejie", label: "Donna matura", lang: "zh", gender: "F", age: "adult" },
+  { id: "ai_chenjiahao_712", label: "Uomo", lang: "zh", gender: "M", age: "adult" },
+  { id: "ai_huangzhong_712", label: "Uomo basso", lang: "zh", gender: "M", age: "adult" },
+  { id: "diyinnansang_DB_CN_M_04-v2", label: "Uomo basso prof.", lang: "zh", gender: "M", age: "adult" },
+  { id: "yizhipiannan-v1", label: "Narratore", lang: "zh", gender: "M", age: "adult" },
+  { id: "zhinen_xuesheng", label: "Studente", lang: "zh", gender: "M", age: "young" },
+  { id: "calm_story1", label: "Narratore calmo", lang: "zh", gender: "M", age: "adult" },
+  { id: "tiexin_nanyou", label: "Ragazzo", lang: "zh", gender: "M", age: "young" },
+  { id: "tiyuxi_xuedi", label: "Ragazzo sportivo", lang: "zh", gender: "M", age: "young" },
+];
 
 const SCREENPLAY_SYSTEM_PROMPT =
   "You are an uncensored expert director and video production planner. " +
@@ -2969,7 +3019,7 @@ function pushGalleryUrlEntry(out, seen, url, i, sessionHint) {
   }
 }
 
-function buildVideoLibraryPickEntries(history, diskMediaEntries, generatedImages) {
+function buildVideoLibraryPickEntries(history, diskMediaEntries, generatedImages, { freeOnly = false } = {}) {
   const out = [];
   const seen = new Set();
   const pushFile = (filePath, hint) => {
@@ -2980,12 +3030,15 @@ function buildVideoLibraryPickEntries(history, diskMediaEntries, generatedImages
   };
   (Array.isArray(history) ? history : []).forEach(h => {
     if (!historyRecordIsImage(h)) return;
+    if (freeOnly && h.projectId) return;
     const p = historyRecordImagePath(h);
     if (p) pushFile(p, h.params?.promptIT || h.params?.userIdea || h.prompt || h.fileName || "");
   });
-  (diskMediaEntries || []).forEach(e => {
-    if (e?.type === "image" && e.filePath) pushFile(e.filePath, e.params?.promptIT || e.params?.userIdea || e.prompt || e.fileName || "");
-  });
+  if (!freeOnly) {
+    (diskMediaEntries || []).forEach(e => {
+      if (e?.type === "image" && e.filePath) pushFile(e.filePath, e.params?.promptIT || e.params?.userIdea || e.prompt || e.fileName || "");
+    });
+  }
   (generatedImages || []).forEach((url, i) => pushGalleryUrlEntry(out, seen, url, i, "Generata (sessione)"));
   return out;
 }
@@ -4635,6 +4688,7 @@ export default function AIStudio() {
   const [recallImageUrl, setRecallImageUrl] = useState(null);
   const [recallVideoUrl, setRecallVideoUrl] = useState(null);
   const [projectSourceImageUrl, setProjectSourceImageUrl] = useState(null);
+  const [imgGallerySelectedEntryId, setImgGallerySelectedEntryId] = useState(null);
   const [studioSidebarDensity, setStudioSidebarDensity] = useState(() => {
     try {
       const v = localStorage.getItem("axstudio.studioSidebarDensity");
@@ -4652,6 +4706,11 @@ export default function AIStudio() {
   const [charCreatorTarget, setCharCreatorTarget] = useState(null); // character being edited
   const [analyzingPhoto, setAnalyzingPhoto] = useState(false);
   const [showAddCharModal, setShowAddCharModal] = useState(false);
+  const [charMenuOpen, setCharMenuOpen] = useState(null);
+  const [sceneMode, setSceneMode] = useState(1);
+  const [selectedCharacterIds, setSelectedCharacterIds] = useState(new Set());
+  const [myImagesModalOpen, setMyImagesModalOpen] = useState(false);
+  const [myImagesPickedUrl, setMyImagesPickedUrl] = useState(null);
   const [activeTab, setActiveTab] = useState("image");
   const [videoPrompt, setVideoPrompt] = useState("");
   const [videoDuration, setVideoDuration] = useState(5);
@@ -4764,8 +4823,34 @@ export default function AIStudio() {
       setGeneratedImages([]);
       setGeneratedVideos([]);
       setProjectSourceImageUrl(null);
+      setMyImagesPickedUrl(null);
+      setSelectedCharacterIds(new Set());
+      setSceneMode(1);
     }
   }, [currentProject?.id]);
+
+  useEffect(() => {
+    const imgCount = myImagesPickedUrl ? 1 : 0;
+    const total = selectedCharacterIds.size + imgCount;
+    if (total > sceneMode) {
+      const ids = [...selectedCharacterIds];
+      const keepChars = Math.max(0, sceneMode - imgCount);
+      const trimmed = ids.slice(0, keepChars);
+      setSelectedCharacterIds(new Set(trimmed));
+      if (trimmed.length > 0 && currentProject) {
+        const first = currentProject.characters.find(c => c.id === trimmed[0]);
+        setSelectedCharacter(first || null);
+      } else if (trimmed.length === 0 && !myImagesPickedUrl) {
+        setSelectedCharacter(null);
+      }
+      if (imgCount > 0 && keepChars <= 0 && sceneMode < total) {
+        setMyImagesPickedUrl(null);
+        setProjectSourceImageUrl(null);
+        setProjectVideoSourceImg(null);
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sceneMode]);
 
   // ── Catalogo locale: elenco immagini/video in DATA_DIR (anche se history non li ha) ──
   useEffect(() => {
@@ -5068,6 +5153,53 @@ export default function AIStudio() {
     }
     updateProject(nextProject);
     if (selectedCharacter?.id === cid) setSelectedCharacter(null);
+    setSelectedCharacterIds(prev => { const n = new Set(prev); n.delete(cid); return n; });
+  };
+
+  const handleCharCardClick = (c) => {
+    const isSelected = selectedCharacterIds.has(c.id);
+    const imgCount = myImagesPickedUrl ? 1 : 0;
+    if (isSelected) {
+      setSelectedCharacterIds(prev => { const n = new Set(prev); n.delete(c.id); return n; });
+      if (selectedCharacter?.id === c.id) {
+        const remaining = [...selectedCharacterIds].filter(id => id !== c.id);
+        const nextChar = remaining.length > 0 ? currentProject.characters.find(ch => ch.id === remaining[0]) : null;
+        setSelectedCharacter(nextChar || null);
+      }
+    } else {
+      const currentCount = selectedCharacterIds.size + imgCount;
+      if (currentCount >= sceneMode) {
+        if (sceneMode === 1) {
+          setSelectedCharacterIds(new Set([c.id]));
+          setMyImagesPickedUrl(null);
+          setProjectSourceImageUrl(null);
+          setProjectVideoSourceImg(null);
+        } else {
+          return;
+        }
+      } else {
+        setSelectedCharacterIds(prev => new Set(prev).add(c.id));
+      }
+      setSelectedCharacter(c);
+      updateProject({ ...currentProject, heroCharacterId: c.id });
+    }
+  };
+
+  const handleMyImageCardClick = () => {
+    if (myImagesPickedUrl) {
+      setMyImagesModalOpen(true);
+      return;
+    }
+    const charCount = selectedCharacterIds.size;
+    if (charCount >= sceneMode) {
+      if (sceneMode === 1) {
+        setSelectedCharacterIds(new Set());
+        setSelectedCharacter(null);
+      } else {
+        return;
+      }
+    }
+    setMyImagesModalOpen(true);
   };
 
   // History for current project
@@ -5115,6 +5247,30 @@ export default function AIStudio() {
     }
   }, [selectedCharacter, projects, history, currentProject, setVidSelectedStyles]);
 
+  const handleImgGalleryPick = useCallback(ent => {
+    if (!ent) {
+      setImgGallerySelectedEntryId(null);
+      setProjectSourceImageUrl(null);
+      return;
+    }
+    const url = resolveGalleryEntryDisplayUrl(ent);
+    if (!url) return;
+    setImgGallerySelectedEntryId(ent.id);
+    setProjectSourceImageUrl(url);
+    const fp = ent.filePath;
+    if (fp) {
+      const record = history.find(h => h.type === "image" && h.filePath === fp);
+      const charId = record?.params?.characterId;
+      if (charId) {
+        const chars = currentProject?.characters || [];
+        const c = chars.find(x => x.id === charId);
+        if (c) setSelectedCharacter(c);
+      }
+      const savedStyles = record?.params?.selectedStyles;
+      if (savedStyles?.length > 0) setImgSelectedStyles(savedStyles);
+    }
+  }, [history, currentProject, setImgSelectedStyles, setSelectedCharacter]);
+
   useEffect(() => {
     if (!projectGallerySelectedEntryId) return;
     const ent = projectGalleryEntryList.find(e => e.id === projectGallerySelectedEntryId);
@@ -5132,6 +5288,15 @@ export default function AIStudio() {
     const match = projectGalleryEntryList.find(e => resolveGalleryEntryDisplayUrl(e) === projectVideoSourceImg);
     setProjectGallerySelectedEntryId(match ? match.id : null);
   }, [projectVideoSourceImg, projectGalleryEntryList]);
+
+  useEffect(() => {
+    if (!projectSourceImageUrl) {
+      setImgGallerySelectedEntryId(null);
+      return;
+    }
+    const match = projectGalleryEntryList.find(e => resolveGalleryEntryDisplayUrl(e) === projectSourceImageUrl);
+    setImgGallerySelectedEntryId(match ? match.id : null);
+  }, [projectSourceImageUrl, projectGalleryEntryList]);
 
   const mediaHistory = useMemo(
     () => history.filter(h => h.type === "image" || h.type === "video"),
@@ -5672,7 +5837,7 @@ export default function AIStudio() {
               }}
             >
               {homeRecentItems.map(h => (
-                <HomeGalleryTile key={h.id} entry={h} onOpenPreview={setGalleryPreviewEntry} onRequestDelete={setGalleryDeleteTarget} />
+                <HomeGalleryTile key={h.id} entry={h} onOpenPreview={setGalleryPreviewEntry} />
               ))}
             </div>
           )}
@@ -5748,109 +5913,138 @@ export default function AIStudio() {
             <div style={{ display: "flex", alignItems: "center", marginBottom: studioSplitView ? 10 : 14, gap: 12 }}>
               <h2 style={{ fontFamily: "'Playfair Display', serif", fontSize: studioSplitView ? 22 : 26, fontWeight: 600, color: AX.text, margin: 0, display: "flex", alignItems: "center", gap: 10 }}><HiUserGroup size={studioSplitView ? 22 : 26} style={{ color: AX.electric, flexShrink: 0 }} /> Personaggi</h2>
             </div>
-            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-              {currentProject.characters.map(c => (
-                <div key={c.id} onClick={() => {
-                  const next = selectedCharacter?.id === c.id ? null : c;
-                  setSelectedCharacter(next);
-                  if (next) {
-                    updateProject({ ...currentProject, heroCharacterId: next.id });
-                  }
-                }}
-                style={{
-                  width: selectedCharacter?.id === c.id && projectVideoSourceImg ? 172 : 110,
-                  padding: 10,
-                  borderRadius: 12,
-                  cursor: "pointer",
-                  background: selectedCharacter?.id === c.id ? "rgba(123,77,255,0.12)" : AX.surface,
-                  border: `1px solid ${selectedCharacter?.id === c.id ? AX.violet : AX.border}`,
-                  textAlign: "center",
-                  transition: "all 0.2s",
-                  position: "relative",
-                  flexShrink: 0,
-                }}
-              >
-                                   <button type="button" onClick={e => { e.stopPropagation(); deleteCharacter(c.id); }} style={{ position: "absolute", top: 4, right: 4, background: "rgba(239,68,68,0.15)", border: "none", borderRadius: 5, padding: 4, cursor: "pointer", color: "#ef4444", display: "flex" }} aria-label="Rimuovi"><HiXMark size={12} /></button>
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, margin: "0 auto 6px", minHeight: 56 }}>
-                    <div
-                      style={{
-                        width: 56,
-                        height: 56,
-                        borderRadius: "50%",
-                        flexShrink: 0,
-                        border: selectedCharacter?.id === c.id ? `2px solid ${AX.electric}` : "2px solid transparent",
-                        ...(c.image
-                          ? {
-                            backgroundImage: `url(${c.image})`,
-                            backgroundSize: "cover",
-                            backgroundPosition: THUMB_COVER_POSITION,
-                            backgroundRepeat: "no-repeat",
-                          }
-                          : { background: `linear-gradient(135deg, ${AX.violet}33, ${AX.blue}33)` }),
+            <div style={{ display: "flex", gap: 10, flexWrap: "nowrap" }}>
+              {(() => {
+                const chars = currentProject.characters.slice(0, 3);
+                const placeholders = Math.max(0, 3 - chars.length);
+                return (<>
+                  {chars.map(c => {
+                    const isSelected = selectedCharacterIds.has(c.id);
+                    const menuOpen = charMenuOpen === c.id;
+                    return (
+                      <div key={c.id} onClick={() => {
+                        if (menuOpen) return;
+                        handleCharCardClick(c);
                       }}
-                    />
-                    {selectedCharacter?.id === c.id && projectVideoSourceImg ? (
-                      <div title="Immagine di riferimento per il video (accanto al personaggio)" style={{ width: 44, height: 44, borderRadius: 10, overflow: "hidden", flexShrink: 0, border: `2px solid ${AX.violet}`, boxShadow: "0 4px 14px rgba(123,77,255,0.25)" }}>
-                        <img src={projectVideoSourceImg} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", objectPosition: THUMB_COVER_POSITION, display: "block" }} />
+                      style={{
+                        width: 110, padding: 10, borderRadius: 12, cursor: "pointer",
+                        background: isSelected ? "rgba(123,77,255,0.12)" : AX.surface,
+                        border: `1px solid ${isSelected ? AX.violet : AX.border}`,
+                        textAlign: "center", transition: "all 0.2s", position: "relative", flexShrink: 0,
+                      }}
+                    >
+                      <button type="button" onClick={e => { e.stopPropagation(); setCharMenuOpen(menuOpen ? null : c.id); }} style={{ position: "absolute", top: 4, right: 4, background: "rgba(255,255,255,0.06)", border: "none", borderRadius: 6, padding: 3, cursor: "pointer", color: AX.muted, display: "flex" }} aria-label="Azioni"><HiEllipsisVertical size={14} /></button>
+                      {menuOpen && (
+                        <>
+                          <div style={{ position: "fixed", inset: 0, zIndex: 99 }} onClick={e => { e.stopPropagation(); setCharMenuOpen(null); }} />
+                          <div style={{ position: "absolute", top: 22, right: 4, zIndex: 100, background: AX.surface, border: `1px solid ${AX.border}`, borderRadius: 10, boxShadow: "0 8px 28px rgba(0,0,0,0.5)", overflow: "hidden", minWidth: 130 }}>
+                            <button type="button" onClick={e => { e.stopPropagation(); setCharMenuOpen(null); setCharCreatorTarget({ ...c }); setShowCharCreator(true); }} style={{ width: "100%", padding: "9px 14px", border: "none", background: "transparent", color: AX.text, fontSize: 12, fontWeight: 600, cursor: "pointer", textAlign: "left", display: "flex", alignItems: "center", gap: 7 }}
+                              onMouseEnter={e => { e.currentTarget.style.background = "rgba(123,77,255,0.12)"; }}
+                              onMouseLeave={e => { e.currentTarget.style.background = "transparent"; }}
+                            ><HiPencil size={13} style={{ color: AX.gold }} /> Personalizza</button>
+                            <div style={{ height: 1, background: AX.border }} />
+                            <button type="button" onClick={e => { e.stopPropagation(); setCharMenuOpen(null); deleteCharacter(c.id); }} style={{ width: "100%", padding: "9px 14px", border: "none", background: "transparent", color: "#ef4444", fontSize: 12, fontWeight: 600, cursor: "pointer", textAlign: "left", display: "flex", alignItems: "center", gap: 7 }}
+                              onMouseEnter={e => { e.currentTarget.style.background = "rgba(239,68,68,0.1)"; }}
+                              onMouseLeave={e => { e.currentTarget.style.background = "transparent"; }}
+                            ><HiTrash size={13} /> Elimina</button>
+                          </div>
+                        </>
+                      )}
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 6px", minHeight: 56 }}>
+                        <div style={{
+                          width: 56, height: 56, borderRadius: "50%", flexShrink: 0,
+                          border: isSelected ? `2px solid ${AX.electric}` : "2px solid transparent",
+                          ...(c.image ? { backgroundImage: `url(${c.image})`, backgroundSize: "cover", backgroundPosition: THUMB_COVER_POSITION, backgroundRepeat: "no-repeat" } : { background: `linear-gradient(135deg, ${AX.violet}33, ${AX.blue}33)` }),
+                        }} />
                       </div>
-                    ) : null}
+                      <div style={{ fontSize: 12, fontWeight: 500, color: AX.text }}>{c.name}</div>
+                      <div style={{ fontSize: 9, color: AX.muted, marginTop: 2, background: AX.bg, borderRadius: 4, padding: "2px 6px", display: "inline-block", border: `1px solid ${AX.border}` }}>{c.mode === "face" ? "Viso" : "Corpo"}</div>
+                    </div>);
+                  })}
+                  {Array.from({ length: placeholders }).map((_, pi) => (
+                    <div key={`placeholder-${pi}`}
+                      onClick={() => setShowAddCharModal(true)}
+                      style={{
+                        width: 110, padding: 10, borderRadius: 12, cursor: "pointer",
+                        background: AX.surface, border: `1px dashed ${AX.border}`, textAlign: "center", flexShrink: 0,
+                        display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 8,
+                        transition: "border-color 0.15s, background 0.15s", minHeight: 110,
+                      }}
+                      onMouseEnter={e => { e.currentTarget.style.borderColor = AX.violet; e.currentTarget.style.background = "rgba(123,77,255,0.07)"; }}
+                      onMouseLeave={e => { e.currentTarget.style.borderColor = AX.border; e.currentTarget.style.background = AX.surface; }}
+                      role="button" title="Aggiungi personaggio"
+                    >
+                      <div style={{ width: 40, height: 40, borderRadius: "50%", background: "rgba(123,77,255,0.12)", border: `1px dashed ${AX.violet}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22, color: AX.electric, lineHeight: 1 }}>+</div>
+                    </div>
+                  ))}
+                  {/* 5th card: Le mie immagini */}
+                  <div
+                    onClick={() => handleMyImageCardClick()}
+                    style={{
+                      width: 110, padding: 10, borderRadius: 12, cursor: "pointer",
+                      background: myImagesPickedUrl ? "rgba(255,79,163,0.08)" : AX.surface,
+                      border: `1px solid ${myImagesPickedUrl ? AX.magenta : AX.border}`,
+                      textAlign: "center", flexShrink: 0,
+                      display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 6,
+                      transition: "border-color 0.15s, background 0.15s", minHeight: 110,
+                    }}
+                    onMouseEnter={e => { e.currentTarget.style.borderColor = AX.magenta; e.currentTarget.style.background = "rgba(255,79,163,0.1)"; }}
+                    onMouseLeave={e => { e.currentTarget.style.borderColor = myImagesPickedUrl ? AX.magenta : AX.border; e.currentTarget.style.background = myImagesPickedUrl ? "rgba(255,79,163,0.08)" : AX.surface; }}
+                    role="button" title="Le mie immagini"
+                  >
+                    {myImagesPickedUrl ? (
+                      <>
+                        <div style={{ width: 56, height: 56, borderRadius: "50%", flexShrink: 0, border: `2px solid ${AX.magenta}`, backgroundImage: `url(${myImagesPickedUrl})`, backgroundSize: "cover", backgroundPosition: THUMB_COVER_POSITION, backgroundRepeat: "no-repeat" }} />
+                        <div style={{ fontSize: 10, fontWeight: 600, color: AX.magenta, lineHeight: 1.2 }}>Immagine</div>
+                        <button type="button" onClick={e => { e.stopPropagation(); setMyImagesPickedUrl(null); setProjectSourceImageUrl(null); setProjectVideoSourceImg(null); }} style={{ fontSize: 9, color: "#ef4444", background: "rgba(239,68,68,0.12)", border: "1px solid rgba(239,68,68,0.3)", borderRadius: 6, padding: "2px 8px", cursor: "pointer", marginTop: 2 }}>Rimuovi</button>
+                      </>
+                    ) : (
+                      <>
+                        <HiPhoto size={24} style={{ color: AX.magenta, opacity: 0.9 }} />
+                        <div style={{ fontSize: 10, fontWeight: 700, color: AX.magenta, lineHeight: 1.25 }}>Le mie<br />immagini</div>
+                      </>
+                    )}
                   </div>
-                  <div style={{ fontSize: 12, fontWeight: 500, color: AX.text }}>{c.name}</div>
-                  <div style={{ fontSize: 9, color: AX.muted, marginTop: 2, background: AX.bg, borderRadius: 4, padding: "2px 6px", display: "inline-block", border: `1px solid ${AX.border}` }}>{c.mode === "face" ? "Viso" : "Corpo"}</div>
-                </div>
-              ))}
-
-              {/* Card "Aggiungi Personaggio" — sempre visibile in coda */}
-              <div
-                onClick={() => setShowAddCharModal(true)}
-                style={{
-                  width: 110,
-                  padding: 10,
-                  borderRadius: 12,
-                  cursor: "pointer",
-                  background: AX.surface,
-                  border: `1px dashed ${AX.border}`,
-                  textAlign: "center",
-                  flexShrink: 0,
-                  display: "flex",
-                  flexDirection: "column",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  gap: 8,
-                  transition: "border-color 0.15s, background 0.15s",
-                  minHeight: 110,
-                }}
-                onMouseEnter={e => { e.currentTarget.style.borderColor = AX.violet; e.currentTarget.style.background = "rgba(123,77,255,0.07)"; }}
-                onMouseLeave={e => { e.currentTarget.style.borderColor = AX.border; e.currentTarget.style.background = AX.surface; }}
-                role="button"
-                title="Aggiungi personaggio"
-              >
-                <div style={{
-                  width: 40, height: 40, borderRadius: "50%",
-                  background: "rgba(123,77,255,0.12)",
-                  border: `1px dashed ${AX.violet}`,
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                  fontSize: 22, color: AX.electric, lineHeight: 1,
-                }}>+</div>
-                <div style={{ fontSize: 11, fontWeight: 600, color: AX.muted, lineHeight: 1.3 }}>Aggiungi<br />Personaggio</div>
-              </div>
+                  {/* Spacer sinistro + Separatore + Spacer destro */}
+                  <div style={{ flex: 1, minWidth: 4 }} />
+                  <div style={{ width: 1, alignSelf: "stretch", background: AX.border, flexShrink: 0 }} />
+                  <div style={{ flex: 1, minWidth: 4 }} />
+                  {/* Scene mode cards */}
+                  {[
+                    { label: "1 Personaggio", color: "#f59e0b", border: "rgba(245,158,11,0.35)", Ic: HiUser, count: 1 },
+                    { label: "2 Personaggi", color: "#10b981", border: "rgba(16,185,129,0.35)", Ic: HiUserGroup, count: 2 },
+                    { label: "3 Personaggi", color: "#3b82f6", border: "rgba(59,130,246,0.35)", Ic: HiUserGroup, count: 3 },
+                  ].map(sc => {
+                    const isActive = sceneMode === sc.count;
+                    return (
+                    <div key={sc.label}
+                      onClick={() => setSceneMode(sc.count)}
+                      style={{
+                        width: 110, padding: 10, borderRadius: 12, cursor: "pointer",
+                        background: isActive ? `${sc.color}18` : AX.surface,
+                        border: isActive ? `2px solid ${sc.color}` : `1px dashed ${sc.border}`,
+                        textAlign: "center", flexShrink: 0,
+                        display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 8,
+                        transition: "all 0.15s", minHeight: 110,
+                        boxShadow: isActive ? `0 0 0 1px ${sc.color}44, 0 4px 16px ${sc.color}22` : "none",
+                      }}
+                      onMouseEnter={e => { if (!isActive) { e.currentTarget.style.borderColor = sc.color; e.currentTarget.style.background = `${sc.color}12`; } }}
+                      onMouseLeave={e => { if (!isActive) { e.currentTarget.style.borderColor = sc.border; e.currentTarget.style.background = AX.surface; } }}
+                      role="button"
+                    >
+                      <div style={{ width: 40, height: 40, borderRadius: "50%", background: isActive ? `${sc.color}30` : `${sc.color}1F`, border: isActive ? `2px solid ${sc.color}` : `1px dashed ${sc.color}55`, display: "flex", alignItems: "center", justifyContent: "center", position: "relative" }}>
+                        <sc.Ic size={sc.count === 1 ? 18 : 20} style={{ color: sc.color }} />
+                        {sc.count === 3 && <span style={{ position: "absolute", top: -2, right: -4, fontSize: 9, fontWeight: 800, color: sc.color, background: isActive ? `${sc.color}18` : AX.surface, borderRadius: 4, padding: "0 2px", lineHeight: 1 }}>+</span>}
+                      </div>
+                      <span style={{ fontSize: 10, fontWeight: isActive ? 800 : 600, color: sc.color, lineHeight: 1.25 }}>{sc.label}</span>
+                    </div>);
+                  })}
+                </>);
+              })()}
             </div>
-
-            {/* Character Creator button — shown when a character is selected */}
-            {selectedCharacter && (
-              <div style={{ marginTop: 10 }}>
-                <button
-                  type="button"
-                  onClick={() => { setCharCreatorTarget({ ...selectedCharacter }); setShowCharCreator(true); }}
-                  style={{ padding: "7px 14px", borderRadius: 9, border: `1px solid ${AX.gold}`, background: "rgba(255,179,71,0.10)", color: AX.gold, fontSize: 11, fontWeight: 700, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 6 }}
-                >
-                  ✏️ Modifica aspetto fisico
-                </button>
-              </div>
-            )}
           </div>
 
-          {/* Character Creator Panel */}
+          {/* Character Creator Modal */}
           {showCharCreator && charCreatorTarget && (() => {
             const ap = charCreatorTarget.appearance || {};
             const isMale = ap.gender === "Uomo";
@@ -6025,7 +6219,8 @@ export default function AIStudio() {
             const completePct = Math.round((filled / totalFields) * 100);
 
             return (
-              <div style={{ marginBottom: studioSplitView ? 10 : 16, borderRadius: 16, border: `1px solid rgba(255,179,71,0.25)`, background: "linear-gradient(145deg, #13131c 0%, #0f0f18 100%)", flexShrink: 0, overflow: "visible", width: "100%" }}>
+              <div onClick={() => setShowCharCreator(false)} style={{ position: "fixed", inset: 0, background: "rgba(6,6,12,0.82)", backdropFilter: "blur(12px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1500, padding: 24 }}>
+              <div onClick={e => e.stopPropagation()} style={{ width: "100%", maxWidth: 620, maxHeight: "90vh", overflowY: "auto", overflowX: "hidden", borderRadius: 16, border: `1px solid rgba(255,179,71,0.25)`, background: "linear-gradient(145deg, #13131c 0%, #0f0f18 100%)" }}>
 
                 {/* Header */}
                 <div style={{ padding: "12px 16px", background: "rgba(255,179,71,0.06)", borderBottom: "1px solid rgba(255,179,71,0.12)", display: "flex", alignItems: "center", gap: 10 }}>
@@ -6179,26 +6374,24 @@ export default function AIStudio() {
                   </div>
                 </div>
               </div>
+              </div>
             );
           })()}
 
           {/* Tabs */}
           <div style={{ display: "flex", gap: 4, marginBottom: studioSplitView ? 12 : 22, background: AX.bg, borderRadius: 12, padding: 4, border: `1px solid ${AX.border}`, flexShrink: 0 }}>
-            {[{ id: "image", label: "Immagine", TabIcon: HiPhoto }, { id: "video", label: "Video", TabIcon: HiFilm }, { id: "voice", label: "Voce", TabIcon: HiMicrophone }].map(t => (
+            {[{ id: "image", label: "Immagine", TabIcon: HiPhoto }, { id: "video", label: "Video", TabIcon: HiFilm }].map(t => (
               <button key={t.id} type="button" onClick={() => setActiveTab(t.id)} style={{ flex: 1, padding: "10px 14px", borderRadius: 10, border: "none", background: activeTab === t.id ? AX.gradPrimary : "transparent", color: activeTab === t.id ? AX.bg : AX.muted, fontWeight: activeTab === t.id ? 700 : 500, fontSize: 13, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, boxShadow: activeTab === t.id ? "0 4px 20px rgba(41,182,255,0.2)" : "none" }}><t.TabIcon size={16} /> {t.label}</button>
             ))}
           </div>
 
           {activeTab === "image" && (
             <>
-              <ImgGen {...{ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setResolution, generating, setGenerating, generatedImages, setGeneratedImages, selectedCharacter, setSelectedCharacter, projectCharacters: currentProject?.characters || [], scenes: scenePresets, onSave: saveGeneratedImage, previewImg: genPreviewImg, setPreviewImg: setGenPreviewImg, layoutFill: false, history, recallImageUrl, setRecallImageUrl, selectedStyles: imgSelectedStyles, setSelectedStyles: setImgSelectedStyles, aspect: imgAspect, setAspect: setImgAspect, steps: imgSteps, setSteps: setImgSteps, cfg: imgCfg, setCfg: setImgCfg, adv: imgAdv, setAdv: setImgAdv, projectSourceImageUrl, setProjectSourceImageUrl, currentProjectId: currentProject?.id, imgSessionPromptMap }} />
+              <ImgGen {...{ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setResolution, generating, setGenerating, generatedImages, setGeneratedImages, selectedCharacter, setSelectedCharacter, projectCharacters: currentProject?.characters || [], scenes: scenePresets, onSave: saveGeneratedImage, previewImg: genPreviewImg, setPreviewImg: setGenPreviewImg, layoutFill: false, history, recallImageUrl, setRecallImageUrl, selectedStyles: imgSelectedStyles, setSelectedStyles: setImgSelectedStyles, aspect: imgAspect, setAspect: setImgAspect, steps: imgSteps, setSteps: setImgSteps, cfg: imgCfg, setCfg: setImgCfg, adv: imgAdv, setAdv: setImgAdv, projectSourceImageUrl, setProjectSourceImageUrl, currentProjectId: currentProject?.id, imgSessionPromptMap, imgPickerEntries: projectGalleryEntryList, imgPickerSelectedId: imgGallerySelectedEntryId, onImgPickerChange: handleImgGalleryPick }} />
             </>
           )}
           {activeTab === "video" && (
             <VidGen {...{ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, videoResolution, setVideoResolution, generating, setGenerating, selectedCharacter, vidTemplates: videoStylePresets, onSaveVideo: saveGeneratedVideo, generatedVideos, setGeneratedVideos, previewVideo: genPreviewVideo, setPreviewVideo: setGenPreviewVideo, layoutFill: false, history, diskMediaEntries, generatedImages, controlledSourceImg: projectVideoSourceImg, setControlledSourceImg: setProjectVideoSourceImg, proposalResetNonce: projectVideoProposalResetNonce, pickerImageEntries: projectGalleryEntryList, pickerSelectedEntryId: projectGallerySelectedEntryId, onPickerImageChange: handleProjectGallerySelection, selectedVideoStyles: vidSelectedStyles, setSelectedVideoStyles: setVidSelectedStyles, selectedDirectionStyles: vidSelectedDirectionStyles, setSelectedDirectionStyles: setVidSelectedDirectionStyles, vidAspect, setVidAspect, vidSteps, setVidSteps, recallVideoUrl, setRecallVideoUrl, videoStatus, setVideoStatus, directionRecommendation: vidDirectionRecommendation, setDirectionRecommendation: setVidDirectionRecommendation, directionRecLoading: vidDirectionRecLoading, setDirectionRecLoading: setVidDirectionRecLoading, imgSessionPromptMap, videoSidebarMode, setVideoSidebarMode, expandedScreenplays, setExpandedScreenplays, voiceLibrary }} />
-          )}
-          {activeTab === "voice" && (
-            <VoiceGen />
           )}
 
           </div>
@@ -6280,6 +6473,86 @@ export default function AIStudio() {
             }
           }} />
         </Modal>
+      )}
+
+      {myImagesModalOpen && currentProject && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 2000, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div role="presentation" onClick={() => setMyImagesModalOpen(false)} style={{ position: "absolute", inset: 0, background: "rgba(10,10,15,0.7)", backdropFilter: "blur(6px)" }} />
+          <div style={{ position: "relative", zIndex: 1, width: "min(820px, 90vw)", maxHeight: "80vh", background: AX.sidebar, borderRadius: 16, border: `1px solid ${AX.border}`, boxShadow: "0 24px 64px rgba(0,0,0,0.6)", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+            <div style={{ flexShrink: 0, padding: "16px 20px", borderBottom: `1px solid ${AX.border}`, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <div>
+                <div style={{ fontSize: 15, fontWeight: 700, color: AX.text }}>Le mie immagini</div>
+                <div style={{ fontSize: 11, color: AX.muted, marginTop: 2 }}>Seleziona un'immagine come riferimento per immagini e video</div>
+              </div>
+              <button type="button" onClick={() => setMyImagesModalOpen(false)} style={{ width: 36, height: 36, borderRadius: 10, border: `1px solid ${AX.border}`, background: AX.bg, color: AX.text2, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}><HiXMark size={18} /></button>
+            </div>
+            <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: 16 }}>
+              {projectGalleryEntryList.length === 0 ? (
+                <div style={{ padding: 40, textAlign: "center", color: AX.muted }}>
+                  <HiPhoto size={36} style={{ opacity: 0.4, marginBottom: 8 }} />
+                  <p style={{ margin: 0, fontSize: 13 }}>Nessuna immagine disponibile. Genera immagini dalla sezione Immagine, poi torna qui.</p>
+                </div>
+              ) : (
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(130px, 1fr))", gap: 10 }}>
+                  {projectGalleryEntryList.map(ent => {
+                    const displayUrl = resolveGalleryEntryDisplayUrl(ent);
+                    const isSel = myImagesPickedUrl && displayUrl && myImagesPickedUrl === displayUrl;
+                    return (
+                      <div
+                        key={ent.id}
+                        title={(ent.hint || "").slice(0, 120)}
+                        onClick={() => {
+                          const url = displayUrl;
+                          if (isSel) {
+                            setMyImagesPickedUrl(null);
+                            setProjectSourceImageUrl(null);
+                            setProjectVideoSourceImg(null);
+                          } else if (url) {
+                            setMyImagesPickedUrl(url);
+                            setProjectSourceImageUrl(url);
+                            setProjectVideoSourceImg(url);
+                            setMyImagesModalOpen(false);
+                          }
+                        }}
+                        style={{
+                          aspectRatio: "1", borderRadius: 10, overflow: "hidden", cursor: "pointer",
+                          border: `2px solid ${isSel ? AX.magenta : AX.border}`,
+                          background: AX.bg, position: "relative",
+                          boxShadow: isSel ? `0 0 0 1px ${AX.magenta}, 0 6px 20px rgba(255,79,163,0.2)` : "none",
+                          transition: "all 0.15s ease",
+                        }}
+                        onMouseEnter={e => { if (!isSel) e.currentTarget.style.borderColor = AX.violet; }}
+                        onMouseLeave={e => { if (!isSel) e.currentTarget.style.borderColor = AX.border; }}
+                      >
+                        {displayUrl ? (
+                          <img alt="" src={displayUrl} style={{ width: "100%", height: "100%", objectFit: "cover", objectPosition: THUMB_COVER_POSITION, display: "block" }} />
+                        ) : (
+                          <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                            <HiPhoto size={26} style={{ color: AX.muted, opacity: 0.5 }} />
+                          </div>
+                        )}
+                        <div style={{
+                          position: "absolute", top: 6, right: 6, width: 22, height: 22, borderRadius: 6,
+                          border: `2px solid ${isSel ? AX.magenta : "rgba(255,255,255,0.3)"}`,
+                          background: isSel ? AX.magenta : "rgba(0,0,0,0.4)",
+                          display: "flex", alignItems: "center", justifyContent: "center",
+                          transition: "all 0.15s ease",
+                        }}>
+                          {isSel && <HiCheck size={14} style={{ color: "#fff" }} />}
+                        </div>
+                        {ent.hint && (
+                          <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, background: "linear-gradient(transparent, rgba(0,0,0,0.7))", padding: "16px 6px 5px", fontSize: 9, color: "rgba(255,255,255,0.8)", lineHeight: 1.3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {ent.hint.slice(0, 60)}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
       )}
 
       {galleryDeleteTarget && (
@@ -6541,8 +6814,10 @@ const VideoPreviewModal = React.memo(function VideoPreviewModal({ src, onClose, 
 });
 
 // ── Image Generator ──
-function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setResolution, generating, setGenerating, generatedImages, setGeneratedImages, selectedCharacter, setSelectedCharacter, projectCharacters, scenes, onSave, previewImg, setPreviewImg, layoutFill, history, recallImageUrl, setRecallImageUrl, selectedStyles, setSelectedStyles, aspect, setAspect, steps, setSteps, cfg, setCfg, adv, setAdv, projectSourceImageUrl, setProjectSourceImageUrl, currentProjectId, imgSessionPromptMap }) {
+function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setResolution, generating, setGenerating, generatedImages, setGeneratedImages, selectedCharacter, setSelectedCharacter, projectCharacters, scenes, onSave, previewImg, setPreviewImg, layoutFill, history, recallImageUrl, setRecallImageUrl, selectedStyles, setSelectedStyles, aspect, setAspect, steps, setSteps, cfg, setCfg, adv, setAdv, projectSourceImageUrl, setProjectSourceImageUrl, currentProjectId, imgSessionPromptMap, imgPickerEntries, imgPickerSelectedId, onImgPickerChange }) {
   const [tmpl, setTmpl] = useState(null);
+  const [imgLibraryOpen, setImgLibraryOpen] = useState(false);
+  const imgFileRef = useRef(null);
   const [translating, setTranslating] = useState(false);
   const [proposedPrompt, setProposedPrompt] = useState(null);
   const [editableIT, setEditableIT] = useState("");
@@ -6550,6 +6825,7 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
   const [imageStatus, setImageStatus] = useState("");
   const [promptManuallyEdited, setPromptManuallyEdited] = useState(false);
   const [recallFeedback, setRecallFeedback] = useState(null);
+  const recallActiveRef = useRef(false);
 
   // ── Project image update mode ──
   const appearanceSnapshotRef = useRef(null);
@@ -6594,6 +6870,7 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
   useEffect(() => {
     if (!recallImageUrl) return;
     setRecallImageUrl?.(null);
+    recallActiveRef.current = true;
 
     const liveHistory = historyRef.current || [];
 
@@ -6679,6 +6956,49 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [recallImageUrl]);
+
+  const handleImgGenAreaClick = useCallback((e) => {
+    if (!recallActiveRef.current) return;
+    const tag = e.target.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || tag === "BUTTON" || e.target.closest("button")) return;
+    recallActiveRef.current = false;
+    setPrompt("");
+    setSelectedStyles([]);
+    preparedEnRef.current = null;
+    enIsStaleRef.current = true;
+    setProposedPrompt(null);
+    setEditableIT("");
+    modalEditedItRef.current = null;
+    if (typeof setProjectSourceImageUrl === "function") setProjectSourceImageUrl(null);
+    appearanceSnapshotRef.current = null;
+    sourceImagePromptItRef.current = null;
+    sourceImageStylesRef.current = null;
+  }, [setPrompt, setSelectedStyles, setProjectSourceImageUrl]);
+
+  const handleImgSourceFile = useCallback(e => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    const r = new FileReader();
+    r.onload = ev => {
+      if (typeof setProjectSourceImageUrl === "function") setProjectSourceImageUrl(ev.target.result);
+    };
+    r.readAsDataURL(f);
+  }, [setProjectSourceImageUrl]);
+
+  const handleImgGallerySelection = useCallback(ent => {
+    if (typeof onImgPickerChange === "function") {
+      onImgPickerChange(ent);
+      if (ent) setImgLibraryOpen(false);
+      return;
+    }
+    if (!ent) {
+      if (typeof setProjectSourceImageUrl === "function") setProjectSourceImageUrl(null);
+      return;
+    }
+    const url = resolveGalleryEntryDisplayUrl(ent);
+    if (url && typeof setProjectSourceImageUrl === "function") setProjectSourceImageUrl(url);
+    setImgLibraryOpen(false);
+  }, [onImgPickerChange, setProjectSourceImageUrl]);
 
   const aspectResolutions = {
     "1:1": [["512x512", "512p"], ["768x768", "768p"], ["1024x1024", "1024p"]],
@@ -7283,7 +7603,18 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
     : { display: "flex", flexWrap: "wrap", gap: 10 };
 
   return (
-    <div style={fill ? { display: "flex", flexDirection: "column", flex: 1, minHeight: 0 } : undefined}>
+    <div onClick={handleImgGenAreaClick} style={fill ? { display: "flex", flexDirection: "column", flex: 1, minHeight: 0 } : undefined}>
+      {imgLibraryOpen && currentProjectId ? (
+        <VideoAppImageLibraryPanel
+          entries={imgPickerEntries || []}
+          onClose={() => setImgLibraryOpen(false)}
+          pickMode="checkbox"
+          selectedEntryId={imgPickerSelectedId || null}
+          onSelectionChange={handleImgGallerySelection}
+          title="Le mie immagini"
+          subtitle="Seleziona un'immagine di partenza per le modifiche con Kontext"
+        />
+      ) : null}
       {/* Stile Scena (legacy — nascosto, rimpiazzato dai tag stile sopra; tmpl/scenePrefixForAI() rimangono attivi) */}
       <div style={{ display: "none" }}>
         {scenes.map(s => (
@@ -7299,7 +7630,7 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
       </div>
 
       {/* ── Style Cards (AXSTUDIO) ── */}
-      <div style={{ marginBottom: fill ? 20 : 28, flexShrink: 0 }}>
+      <div style={{ marginBottom: fill ? 8 : 12, flexShrink: 0 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
           <span style={{ fontSize: 11, color: AX.muted, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em" }}>Stile</span>
           {selectedStyles.length > 0 && (
@@ -7379,12 +7710,12 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
       </div>
 
       {/* Separatore */}
-      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: fill ? 48 : 60, marginTop: fill ? 34 : 42, flexShrink: 0 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 4, marginTop: 4, flexShrink: 0 }}>
         <div style={{ flex: 1, height: 1, background: `linear-gradient(90deg, transparent 0%, ${AX.border} 40%, ${AX.border} 60%, transparent 100%)` }} />
       </div>
 
-      <div style={{ marginBottom: fill ? 16 : 22, flexShrink: 0 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 0, marginBottom: fill ? 14 : 18, padding: "2px 0" }}>
+      <div style={{ marginBottom: fill ? 10 : 14, flexShrink: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 0, marginBottom: fill ? 8 : 10, padding: "2px 0" }}>
           {/* Formato */}
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             <span style={{ fontSize: 10, color: AX.muted, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em" }}>Formato</span>
@@ -7399,12 +7730,14 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
             </div>
           </div>
         </div>
+
+      
         <label style={{ fontSize: 12, color: AX.muted, fontWeight: 600, marginBottom: 10, display: "block" }}>Descrivi la scena</label>
         <textarea
           value={prompt}
           onChange={e => {
             setPrompt(e.target.value);
-            // Qualsiasi modifica al testo IT invalida il prompt EN preparato
+            recallActiveRef.current = false;
             enIsStaleRef.current = true;
           }}
           placeholder="Descrivi cosa vuoi generare..."
@@ -7629,6 +7962,7 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
   const [singleAmbient, setSingleAmbient] = useState("");
   const [singleAmbientIdea, setSingleAmbientIdea] = useState("");
   const [singleVoiceId, setSingleVoiceId] = useState("");
+  const [singleDialogueLang, setSingleDialogueLang] = useState("en");
   const [showSingleDialogue, setShowSingleDialogue] = useState(false);
   const [showSingleAmbient, setShowSingleAmbient] = useState(false);
   const [generatingDialogue, setGeneratingDialogue] = useState(null);
@@ -7636,6 +7970,7 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
   const [visualSectionOpen, setVisualSectionOpen] = useState(true);
   const [directionSectionOpen, setDirectionSectionOpen] = useState(false);
   const [recallVideoFeedback, setRecallVideoFeedback] = useState(null);
+  const vidRecallActiveRef = useRef(false);
   const [toast, setToast] = useState(null);
   const promptFocusedOnceRef = useRef(false);
 
@@ -7918,6 +8253,7 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
   useEffect(() => {
     if (!recallVideoUrl) return;
     setRecallVideoUrl?.(null);
+    vidRecallActiveRef.current = true;
     const liveHistory = historyVidRef.current || [];
     const fp = filePathFromAxstudioMediaUrl(recallVideoUrl);
     const record = liveHistory.find(h => {
@@ -7932,9 +8268,10 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
       setTimeout(() => setRecallVideoFeedback(null), 3000);
       return;
     }
-    const promptIT = record.params?.promptIT || "";
-    const idea = record.params?.userIdea || "";
-    const promptEN = record.params?.promptEN || record.prompt || "";
+    const p = record.params || {};
+    const promptIT = p.promptIT || "";
+    const idea = p.userIdea || "";
+    const promptEN = p.promptEN || record.prompt || "";
     const textForField = promptIT || idea || "";
     setVideoPrompt(textForField || "");
     if (textForField) {
@@ -7955,8 +8292,46 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
     }
     setProposedVideoPrompt(null);
     setEditableVideoIT("");
+    setSelectedVideoStyles(p.selectedStyles || []);
+    setSelectedDirectionStyles(p.selectedDirectionStyles || []);
+    if (p.duration) setVideoDuration(Number(p.duration) || 5);
+    if (p.aspect) setVidAspect(p.aspect);
+    setSingleDialogue(p.dialogue || "");
+    setSingleDialogueIdea(p.dialogueIdea || "");
+    setSingleDialogueLang(p.dialogueLang || "en");
+    setSingleAmbient(p.ambient || "");
+    setSingleAmbientIdea(p.ambientIdea || "");
+    setSingleVoiceId(p.voiceId || "");
+    setShowSingleDialogue(Boolean(p.dialogue));
+    setShowSingleAmbient(Boolean(p.ambient));
+    if (p.sourceImageUrl && typeof setSourceImg === "function") {
+      setSourceImg(p.sourceImageUrl);
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [recallVideoUrl]);
+
+  const handleVidGenAreaClick = useCallback((e) => {
+    if (!vidRecallActiveRef.current) return;
+    const tag = e.target.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || tag === "BUTTON" || e.target.closest("button")) return;
+    vidRecallActiveRef.current = false;
+    setVideoPrompt("");
+    setSelectedVideoStyles([]);
+    setSelectedDirectionStyles([]);
+    vidPreparedEnRef.current = null;
+    vidEnIsStaleRef.current = true;
+    setProposedVideoPrompt(null);
+    setEditableVideoIT("");
+    setSingleDialogue("");
+    setSingleDialogueIdea("");
+    setSingleDialogueLang("en");
+    setSingleAmbient("");
+    setSingleAmbientIdea("");
+    setSingleVoiceId("");
+    setShowSingleDialogue(false);
+    setShowSingleAmbient(false);
+    if (typeof setSourceImg === "function") setSourceImg(null);
+  }, [setVideoPrompt, setSelectedVideoStyles, setSelectedDirectionStyles, setSourceImg]);
 
   // Popola editableClips ogni volta che il LLM propone uno split
   useEffect(() => {
@@ -7968,8 +8343,8 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
   }, [proposedVideoPrompt]);
 
   const videoLibraryEntries = useMemo(
-    () => buildVideoLibraryPickEntries(history, diskMediaEntries, generatedImages),
-    [history, diskMediaEntries, generatedImages],
+    () => buildVideoLibraryPickEntries(history, diskMediaEntries, generatedImages, { freeOnly: !useProjectImagePicker }),
+    [history, diskMediaEntries, generatedImages, useProjectImagePicker],
   );
   const galleryEntries = useProjectImagePicker ? (pickerImageEntries || []) : videoLibraryEntries;
   const gallerySelectedId = useProjectImagePicker ? pickerSelectedEntryId : internalPickerEntryId;
@@ -8041,13 +8416,15 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
     try {
       const idea = clip.dialogueIdea || clip.prompt_it || "";
       const duration = clip.duration || "5";
+      const lang = clip.dialogueLang || singleDialogueLang || "en";
       const result = await callLLM(
-        DIALOGUE_SYSTEM_PROMPT,
+        buildDialogueSystemPrompt(lang),
         `Scene: ${clip.prompt_it}\nDialogue idea: ${idea}\nDuration: ${duration}s`,
-        { temperature: 0.6, validator: (parsed) => parsed.dialogue_en ? parsed : null }
+        { temperature: 0.6, validator: (parsed) => (parsed.dialogue || parsed.dialogue_en) ? parsed : null }
       );
-      if (result?.dialogue_en) {
-        updateClipDialogue(clipIndex, "dialogue", result.dialogue_en);
+      const generated = result?.dialogue || result?.dialogue_en;
+      if (generated) {
+        updateClipDialogue(clipIndex, "dialogue", generated);
         updateClipDialogue(clipIndex, "dialogueIT", result.dialogue_it || idea);
       }
     } catch (e) {
@@ -8082,13 +8459,15 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
     setGeneratingDialogue("single");
     try {
       const idea = singleDialogueIdea || videoPrompt || "";
+      const lang = singleDialogueLang || "en";
       const result = await callLLM(
-        DIALOGUE_SYSTEM_PROMPT,
+        buildDialogueSystemPrompt(lang),
         `Scene: ${videoPrompt}\nDialogue idea: ${idea}\nDuration: ${videoDuration}s`,
-        { temperature: 0.6, validator: (parsed) => parsed.dialogue_en ? parsed : null }
+        { temperature: 0.6, validator: (parsed) => (parsed.dialogue || parsed.dialogue_en) ? parsed : null }
       );
-      if (result?.dialogue_en) {
-        setSingleDialogue(result.dialogue_en);
+      const generated = result?.dialogue || result?.dialogue_en;
+      if (generated) {
+        setSingleDialogue(generated);
       }
     } catch (e) {
       console.error("[DIALOGUE] Single generation failed:", e.message);
@@ -8495,6 +8874,8 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
 
       if (clipVoiceId && clipDialogue) {
         klingPayload.voice_ids = [clipVoiceId];
+        const voiceDef = KLING_SYSTEM_VOICES.find(v => v.id === clipVoiceId);
+        if (voiceDef) klingPayload.voice_language = voiceDef.lang === "zh" ? "zh" : "en";
         klingPayload.prompt = klingPayload.prompt.replace(
           `The character says "${clipDialogue}"`,
           `The character <<<voice_1>>> says "${clipDialogue}"`
@@ -8564,7 +8945,7 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
           });
           const spCtx = vidScreenplayCtxRef.current;
           const resolvedVideoPromptIT = videoPromptManuallyEdited ? editableVideoIT : (proposedVideoPrompt?.prompt_it || currentVideoIT);
-          const entry = await onSaveVideo(base64, fp, { resolution: videoResolution, duration, seed: result.seed || 0, userIdea: currentVideoIT, promptEN: fp, promptIT: resolvedVideoPromptIT, selectedStyles: selectedVideoStyles, selectedDirectionStyles: selectedDirectionStyles, ...(spCtx ? { screenplayId: spCtx.screenplayId, screenplayName: spCtx.screenplayName, screenplaySummary: spCtx.screenplaySummary || "", clipIndex: spCtx.clipIndex, clipTotal: spCtx.clipTotal } : {}) });
+          const entry = await onSaveVideo(base64, fp, { resolution: videoResolution, duration, seed: result.seed || 0, userIdea: currentVideoIT, promptEN: fp, promptIT: resolvedVideoPromptIT, selectedStyles: selectedVideoStyles, selectedDirectionStyles: selectedDirectionStyles, aspect: vidAspect, dialogue: clipDialogue || singleDialogue || "", dialogueIdea: singleDialogueIdea || "", dialogueLang: singleDialogueLang || "en", ambient: clipAmbient || singleAmbient || "", ambientIdea: singleAmbientIdea || "", voiceId: clipVoiceId || singleVoiceId || "", sourceImageUrl: sourceImg || null, ...(spCtx ? { screenplayId: spCtx.screenplayId, screenplayName: spCtx.screenplayName, screenplaySummary: spCtx.screenplaySummary || "", clipIndex: spCtx.clipIndex, clipTotal: spCtx.clipTotal } : {}) });
           if (entry?.filePath && isElectron) {
             // Trim primo clip / video singolo: taglia ~1s di frame statico iniziale
             const isFirstClipOrSingle = !spCtx || spCtx.clipIndex === 0;
@@ -8874,7 +9255,7 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
   const vfill = Boolean(layoutFill);
 
   return (
-    <div style={vfill ? { display: "flex", flexDirection: "column", flex: 1, minHeight: 0 } : undefined}>
+    <div onClick={handleVidGenAreaClick} style={vfill ? { display: "flex", flexDirection: "column", flex: 1, minHeight: 0 } : undefined}>
       {videoLibraryOpen ? (
         <VideoAppImageLibraryPanel
           entries={galleryEntries}
@@ -8891,7 +9272,7 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
       ) : null}
 
       {/* ── Sezione A — Stile (stile visivo) ── */}
-      <div style={{ marginBottom: vfill ? 20 : 28, flexShrink: 0 }}>
+      <div style={{ marginBottom: vfill ? 8 : 12, flexShrink: 0 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
           <button
             type="button"
@@ -9025,12 +9406,12 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
       </div>
 
       {/* Separatore Stile / Regia */}
-      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: vfill ? 20 : 28, marginTop: vfill ? 12 : 16, flexShrink: 0 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 4, marginTop: 4, flexShrink: 0 }}>
         <div style={{ flex: 1, height: 1, background: `linear-gradient(90deg, transparent 0%, ${AX.border} 40%, ${AX.border} 60%, transparent 100%)` }} />
       </div>
 
       {/* ── Sezione B — Regia (stile di camera/motion) ── */}
-      <div style={{ marginBottom: vfill ? 20 : 28, flexShrink: 0 }}>
+      <div style={{ marginBottom: vfill ? 8 : 12, flexShrink: 0 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
           <button
             type="button"
@@ -9171,13 +9552,13 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
       </div>
 
       {/* Separatore */}
-      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: vfill ? 48 : 60, marginTop: vfill ? 34 : 42, flexShrink: 0 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 4, marginTop: 4, flexShrink: 0 }}>
         <div style={{ flex: 1, height: 1, background: `linear-gradient(90deg, transparent 0%, ${AX.border} 40%, ${AX.border} 60%, transparent 100%)` }} />
       </div>
 
       {/* Formato + Durata in una riga */}
-      <div style={{ marginBottom: vfill ? 16 : 22, flexShrink: 0 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 0, marginBottom: vfill ? 14 : 18, padding: "2px 0" }}>
+      <div style={{ marginBottom: vfill ? 10 : 14, flexShrink: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 0, marginBottom: vfill ? 8 : 10, padding: "2px 0" }}>
           {/* Formato */}
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             <span style={{ fontSize: 10, color: AX.muted, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em" }}>Formato</span>
@@ -9209,7 +9590,8 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
           </>)}
         </div>
 
-        {/* Immagine di partenza */}
+        {/* Immagine di partenza — solo in modalità libera */}
+        {!sourceIsControlled && (<>
         <label style={{ fontSize: 12, color: AX.muted, fontWeight: 600, marginBottom: 10, display: "block" }}>Immagine di partenza</label>
         <div style={{ display: "flex", gap: 10, alignItems: "stretch" }}>
           <div
@@ -9221,7 +9603,7 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
             {sourceImg ? (
               <>
                 <img src={sourceImg} alt="" style={{ width: "100%", maxHeight: 200, objectFit: "cover", objectPosition: THUMB_COVER_POSITION, display: "block" }} />
-                <button type="button" onClick={e => { e.stopPropagation(); if (useProjectImagePicker) onPickerImageChange(null); else { setInternalPickerEntryId(null); setSourceImg(null); } }} style={{ position: "absolute", top: 6, right: 6, background: "rgba(239,68,68,0.85)", border: "none", borderRadius: 8, padding: "4px 10px", color: "#fff", fontSize: 11, cursor: "pointer" }}>Rimuovi</button>
+                <button type="button" onClick={e => { e.stopPropagation(); setInternalPickerEntryId(null); setSourceImg(null); }} style={{ position: "absolute", top: 6, right: 6, background: "rgba(239,68,68,0.85)", border: "none", borderRadius: 8, padding: "4px 10px", color: "#fff", fontSize: 11, cursor: "pointer" }}>Rimuovi</button>
               </>
             ) : (
               <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
@@ -9238,6 +9620,7 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
           </button>
         </div>
         <p style={{ margin: "8px 0 0", fontSize: 11, color: AX.muted, lineHeight: 1.4 }}>Senza immagine: verrà generato il primo frame da prompt automaticamente.</p>
+        </>)}
       </div>
 
       {/* Video libero = solo clip singolo */}
@@ -9249,7 +9632,7 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
         </label>
         <textarea
           value={videoPrompt}
-          onChange={e => { setVideoPrompt(e.target.value); vidEnIsStaleRef.current = true; }}
+          onChange={e => { setVideoPrompt(e.target.value); vidRecallActiveRef.current = false; vidEnIsStaleRef.current = true; }}
           onFocus={handlePromptFocus}
           placeholder={videoMode === "screenplay"
             ? "Scrivi la tua sceneggiatura — descrivi tutte le scene e le azioni in dettaglio. Il sistema le dividerà automaticamente in clip ottimali…"
@@ -9299,9 +9682,40 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
             }}>
               {generatingDialogue === "single" ? "⏳ Generazione…" : "✨ Genera dialogo"}
             </button>
+            <div style={{ marginTop: 8, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+              <div>
+                <label style={{ fontSize: 11, color: "#999" }}>🌐 Lingua:</label>
+                <select
+                  value={singleDialogueLang}
+                  onChange={(e) => setSingleDialogueLang(e.target.value)}
+                  style={{ marginLeft: 6, background: "#1a1a2e", color: "white", border: "1px solid rgba(255,255,255,0.15)", borderRadius: 6, padding: "4px 8px", fontSize: 11 }}
+                >
+                  {KLING_DIALOGUE_LANGS.map(l => (
+                    <option key={l.id} value={l.id}>{l.label}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label style={{ fontSize: 11, color: "#999" }}>🗣 Voce:</label>
+                <select
+                  value={singleVoiceId}
+                  onChange={(e) => setSingleVoiceId(e.target.value)}
+                  style={{ marginLeft: 6, background: "#1a1a2e", color: "white", border: "1px solid rgba(255,255,255,0.15)", borderRadius: 6, padding: "4px 8px", fontSize: 11 }}
+                >
+                  <option value="">Voce automatica</option>
+                  {KLING_SYSTEM_VOICES.filter(v => !singleDialogueLang || v.lang === singleDialogueLang || v.lang === "en").map(v => (
+                    <option key={v.id} value={v.id}>{v.label}{v.gender === "M" ? " ♂" : v.gender === "F" ? " ♀" : ""}</option>
+                  ))}
+                  {voiceLibrary.length > 0 && <option disabled>── Voci personalizzate ──</option>}
+                  {voiceLibrary.map(v => (
+                    <option key={v.id} value={v.id}>{v.name} — {v.language}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
             {singleDialogue && (
               <div style={{ marginTop: 8 }}>
-                <label style={{ fontSize: 11, color: "#10b981" }}>Dialogo confermato (EN):</label>
+                <label style={{ fontSize: 11, color: "#10b981" }}>Dialogo confermato ({(LANG_NAMES[singleDialogueLang] || "EN").slice(0, 2).toUpperCase()}):</label>
                 <textarea
                   value={singleDialogue}
                   onChange={(e) => setSingleDialogue(e.target.value)}
@@ -9310,19 +9724,6 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
                 />
               </div>
             )}
-            <div style={{ marginTop: 8 }}>
-              <label style={{ fontSize: 11, color: "#999" }}>🗣 Voce:</label>
-              <select
-                value={singleVoiceId}
-                onChange={(e) => setSingleVoiceId(e.target.value)}
-                style={{ marginLeft: 8, background: "#1a1a2e", color: "white", border: "1px solid rgba(255,255,255,0.15)", borderRadius: 6, padding: "4px 8px", fontSize: 11 }}
-              >
-                <option value="">Voce automatica</option>
-                {voiceLibrary.map(v => (
-                  <option key={v.id} value={v.id}>{v.name} — {v.language}</option>
-                ))}
-              </select>
-            </div>
           </div>
         )}
 
@@ -9690,9 +10091,40 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
                   }}>
                     {generatingDialogue === i ? "⏳ Generazione…" : "✨ Genera dialogo"}
                   </button>
+                  <div style={{ marginTop: 8, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                    <div>
+                      <label style={{ fontSize: 11, color: "#999" }}>🌐 Lingua:</label>
+                      <select
+                        value={clip.dialogueLang || singleDialogueLang}
+                        onChange={(e) => updateClipDialogue(i, "dialogueLang", e.target.value)}
+                        style={{ marginLeft: 6, background: "#1a1a2e", color: "white", border: "1px solid rgba(255,255,255,0.15)", borderRadius: 6, padding: "4px 8px", fontSize: 11 }}
+                      >
+                        {KLING_DIALOGUE_LANGS.map(l => (
+                          <option key={l.id} value={l.id}>{l.label}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label style={{ fontSize: 11, color: "#999" }}>🗣 Voce:</label>
+                      <select
+                        value={clip.voiceId || ""}
+                        onChange={(e) => updateClipDialogue(i, "voiceId", e.target.value)}
+                        style={{ marginLeft: 6, background: "#1a1a2e", color: "white", border: "1px solid rgba(255,255,255,0.15)", borderRadius: 6, padding: "4px 8px", fontSize: 11 }}
+                      >
+                        <option value="">Voce automatica</option>
+                        {KLING_SYSTEM_VOICES.filter(v => { const cl = clip.dialogueLang || singleDialogueLang; return !cl || v.lang === cl || v.lang === "en"; }).map(v => (
+                          <option key={v.id} value={v.id}>{v.label}{v.gender === "M" ? " ♂" : v.gender === "F" ? " ♀" : ""}</option>
+                        ))}
+                        {voiceLibrary.length > 0 && <option disabled>── Voci personalizzate ──</option>}
+                        {voiceLibrary.map(v => (
+                          <option key={v.id} value={v.id}>{v.name} — {v.language}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
                   {clip.dialogue && (
                     <div style={{ marginTop: 8 }}>
-                      <label style={{ fontSize: 11, color: "#10b981" }}>Dialogo confermato (EN):</label>
+                      <label style={{ fontSize: 11, color: "#10b981" }}>Dialogo confermato ({(LANG_NAMES[clip.dialogueLang || singleDialogueLang] || "EN").slice(0, 2).toUpperCase()}):</label>
                       <textarea
                         value={clip.dialogue}
                         onChange={(e) => updateClipDialogue(i, "dialogue", e.target.value)}
@@ -9701,19 +10133,6 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
                       />
                     </div>
                   )}
-                  <div style={{ marginTop: 8 }}>
-                    <label style={{ fontSize: 11, color: "#999" }}>🗣 Voce:</label>
-                    <select
-                      value={clip.voiceId || ""}
-                      onChange={(e) => updateClipDialogue(i, "voiceId", e.target.value)}
-                      style={{ marginLeft: 8, background: "#1a1a2e", color: "white", border: "1px solid rgba(255,255,255,0.15)", borderRadius: 6, padding: "4px 8px", fontSize: 11 }}
-                    >
-                      <option value="">Voce automatica</option>
-                      {voiceLibrary.map(v => (
-                        <option key={v.id} value={v.id}>{v.name} — {v.language}</option>
-                      ))}
-                    </select>
-                  </div>
                 </div>
               )}
 
