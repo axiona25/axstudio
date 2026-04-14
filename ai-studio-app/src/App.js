@@ -7849,6 +7849,10 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
   };
 
   const generate = async () => {
+    if (!selectedStyles || selectedStyles.length === 0) {
+      alert("Seleziona almeno uno stile prima di generare");
+      return;
+    }
     setGenerating(true);
     setGeneratedImages(p => [STUDIO_IMAGE_GENERATING, ...p.filter(x => x !== STUDIO_IMAGE_GENERATING)]);
     try {
@@ -9511,6 +9515,10 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
   };
 
   const generateVideo = async () => {
+    if (!selectedVideoStyles || selectedVideoStyles.length === 0) {
+      alert("Seleziona almeno uno stile prima di generare il video");
+      return;
+    }
     const fromPrep = vidPromptEnOverrideRef.current;
     if (fromPrep) vidPromptEnOverrideRef.current = null;
     // Testo IT sorgente: modale modificata (ref sincrona) > state videoPrompt
@@ -10183,6 +10191,10 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
 
   // Genera tutti i clip suggeriti dall'LLM in sequenza
   const handleGenerateAllClips = async (clips) => {
+    if (!selectedVideoStyles || selectedVideoStyles.length === 0) {
+      alert("Seleziona almeno uno stile prima di generare il video");
+      return;
+    }
     if (!clips?.length) return;
     setGenerating(true);
     setProposedVideoPrompt(null);
