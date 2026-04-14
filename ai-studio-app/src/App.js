@@ -1073,6 +1073,51 @@ async function falQueueRequest(endpoint, payload, onProgress) {
   }
 }
 
+async function refineWithKontext(imageUrl, appearance) {
+  if (!appearance) return imageUrl;
+  const corrections = [];
+
+  const hairDesc = appearance.hairColorDetail || appearance.hairColor || "";
+  if (hairDesc) corrections.push(`Ensure the hair color is exactly ${hairDesc}`);
+
+  const densityMap = { "Medio": "medium density, not too thick", "Sottili": "thin, not voluminous", "Radi": "thinning, sparse on top", "Diradamento": "noticeably thinning, balding" };
+  if (appearance.hairDensity && densityMap[appearance.hairDensity]) {
+    corrections.push(`Hair density should be ${densityMap[appearance.hairDensity]}`);
+  }
+
+  const skinDesc = appearance.skinDetail || "";
+  if (skinDesc) corrections.push(`Skin tone should be ${skinDesc}`);
+
+  if (appearance.beard === "Nessuna") corrections.push("Face must be completely clean shaven, no stubble");
+
+  if (appearance.ageEstimate) corrections.push(`The person should look approximately ${appearance.ageEstimate} years old`);
+
+  corrections.push("Remove any unnatural artifacts around the face");
+  corrections.push("Ensure natural skin texture and smooth transition between face and neck");
+
+  if (corrections.length === 0) return imageUrl;
+
+  const correctionPrompt = corrections.join(". ") + ". Keep everything else exactly the same — same pose, same clothing, same background, same composition. Only fix the face and hair details.";
+  console.log("[KONTEXT REFINE] Corrections:", correctionPrompt);
+
+  try {
+    const result = await falRequest("fal-ai/flux-pro/kontext/max", {
+      image_url: imageUrl,
+      prompt: correctionPrompt,
+      num_images: 1,
+      safety_tolerance: "6",
+    });
+    const refinedUrl = result?.images?.[0]?.url || result?.image?.url || null;
+    if (refinedUrl) {
+      console.log("[KONTEXT REFINE] Success:", refinedUrl.slice(0, 60));
+      return refinedUrl;
+    }
+  } catch (err) {
+    console.warn("[KONTEXT REFINE] Failed, using face-swap result:", err.message);
+  }
+  return imageUrl;
+}
+
 /** Scarica un URL immagine fal.ai e ritorna una data URL base64 (per salvataggio su disco). */
 async function falImageUrlToBase64(url) {
   const res = await fetch(url);
@@ -1204,6 +1249,8 @@ function appearanceToPrompt(appearance) {
   if (appearance.hairStyleDetail) parts.push(appearance.hairStyleDetail);
   else if (appearance.hairStyle) parts.push(hairStyleMap[appearance.hairStyle] || "");
   if (appearance.hairTexture) parts.push(appearance.hairTexture);
+  const hairDensityMap = { "Molto folti": "very thick voluminous hair", "Folti": "thick full hair", "Medio": "medium density hair", "Sottili": "thin hair", "Radi": "thinning sparse hair on top", "Diradamento": "noticeably balding thinning hair" };
+  if (appearance.hairDensity) parts.push(hairDensityMap[appearance.hairDensity] || appearance.hairDensity);
   if (appearance.hairline) parts.push(appearance.hairline);
   if (appearance.eyeColor) parts.push(eyeMap[appearance.eyeColor] || "");
   if (appearance.faceShape) parts.push(`${appearance.faceShape} face`);
@@ -1706,7 +1753,8 @@ async function analyzePhotoAppearance(base64DataUrl) {
 
 HAIR — be VERY specific:
 - Color: NOT just "brown". Say "dark brown with salt-and-pepper grey at temples", "jet black", "medium chestnut brown", "light brown with blonde highlights", "brizzolato/salt-and-pepper throughout", etc.
-- Texture: "thick and dense", "thin and fine", "coarse", "silky"
+- Texture: "coarse", "silky", "wiry", "soft"
+- Density/Fullness: "thick and full/voluminous", "medium density", "thin/thinning on top", "noticeably thinning at crown", "very thin/sparse", "balding". Be HONEST — do NOT default to "thick and dense" unless the hair is truly voluminous.
 - Style: "parted on left", "combed back", "slicked back", "messy tousled", "buzz cut"
 - Hairline: "receding at temples", "full thick hairline", "widow's peak", "M-shaped recession", "high forehead"
 - Length: "shaved", "very short", "short", "medium", "long", "very long"
@@ -1734,7 +1782,7 @@ DISTINCTIVE MARKS — check carefully:
 - Piercings: description or "none visible"
 
 Return ONLY valid JSON (no markdown, no backticks):
-{"gender":"Uomo" or "Donna","ageEstimate":"55-58","age":"Matura (35-50)" or "Senior (50+)" etc.,"bodyType":"Magra"|"Snella"|"Media"|"Robusta"|"Grassa"|"Muscolosa","height":"Bassa (~155cm)"|"Media (~170cm)"|"Alta (~185cm)"|"Molto alta (~195cm)","skinColor":"Molto chiara"|"Chiara"|"Olivastra"|"Scura"|"Molto scura","skinDetail":"Mediterranean olive with warm undertones","hairLength":"Rasati"|"Molto corti"|"Corti"|"Medi"|"Lunghi"|"Molto lunghi","hairColor":"Neri"|"Castano scuro"|"Castano medio"|"Castano chiaro"|"Biondo scuro"|"Biondo chiaro"|"Rosso/Ramato"|"Brizzolato"|"Grigio argento"|"Bianco"|"Colorati","hairColorDetail":"dark brown with salt-and-pepper grey at temples","hairStyle":"Lisci"|"Mossi"|"Ricci"|"Afro"|"Raccolti"|"Coda"|"Trecce","hairStyleDetail":"straight slicked back with left side part","hairTexture":"thick and dense","hairline":"slight recession at temples","eyeColor":"Marroni"|"Nocciola"|"Verdi"|"Azzurri"|"Grigi"|"Neri","faceShape":"oval elongated","nose":"straight prominent","lips":"thin","jaw":"defined angular jawline","chin":"strong defined","wrinkles":"crow's feet, nasolabial folds, forehead lines","beard":"Nessuna"|"Barba corta"|"Barba media"|"Barba lunga"|"Pizzetto"|"Baffi","mustache":"none"|"thin"|"thick"|"handlebar","glasses":"none"|"thin_metal"|"thick_black"|"rimless"|"sunglasses","moles":"none visible","scars":"none visible","tattoos":"none visible","breastSize":null or "Piccolo"|"Medio"|"Grande"|"Molto grande","buttSize":"Piccolo"|"Medio"|"Grande"|"Molto grande","detailedDescription":"man, approximately 55-58 years old, dark brown hair with salt-and-pepper grey at temples, short length slicked back with left side part, thick dense hair, slight recession at temples, oval elongated face, straight prominent nose, thin lips, defined angular jawline, strong chin, crow's feet around dark brown eyes, nasolabial folds, forehead lines, Mediterranean olive skin with warm undertones, clean shaven, lean average build, no glasses, no visible moles tattoos or scars"}`;
+{"gender":"Uomo" or "Donna","ageEstimate":"55-58","age":"Matura (35-50)" or "Senior (50+)" etc.,"bodyType":"Magra"|"Snella"|"Media"|"Robusta"|"Grassa"|"Muscolosa","height":"Bassa (~155cm)"|"Media (~170cm)"|"Alta (~185cm)"|"Molto alta (~195cm)","skinColor":"Molto chiara"|"Chiara"|"Olivastra"|"Scura"|"Molto scura","skinDetail":"Mediterranean olive with warm undertones","hairLength":"Rasati"|"Molto corti"|"Corti"|"Medi"|"Lunghi"|"Molto lunghi","hairColor":"Neri"|"Castano scuro"|"Castano medio"|"Castano chiaro"|"Biondo scuro"|"Biondo chiaro"|"Rosso/Ramato"|"Brizzolato"|"Grigio argento"|"Bianco"|"Colorati","hairColorDetail":"dark brown with salt-and-pepper grey at temples","hairStyle":"Lisci"|"Mossi"|"Ricci"|"Afro"|"Raccolti"|"Coda"|"Trecce","hairStyleDetail":"straight slicked back with left side part","hairTexture":"coarse","hairDensity":"Medio"|"Molto folti"|"Folti"|"Sottili"|"Radi"|"Diradamento","hairline":"slight recession at temples","eyeColor":"Marroni"|"Nocciola"|"Verdi"|"Azzurri"|"Grigi"|"Neri","faceShape":"oval elongated","nose":"straight prominent","lips":"thin","jaw":"defined angular jawline","chin":"strong defined","wrinkles":"crow's feet, nasolabial folds, forehead lines","beard":"Nessuna"|"Barba corta"|"Barba media"|"Barba lunga"|"Pizzetto"|"Baffi","mustache":"none"|"thin"|"thick"|"handlebar","glasses":"none"|"thin_metal"|"thick_black"|"rimless"|"sunglasses","moles":"none visible","scars":"none visible","tattoos":"none visible","breastSize":null or "Piccolo"|"Medio"|"Grande"|"Molto grande","buttSize":"Piccolo"|"Medio"|"Grande"|"Molto grande","detailedDescription":"man, approximately 55-58 years old, dark brown hair with salt-and-pepper grey at temples, short length slicked back with left side part, medium density slightly thinning on top, slight recession at temples, oval elongated face, straight prominent nose, thin lips, defined angular jawline, strong chin, crow's feet around dark brown eyes, nasolabial folds, forehead lines, Mediterranean olive skin with warm undertones, clean shaven, lean average build, no glasses, no visible moles tattoos or scars"}`;
   for (const model of ["google/gemma-4-26b-a4b-it", "meta-llama/llama-3.3-70b-instruct"]) {
     try {
       const res = await fetch(OPENROUTER_API_URL, {
@@ -4239,7 +4287,7 @@ function ProjectListCard({ project, stats, onOpen, onDelete, onRename }) {
 }
 
 /** Griglia video singoli (usata sia in tab Video che dentro un gruppo sceneggiatura espanso). */
-const VideoThumbnailGrid = React.memo(function VideoThumbnailGrid({ videos, cfg, onVideoPreview, onVideoRecallPrompt, onRemoveVideo, indexOffset = 0, selectionMode, selectedItems, onToggleSelect, videoStatus }) {
+const VideoThumbnailGrid = React.memo(function VideoThumbnailGrid({ videos, cfg, onVideoPreview, onVideoRecallPrompt, onRemoveVideo, indexOffset = 0, selectionMode, selectedItems, onToggleSelect, videoStatus, activeRecallVideoUrl }) {
   return (
     <div style={{ display: "grid", gridTemplateColumns: `repeat(${cfg.cols}, minmax(0, 1fr))`, gap: cfg.gap }}>
       {videos.map((vid, i) => {
@@ -4248,6 +4296,7 @@ const VideoThumbnailGrid = React.memo(function VideoThumbnailGrid({ videos, cfg,
         const isPlaceholder = isGenerating || isClipGen;
         const clipNum = isClipGen ? parseInt(vid.split("_").pop(), 10) + 1 : null;
         const isSelected = selectionMode && selectedItems?.has(vid);
+        const isVidRecallActive = !isPlaceholder && activeRecallVideoUrl === vid;
         return (
         <div
           key={isGenerating ? "axstudio-vid-gen-slot" : isClipGen ? vid : (typeof vid === "string" ? vid : `vid-${indexOffset + i}`)}
@@ -4256,10 +4305,11 @@ const VideoThumbnailGrid = React.memo(function VideoThumbnailGrid({ videos, cfg,
             aspectRatio: "1",
             borderRadius: 10,
             overflow: "hidden",
-            border: `1px solid ${isSelected ? "rgba(139,92,246,0.7)" : isPlaceholder ? "rgba(255,79,163,0.45)" : AX.border}`,
+            border: isVidRecallActive ? "2px solid rgba(255,79,163,0.9)" : `1px solid ${isSelected ? "rgba(139,92,246,0.7)" : isPlaceholder ? "rgba(255,79,163,0.45)" : AX.border}`,
             background: AX.bg,
             width: "100%",
-            transition: "border-color 0.4s ease, box-shadow 0.4s ease",
+            boxShadow: isVidRecallActive ? "0 0 12px rgba(255,79,163,0.4), inset 0 0 8px rgba(255,79,163,0.1)" : "none",
+            transition: "border-color 0.2s, box-shadow 0.2s",
             ...(isPlaceholder ? { animation: "axstudio-glow-pulse 2.2s ease-in-out infinite" } : {}),
           }}
         >
@@ -4382,7 +4432,7 @@ const VideoThumbnailGrid = React.memo(function VideoThumbnailGrid({ videos, cfg,
 });
 
 /** Sidebar fissa a destra: miniature sessione (immagini o video) con densità 2/3 colonne. */
-const StudioResultsSidebar = React.memo(function StudioResultsSidebar({ kind, images, videos, density, onDensityChange, onImagePreview, onVideoPreview, onRemoveImage, onRemoveVideo, onImageRecallPrompt, onVideoRecallPrompt, videoSidebarMode, onVideoSidebarModeChange, videoHistory, expandedScreenplays, onExpandedScreenplaysChange, isProjectContext, onBulkDelete, videoStatus }) {
+const StudioResultsSidebar = React.memo(function StudioResultsSidebar({ kind, images, videos, density, onDensityChange, onImagePreview, onVideoPreview, onRemoveImage, onRemoveVideo, onImageRecallPrompt, onVideoRecallPrompt, videoSidebarMode, onVideoSidebarModeChange, videoHistory, expandedScreenplays, onExpandedScreenplaysChange, isProjectContext, onBulkDelete, videoStatus, activeRecallImageUrl, activeRecallVideoUrl }) {
   const cfg = STUDIO_SIDEBAR_DENSITY[density] || STUDIO_SIDEBAR_DENSITY.medium;
   const nImg = images?.length ?? 0;
   const isVideo = kind !== "image";
@@ -4682,7 +4732,7 @@ const StudioResultsSidebar = React.memo(function StudioResultsSidebar({ kind, im
                     </button>
                     {isOpen && group.videos.length > 0 && (
                       <div style={{ padding: "4px 10px 10px" }}>
-                        <VideoThumbnailGrid videos={group.videos.map(v => v.url)} cfg={cfg} onVideoPreview={onVideoPreview} onVideoRecallPrompt={onVideoRecallPrompt} />
+                        <VideoThumbnailGrid videos={group.videos.map(v => v.url)} cfg={cfg} onVideoPreview={onVideoPreview} onVideoRecallPrompt={onVideoRecallPrompt} activeRecallVideoUrl={activeRecallVideoUrl} />
                       </div>
                     )}
                   </div>
@@ -4713,13 +4763,16 @@ const StudioResultsSidebar = React.memo(function StudioResultsSidebar({ kind, im
               const isSwap = img === "FACE_SWAP_PENDING";
               const isPlaceholder = isGen || isSwap;
               const isImgSelected = selectionMode && selectedItems.has(img);
+              const isRecallActive = !isPlaceholder && activeRecallImageUrl === img;
               return (
               <div
                 key={isGen ? "axstudio-gen-slot" : `img-${i}-${typeof img === "string" && img.startsWith("data:") ? img.length : String(img).slice(0, 24)}`}
                 style={{
                   position: "relative", aspectRatio: "1", borderRadius: 10, overflow: "hidden",
-                  border: `1px solid ${isImgSelected ? "rgba(139,92,246,0.7)" : isGen ? "rgba(123,77,255,0.45)" : AX.border}`,
+                  border: isRecallActive ? "2px solid rgba(41,182,255,0.9)" : `1px solid ${isImgSelected ? "rgba(139,92,246,0.7)" : isGen ? "rgba(123,77,255,0.45)" : AX.border}`,
                   background: AX.bg, width: "100%",
+                  boxShadow: isRecallActive ? "0 0 12px rgba(41,182,255,0.4), inset 0 0 8px rgba(41,182,255,0.1)" : "none",
+                  transition: "border-color 0.2s, box-shadow 0.2s",
                   ...(isGen ? { animation: "axstudio-glow-pulse 2.2s ease-in-out infinite" } : {}),
                 }}
               >
@@ -4837,7 +4890,7 @@ const StudioResultsSidebar = React.memo(function StudioResultsSidebar({ kind, im
             })}
           </div>
         ) : (
-          <VideoThumbnailGrid videos={singleVideos} cfg={cfg} onVideoPreview={onVideoPreview} onVideoRecallPrompt={onVideoRecallPrompt} onRemoveVideo={onRemoveVideo} selectionMode={selectionMode} selectedItems={selectedItems} onToggleSelect={toggleSelection} videoStatus={videoStatus} />
+          <VideoThumbnailGrid videos={singleVideos} cfg={cfg} onVideoPreview={onVideoPreview} onVideoRecallPrompt={onVideoRecallPrompt} onRemoveVideo={onRemoveVideo} selectionMode={selectionMode} selectedItems={selectedItems} onToggleSelect={toggleSelection} videoStatus={videoStatus} activeRecallVideoUrl={activeRecallVideoUrl} />
         )}
       </div>
     </aside>
@@ -4895,6 +4948,8 @@ export default function AIStudio() {
   const [genPreviewVideo, setGenPreviewVideo] = useState(null);
   const [recallImageUrl, setRecallImageUrl] = useState(null);
   const [recallVideoUrl, setRecallVideoUrl] = useState(null);
+  const [activeRecallImageUrl, setActiveRecallImageUrl] = useState(null);
+  const [activeRecallVideoUrl, setActiveRecallVideoUrl] = useState(null);
   const [projectSourceImageUrl, setProjectSourceImageUrl] = useState(null);
   const [imgGallerySelectedEntryId, setImgGallerySelectedEntryId] = useState(null);
   const [studioSidebarDensity, setStudioSidebarDensity] = useState(() => {
@@ -6429,8 +6484,8 @@ export default function AIStudio() {
             );
 
             // completeness score
-            const totalFields = 12 + (isMale ? 2 : 0) + (isFemale ? 2 : 0);
-            const filled = ["gender","bodyType","height","age","skinColor","hairLength","hairColor","hairStyle","eyeColor","buttSize","glasses",
+            const totalFields = 13 + (isMale ? 2 : 0) + (isFemale ? 2 : 0);
+            const filled = ["gender","bodyType","height","age","skinColor","hairLength","hairColor","hairStyle","hairDensity","eyeColor","buttSize","glasses",
               ...(isMale ? ["beard","mustache"] : []), ...(isFemale ? ["breastSize"] : [])].filter(k => ap[k] && ap[k] !== "none").length
               + (ap.detailedDescription ? 1 : 0);
             const completePct = Math.round((filled / totalFields) * 100);
@@ -6522,7 +6577,12 @@ export default function AIStudio() {
                       ],
                       [
                         { label: "Colore pelle", icon: "🎨", field: "skinColor", options: ["Molto chiara","Chiara","Olivastra","Scura","Molto scura"], color: AX.gold, type: "select" },
+                        { label: "Infoltimento", icon: "🧬", field: "hairDensity", options: ["Molto folti","Folti","Medio","Sottili","Radi","Diradamento"], color: AX.gold, type: "slider" },
+                        null,
+                      ],
+                      [
                         { label: "Colore occhi", icon: "👁️", field: "eyeColor", options: ["Marroni","Nocciola","Verdi","Azzurri","Grigi","Neri"], color: AX.electric, type: "select" },
+                        null,
                         null,
                       ],
                     ];
@@ -6710,8 +6770,26 @@ export default function AIStudio() {
             density={studioSidebarDensity}
             onDensityChange={setStudioSidebarDensity}
             onImagePreview={setGenPreviewImg}
-            onImageRecallPrompt={setRecallImageUrl}
-            onVideoRecallPrompt={setRecallVideoUrl}
+            onImageRecallPrompt={(url) => {
+              if (activeRecallImageUrl === url) {
+                setActiveRecallImageUrl(null);
+                setRecallImageUrl("__deselect__");
+              } else {
+                setActiveRecallImageUrl(url);
+                setRecallImageUrl(url);
+              }
+            }}
+            onVideoRecallPrompt={(url) => {
+              if (activeRecallVideoUrl === url) {
+                setActiveRecallVideoUrl(null);
+                setRecallVideoUrl("__deselect__");
+              } else {
+                setActiveRecallVideoUrl(url);
+                setRecallVideoUrl(url);
+              }
+            }}
+            activeRecallImageUrl={activeRecallImageUrl}
+            activeRecallVideoUrl={activeRecallVideoUrl}
             onVideoPreview={setGenPreviewVideo}
             onRemoveImage={handleRemoveStudioImage}
             onRemoveVideo={handleRemoveStudioVideo}
@@ -7167,6 +7245,7 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
   const [editableIT, setEditableIT] = useState("");
   const [translateErr, setTranslateErr] = useState("");
   const [imageStatus, setImageStatus] = useState("");
+  const [autoRefine, setAutoRefine] = useState(true);
   const [promptManuallyEdited, setPromptManuallyEdited] = useState(false);
   const [recallFeedback, setRecallFeedback] = useState(null);
   const recallActiveRef = useRef(false);
@@ -7247,6 +7326,11 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
         else if (swap2?.images?.[0]?.url) imgUrl = swap2.images[0].url;
       }
 
+      if (autoRefine && selectedCharacter?.appearance) {
+        setImageStatus("✨ Rifinitura dettagli...");
+        imgUrl = await refineWithKontext(imgUrl, selectedCharacter.appearance);
+      }
+
       setGeneratedImages(p => [imgUrl, ...p.filter(x => x !== STUDIO_IMAGE_GENERATING)]);
       setImageStatus("✅ Face swap completato!");
       setTimeout(() => setImageStatus(""), 2000);
@@ -7294,6 +7378,23 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
   useEffect(() => {
     if (!recallImageUrl) return;
     setRecallImageUrl?.(null);
+
+    if (recallImageUrl === "__deselect__") {
+      recallActiveRef.current = false;
+      setPrompt("");
+      setSelectedStyles([]);
+      preparedEnRef.current = null;
+      enIsStaleRef.current = true;
+      setProposedPrompt(null);
+      setEditableIT("");
+      modalEditedItRef.current = null;
+      if (typeof setProjectSourceImageUrl === "function") setProjectSourceImageUrl(null);
+      appearanceSnapshotRef.current = null;
+      sourceImagePromptItRef.current = null;
+      sourceImageStylesRef.current = null;
+      return;
+    }
+
     recallActiveRef.current = true;
 
     const liveHistory = historyRef.current || [];
@@ -7381,23 +7482,7 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [recallImageUrl]);
 
-  const handleImgGenAreaClick = useCallback((e) => {
-    if (!recallActiveRef.current) return;
-    const tag = e.target.tagName;
-    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || tag === "BUTTON" || e.target.closest("button")) return;
-    recallActiveRef.current = false;
-    setPrompt("");
-    setSelectedStyles([]);
-    preparedEnRef.current = null;
-    enIsStaleRef.current = true;
-    setProposedPrompt(null);
-    setEditableIT("");
-    modalEditedItRef.current = null;
-    if (typeof setProjectSourceImageUrl === "function") setProjectSourceImageUrl(null);
-    appearanceSnapshotRef.current = null;
-    sourceImagePromptItRef.current = null;
-    sourceImageStylesRef.current = null;
-  }, [setPrompt, setSelectedStyles, setProjectSourceImageUrl]);
+  const handleImgGenAreaClick = useCallback(() => {}, []);
 
   const handleImgSourceFile = useCallback(e => {
     const f = e.target.files?.[0];
@@ -7846,6 +7931,11 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
           } catch (faceErr) {
             console.warn("[UPDATE FACE-SWAP] Failed, using Kontext image:", faceErr.message);
           }
+
+          if (autoRefine && selectedCharacter?.appearance) {
+            setImageStatus && setImageStatus("✨ Rifinitura dettagli...");
+            imgUrl = await refineWithKontext(imgUrl, selectedCharacter.appearance);
+          }
         }
 
         console.log("[PROJECT IMAGE UPDATE] result:", imgUrl?.slice(0, 80));
@@ -7949,6 +8039,11 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
             }
           } catch (faceErr) {
             console.warn("[CREATE FACE-SWAP] Failed, using base image:", faceErr.message);
+          }
+
+          if (autoRefine && selectedCharacter?.appearance) {
+            setImageStatus && setImageStatus("✨ Rifinitura dettagli...");
+            imgUrl = await refineWithKontext(imgUrl, selectedCharacter.appearance);
           }
         }
 
@@ -8409,6 +8504,16 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
             </button>
           );
         })()}
+        {selectedCharacter && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6 }}>
+            <span style={{ fontSize: 11, color: AX.muted, fontWeight: 600 }}>✨ Rifinitura auto</span>
+            <button type="button" onClick={() => setAutoRefine(p => !p)}
+              style={{ background: autoRefine ? AX.violet : "rgba(255,255,255,0.08)", border: "none", borderRadius: 10, padding: "3px 12px", color: autoRefine ? "#fff" : AX.muted, fontSize: 10, fontWeight: 700, cursor: "pointer", transition: "all 0.15s" }}>
+              {autoRefine ? "ON" : "OFF"}
+            </button>
+            <span style={{ fontSize: 10, color: AX.muted, opacity: 0.6 }}>{autoRefine ? "Corregge capelli, pelle e artefatti post face-swap" : "Solo face swap, più veloce"}</span>
+          </div>
+        )}
       </div>
 
 
@@ -8751,6 +8856,28 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
   useEffect(() => {
     if (!recallVideoUrl) return;
     setRecallVideoUrl?.(null);
+
+    if (recallVideoUrl === "__deselect__") {
+      vidRecallActiveRef.current = false;
+      setVideoPrompt("");
+      setSelectedVideoStyles([]);
+      setSelectedDirectionStyles([]);
+      vidPreparedEnRef.current = null;
+      vidEnIsStaleRef.current = true;
+      setProposedVideoPrompt(null);
+      setEditableVideoIT("");
+      setSingleDialogue("");
+      setSingleDialogueIdea("");
+      setSingleDialogueLang("en");
+      setSingleAmbient("");
+      setSingleAmbientIdea("");
+      setSingleVoiceId("");
+      setShowSingleDialogue(false);
+      setShowSingleAmbient(false);
+      if (typeof setSourceImg === "function") setSourceImg(null);
+      return;
+    }
+
     vidRecallActiveRef.current = true;
     const liveHistory = historyVidRef.current || [];
     const fp = filePathFromAxstudioMediaUrl(recallVideoUrl);
@@ -8808,28 +8935,7 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [recallVideoUrl]);
 
-  const handleVidGenAreaClick = useCallback((e) => {
-    if (!vidRecallActiveRef.current) return;
-    const tag = e.target.tagName;
-    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || tag === "BUTTON" || e.target.closest("button")) return;
-    vidRecallActiveRef.current = false;
-    setVideoPrompt("");
-    setSelectedVideoStyles([]);
-    setSelectedDirectionStyles([]);
-    vidPreparedEnRef.current = null;
-    vidEnIsStaleRef.current = true;
-    setProposedVideoPrompt(null);
-    setEditableVideoIT("");
-    setSingleDialogue("");
-    setSingleDialogueIdea("");
-    setSingleDialogueLang("en");
-    setSingleAmbient("");
-    setSingleAmbientIdea("");
-    setSingleVoiceId("");
-    setShowSingleDialogue(false);
-    setShowSingleAmbient(false);
-    if (typeof setSourceImg === "function") setSourceImg(null);
-  }, [setVideoPrompt, setSelectedVideoStyles, setSelectedDirectionStyles, setSourceImg]);
+  const handleVidGenAreaClick = useCallback(() => {}, []);
 
   // Popola editableClips ogni volta che il LLM propone uno split
   useEffect(() => {
