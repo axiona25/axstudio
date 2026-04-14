@@ -2779,7 +2779,7 @@ const STUDIO_VIDEO_GENERATING = "__AXSTUDIO_VIDEO_GENERATING__";
 const STUDIO_CLIP_GENERATING_PREFIX = "__AXSTUDIO_CLIP_GEN_";
 const isClipPlaceholder = (v) => typeof v === "string" && v.startsWith(STUDIO_CLIP_GENERATING_PREFIX);
 
-const VIDEO_GEN_ESTIMATED_SECONDS = { 3: 40, 5: 60, 7: 80, 10: 100, 15: 120 };
+const VIDEO_GEN_ESTIMATED_SECONDS = { 3: 60, 5: 90, 7: 120, 10: 180, 15: 240 };
 const _vidGenProgress = { startTime: 0, duration: 5 };
 
 function VideoGenProgressOverlay() {
@@ -7727,16 +7727,11 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
         throw new Error("Nessun video nella risposta fal.ai");
       }
 
-      // Mostra subito il video dall'URL remoto — nessuna attesa di download
-      setGeneratedVideos(p => [videoUrl, ...p.filter(x => x !== STUDIO_VIDEO_GENERATING)]);
-      setGenerating(false);
-      setVideoStatus("Video completato ✓");
-      setTimeout(() => setVideoStatus(""), 3000);
-
-      // Salvataggio su disco in background (non bloccante)
-      void (async () => {
-        if (!onSaveVideo) return;
+      // Scarica il video su disco PRIMA di mostrarlo (evita scatti in riproduzione)
+      let displayUrl = videoUrl;
+      if (onSaveVideo) {
         try {
+          setVideoStatus("Download video…");
           const vidRes = await fetch(videoUrl);
           const vidBlob = await vidRes.blob();
           const base64 = await new Promise((resolve, reject) => {
@@ -7752,18 +7747,17 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
           const resolvedVideoPromptIT = videoPromptManuallyEdited ? editableVideoIT : (proposedVideoPrompt?.prompt_it || currentVideoIT);
           const entry = await onSaveVideo(base64, fp, { resolution: videoResolution, duration, seed: result.seed || 0, userIdea: currentVideoIT, promptEN: fp, promptIT: resolvedVideoPromptIT, selectedStyles: selectedVideoStyles, selectedDirectionStyles: selectedDirectionStyles, ...(spCtx ? { screenplayId: spCtx.screenplayId, screenplayName: spCtx.screenplayName, screenplaySummary: spCtx.screenplaySummary || "", clipIndex: spCtx.clipIndex, clipTotal: spCtx.clipTotal } : {}) });
           if (entry?.filePath && isElectron) {
-            const localUrl = mediaFileUrl(entry.filePath);
-            // Aggiorna URL da remoto a locale nella lista e nel preview
-            setGeneratedVideos(p => p.map(x => x === videoUrl ? localUrl : x));
-            if (typeof setPreviewVideo === "function") {
-              setPreviewVideo(prev => prev === videoUrl ? localUrl : prev);
-            }
+            displayUrl = mediaFileUrl(entry.filePath);
           }
         } catch (err) {
-          console.error("Background video save:", err);
-          // Il video resta disponibile via URL fal.ai — nessun blocco
+          console.error("Video download/save failed, using remote URL:", err);
         }
-      })();
+      }
+
+      setGeneratedVideos(p => [displayUrl, ...p.filter(x => x !== STUDIO_VIDEO_GENERATING)]);
+      setGenerating(false);
+      setVideoStatus("Video completato ✓");
+      setTimeout(() => setVideoStatus(""), 3000);
     } catch (e) {
       console.error("generateVideo error:", e);
       setGenerating(false);
