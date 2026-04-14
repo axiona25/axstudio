@@ -4129,7 +4129,7 @@ const VideoThumbnailGrid = React.memo(function VideoThumbnailGrid({ videos, cfg,
                     <VideoGenProgressOverlay />
                   </>
                 )}
-                <span style={{ fontSize: 8, fontWeight: 600, color: AX.muted, zIndex: 1, letterSpacing: "0.06em", textTransform: "uppercase" }}>{isClipGen ? "In attesa" : "AXSTUDIO · GPU"}</span>
+                <span style={{ fontSize: 8, fontWeight: 600, color: AX.muted, zIndex: 1, letterSpacing: "0.06em", textTransform: "uppercase" }}>{isClipGen ? "In attesa" : "AXSTUDIO"}</span>
               </div>
             ) : (
               <video src={vid} muted playsInline preload="metadata" style={{ width: "100%", height: "100%", objectFit: "cover", objectPosition: THUMB_COVER_POSITION, display: "block", pointerEvents: "none" }} />
@@ -4562,7 +4562,7 @@ const StudioResultsSidebar = React.memo(function StudioResultsSidebar({ kind, im
                       <HiBolt size={22} style={{ color: AX.electric, opacity: 0.95, zIndex: 1, filter: "drop-shadow(0 0 8px rgba(79,216,255,0.5))" }} />
                       <div style={{ width: 26, height: 26, border: "2px solid rgba(41,182,255,0.2)", borderTopColor: AX.electric, borderRadius: "50%", animation: "spin 0.85s linear infinite", zIndex: 1 }} />
                       <span style={{ fontSize: 9, fontWeight: 800, color: AX.electric, letterSpacing: "0.12em", textTransform: "uppercase", zIndex: 1, textAlign: "center", padding: "0 6px", lineHeight: 1.35, textShadow: "0 0 12px rgba(79,216,255,0.35)" }}>Creazione in corso</span>
-                      <span style={{ fontSize: 8, fontWeight: 600, color: AX.muted, zIndex: 1, letterSpacing: "0.06em", textTransform: "uppercase" }}>AXSTUDIO · GPU</span>
+                      <span style={{ fontSize: 8, fontWeight: 600, color: AX.muted, zIndex: 1, letterSpacing: "0.06em", textTransform: "uppercase" }}>AXSTUDIO</span>
                     </div>
                   ) : isSwap ? (
                     <div style={{ width: "100%", height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", background: "linear-gradient(135deg, rgba(41,182,255,0.12), rgba(123,77,255,0.1))", gap: 6 }}>
@@ -5158,47 +5158,22 @@ export default function AIStudio() {
 
   const handleCharCardClick = (c) => {
     const isSelected = selectedCharacterIds.has(c.id);
-    const imgCount = myImagesPickedUrl ? 1 : 0;
     if (isSelected) {
-      setSelectedCharacterIds(prev => { const n = new Set(prev); n.delete(c.id); return n; });
-      if (selectedCharacter?.id === c.id) {
-        const remaining = [...selectedCharacterIds].filter(id => id !== c.id);
-        const nextChar = remaining.length > 0 ? currentProject.characters.find(ch => ch.id === remaining[0]) : null;
-        setSelectedCharacter(nextChar || null);
-      }
+      setSelectedCharacterIds(new Set());
+      setSelectedCharacter(null);
     } else {
-      const currentCount = selectedCharacterIds.size + imgCount;
-      if (currentCount >= sceneMode) {
-        if (sceneMode === 1) {
-          setSelectedCharacterIds(new Set([c.id]));
-          setMyImagesPickedUrl(null);
-          setProjectSourceImageUrl(null);
-          setProjectVideoSourceImg(null);
-        } else {
-          return;
-        }
-      } else {
-        setSelectedCharacterIds(prev => new Set(prev).add(c.id));
-      }
+      setSelectedCharacterIds(new Set([c.id]));
       setSelectedCharacter(c);
       updateProject({ ...currentProject, heroCharacterId: c.id });
+      setMyImagesPickedUrl(null);
+      setProjectSourceImageUrl(null);
+      setProjectVideoSourceImg(null);
     }
   };
 
   const handleMyImageCardClick = () => {
-    if (myImagesPickedUrl) {
-      setMyImagesModalOpen(true);
-      return;
-    }
-    const charCount = selectedCharacterIds.size;
-    if (charCount >= sceneMode) {
-      if (sceneMode === 1) {
-        setSelectedCharacterIds(new Set());
-        setSelectedCharacter(null);
-      } else {
-        return;
-      }
-    }
+    setSelectedCharacterIds(new Set());
+    setSelectedCharacter(null);
     setMyImagesModalOpen(true);
   };
 
@@ -5909,12 +5884,12 @@ export default function AIStudio() {
         {view === "project" && currentProject && (
           <div style={{ width: "100%", display: "flex", flexDirection: "column", flexShrink: 0, paddingBottom: 8 }}>
           {/* Characters */}
-          <div style={{ marginBottom: studioSplitView ? 12 : 28, flexShrink: 0 }}>
-            <div style={{ display: "flex", alignItems: "center", marginBottom: studioSplitView ? 10 : 14, gap: 12 }}>
-              <h2 style={{ fontFamily: "'Playfair Display', serif", fontSize: studioSplitView ? 22 : 26, fontWeight: 600, color: AX.text, margin: 0, display: "flex", alignItems: "center", gap: 10 }}><HiUserGroup size={studioSplitView ? 22 : 26} style={{ color: AX.electric, flexShrink: 0 }} /> Personaggi</h2>
-            </div>
-            <div style={{ display: "flex", gap: 10, flexWrap: "nowrap" }}>
-              {(() => {
+          <div style={{ marginBottom: studioSplitView ? 12 : 28, flexShrink: 0, display: "flex", gap: 10, flexWrap: "nowrap", alignItems: "flex-start" }}>
+            {/* Left group: Scegli Attori */}
+            <div style={{ flexShrink: 0, display: "flex", flexDirection: "column" }}>
+              <h2 style={{ fontFamily: "'Playfair Display', serif", fontSize: studioSplitView ? 22 : 26, fontWeight: 600, color: AX.text, margin: 0, marginBottom: studioSplitView ? 10 : 14 }}>Scegli Attori</h2>
+              <div style={{ display: "flex", gap: 10, flexWrap: "nowrap" }}>
+                {(() => {
                 const chars = currentProject.characters.slice(0, 3);
                 const placeholders = Math.max(0, 3 - chars.length);
                 return (<>
@@ -6005,43 +5980,53 @@ export default function AIStudio() {
                       </>
                     )}
                   </div>
-                  {/* Spacer sinistro + Separatore + Spacer destro */}
-                  <div style={{ flex: 1, minWidth: 4 }} />
-                  <div style={{ width: 1, alignSelf: "stretch", background: AX.border, flexShrink: 0 }} />
-                  <div style={{ flex: 1, minWidth: 4 }} />
-                  {/* Scene mode cards */}
+                </>);
+              })()}
+              </div>
+            </div>
+            {/* Spacer + Separatore + Spacer */}
+              <div style={{ flex: 1, minWidth: 4, alignSelf: "flex-end" }} />
+              <div style={{ width: 1, height: 132, background: AX.border, flexShrink: 0, alignSelf: "flex-end" }} />
+              <div style={{ flex: 1, minWidth: 4, alignSelf: "flex-end" }} />
+              {/* Right group: Numero di Attori */}
+              <div style={{ flexShrink: 0, display: "flex", flexDirection: "column" }}>
+                <h2 style={{ fontFamily: "'Playfair Display', serif", fontSize: studioSplitView ? 22 : 26, fontWeight: 600, color: AX.text, margin: 0, marginBottom: studioSplitView ? 10 : 14, whiteSpace: "nowrap" }}>Numero di Attori</h2>
+                <div style={{ display: "flex", gap: 10 }}>
                   {[
-                    { label: "1 Personaggio", color: "#f59e0b", border: "rgba(245,158,11,0.35)", Ic: HiUser, count: 1 },
-                    { label: "2 Personaggi", color: "#10b981", border: "rgba(16,185,129,0.35)", Ic: HiUserGroup, count: 2 },
-                    { label: "3 Personaggi", color: "#3b82f6", border: "rgba(59,130,246,0.35)", Ic: HiUserGroup, count: 3 },
+                    { label: "1 Attore", color: "#f59e0b", border: "rgba(245,158,11,0.35)", Ic: HiUser, count: 1 },
+                    { label: "2 Attori", color: "#10b981", border: "rgba(16,185,129,0.35)", Ic: HiUserGroup, count: 2 },
+                    { label: "3 Attori", color: "#3b82f6", border: "rgba(59,130,246,0.35)", Ic: HiUserGroup, count: 3 },
                   ].map(sc => {
                     const isActive = sceneMode === sc.count;
+                    const isDisabled = sc.count > 1;
                     return (
                     <div key={sc.label}
-                      onClick={() => setSceneMode(sc.count)}
+                      onClick={() => { if (!isDisabled) setSceneMode(sc.count); }}
+                      title={isDisabled ? "Coming soon" : sc.label}
                       style={{
-                        width: 110, padding: 10, borderRadius: 12, cursor: "pointer",
+                        width: 110, padding: 10, borderRadius: 12,
+                        cursor: isDisabled ? "not-allowed" : "pointer",
+                        opacity: isDisabled ? 0.35 : 1,
                         background: isActive ? `${sc.color}18` : AX.surface,
-                        border: isActive ? `2px solid ${sc.color}` : `1px dashed ${sc.border}`,
+                        border: isActive ? `2px solid ${sc.color}` : `1px dashed ${isDisabled ? AX.border : sc.border}`,
                         textAlign: "center", flexShrink: 0,
                         display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 8,
                         transition: "all 0.15s", minHeight: 110,
                         boxShadow: isActive ? `0 0 0 1px ${sc.color}44, 0 4px 16px ${sc.color}22` : "none",
                       }}
-                      onMouseEnter={e => { if (!isActive) { e.currentTarget.style.borderColor = sc.color; e.currentTarget.style.background = `${sc.color}12`; } }}
-                      onMouseLeave={e => { if (!isActive) { e.currentTarget.style.borderColor = sc.border; e.currentTarget.style.background = AX.surface; } }}
+                      onMouseEnter={e => { if (!isActive && !isDisabled) { e.currentTarget.style.borderColor = sc.color; e.currentTarget.style.background = `${sc.color}12`; } }}
+                      onMouseLeave={e => { if (!isActive && !isDisabled) { e.currentTarget.style.borderColor = sc.border; e.currentTarget.style.background = AX.surface; } }}
                       role="button"
                     >
                       <div style={{ width: 40, height: 40, borderRadius: "50%", background: isActive ? `${sc.color}30` : `${sc.color}1F`, border: isActive ? `2px solid ${sc.color}` : `1px dashed ${sc.color}55`, display: "flex", alignItems: "center", justifyContent: "center", position: "relative" }}>
                         <sc.Ic size={sc.count === 1 ? 18 : 20} style={{ color: sc.color }} />
                         {sc.count === 3 && <span style={{ position: "absolute", top: -2, right: -4, fontSize: 9, fontWeight: 800, color: sc.color, background: isActive ? `${sc.color}18` : AX.surface, borderRadius: 4, padding: "0 2px", lineHeight: 1 }}>+</span>}
                       </div>
-                      <span style={{ fontSize: 10, fontWeight: isActive ? 800 : 600, color: sc.color, lineHeight: 1.25 }}>{sc.label}</span>
+                      <span style={{ fontSize: 10, fontWeight: isActive ? 800 : 600, color: isDisabled ? AX.muted : sc.color, lineHeight: 1.25 }}>{sc.label}</span>
                     </div>);
                   })}
-                </>);
-              })()}
-            </div>
+                </div>
+              </div>
           </div>
 
           {/* Character Creator Modal */}
