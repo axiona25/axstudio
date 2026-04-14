@@ -4129,7 +4129,7 @@ const VideoThumbnailGrid = React.memo(function VideoThumbnailGrid({ videos, cfg,
 });
 
 /** Sidebar fissa a destra: miniature sessione (immagini o video) con densità 2/3 colonne. */
-const StudioResultsSidebar = React.memo(function StudioResultsSidebar({ kind, images, videos, density, onDensityChange, onImagePreview, onVideoPreview, onRemoveImage, onRemoveVideo, onImageRecallPrompt, onVideoRecallPrompt, videoSidebarMode, onVideoSidebarModeChange, videoHistory, expandedScreenplays, onExpandedScreenplaysChange, isProjectContext }) {
+const StudioResultsSidebar = React.memo(function StudioResultsSidebar({ kind, images, videos, density, onDensityChange, onImagePreview, onVideoPreview, onRemoveImage, onRemoveVideo, onImageRecallPrompt, onVideoRecallPrompt, videoSidebarMode, onVideoSidebarModeChange, videoHistory, expandedScreenplays, onExpandedScreenplaysChange, isProjectContext, onBulkDelete }) {
   const cfg = STUDIO_SIDEBAR_DENSITY[density] || STUDIO_SIDEBAR_DENSITY.medium;
   const nImg = images?.length ?? 0;
   const isVideo = kind !== "image";
@@ -4223,17 +4223,22 @@ const StudioResultsSidebar = React.memo(function StudioResultsSidebar({ kind, im
       ? (kind === "image" ? "Eliminare l'immagine selezionata?" : "Eliminare il video selezionato?")
       : `Eliminare ${selectedItems.size} ${kind === "image" ? "immagini" : "video"} selezionat${kind === "image" ? "e" : "i"}?`;
     if (!window.confirm(msg)) return;
-    const removeFn = kind === "image" ? onRemoveImage : onRemoveVideo;
-    if (!removeFn) return;
-    const itemList = kind === "image" ? (images || []) : (singleVideos || []);
+
     const toDelete = [...selectedItems];
-    for (const url of toDelete) {
-      const idx = itemList.indexOf(url);
-      await removeFn(idx >= 0 ? idx : 0, url);
+    if (onBulkDelete) {
+      await onBulkDelete(toDelete);
+    } else {
+      const removeFn = kind === "image" ? onRemoveImage : onRemoveVideo;
+      if (!removeFn) return;
+      const itemList = kind === "image" ? (images || []) : (singleVideos || []);
+      for (const url of toDelete) {
+        const idx = itemList.indexOf(url);
+        await removeFn(idx >= 0 ? idx : 0, url);
+      }
     }
     setSelectedItems(new Set());
     setSelectionMode(false);
-  }, [selectedItems, kind, images, singleVideos, onRemoveImage, onRemoveVideo]);
+  }, [selectedItems, kind, images, singleVideos, onRemoveImage, onRemoveVideo, onBulkDelete]);
 
   return (
     <aside
@@ -4664,8 +4669,8 @@ export default function AIStudio() {
   const [storageReady_voices, setStorageReady_voices] = useState(false);
 
   const [history, setHistory] = useState([]);
-  /** Home — galleria recenti: tutti | solo immagini | solo video */
-  const [homeGalleryFilter, setHomeGalleryFilter] = useState("all");
+  /** Home — galleria recenti: immagini | video | sceneggiature */
+  const [homeGalleryFilter, setHomeGalleryFilter] = useState("image");
   const [logoBroken, setLogoBroken] = useState(false);
   /** File img/vid su disco non ancora in history.json (Electron) */
   const [diskMediaEntries, setDiskMediaEntries] = useState([]);
@@ -4912,6 +4917,61 @@ export default function AIStudio() {
     setGenPreviewVideo(prev => (prev === item ? null : prev));
   }, []);
 
+  const handleBulkDelete = useCallback(async (urls) => {
+    if (!urls?.length) return;
+    const filePaths = [];
+    const blobUrls = [];
+    for (const url of urls) {
+      const fp = filePathFromAxstudioMediaUrl(url);
+      if (fp) filePaths.push(fp);
+      else if (typeof url === "string" && url.startsWith("blob:")) blobUrls.push(url);
+    }
+    for (const fp of filePaths) {
+      try {
+        if (isElectron && window.electronAPI?.deleteFile) {
+          await window.electronAPI.deleteFile(fp);
+        }
+      } catch (e) {
+        console.error("[BULK DELETE] Failed to delete file:", fp, e);
+      }
+    }
+    for (const u of blobUrls) {
+      try { URL.revokeObjectURL(u); } catch { /* noop */ }
+    }
+    const deletedPathSet = new Set(filePaths);
+    const deletedUrlSet = new Set(urls);
+    setHistory(h => h.filter(x => !x.filePath || !deletedPathSet.has(x.filePath)));
+    setDiskMediaEntries(d => d.filter(x => !x.filePath || !deletedPathSet.has(x.filePath)));
+    setGeneratedImages(p => p.filter(x => {
+      if (x === STUDIO_IMAGE_GENERATING || x === "FACE_SWAP_PENDING") return true;
+      if (deletedUrlSet.has(x)) return false;
+      const xfp = filePathFromAxstudioMediaUrl(x);
+      return !xfp || !deletedPathSet.has(xfp);
+    }));
+    setGeneratedVideos(p => p.filter(x => {
+      if (x === STUDIO_VIDEO_GENERATING || isClipPlaceholder(x)) return true;
+      if (deletedUrlSet.has(x)) return false;
+      const xfp = filePathFromAxstudioMediaUrl(x);
+      return !xfp || !deletedPathSet.has(xfp);
+    }));
+    setGenPreviewImg(prev => {
+      if (!prev) return prev;
+      if (deletedUrlSet.has(prev)) return null;
+      const pfp = filePathFromAxstudioMediaUrl(prev);
+      return pfp && deletedPathSet.has(pfp) ? null : prev;
+    });
+    setGenPreviewVideo(prev => {
+      if (!prev) return prev;
+      if (deletedUrlSet.has(prev)) return null;
+      const pfp = filePathFromAxstudioMediaUrl(prev);
+      return pfp && deletedPathSet.has(pfp) ? null : prev;
+    });
+    setGalleryPreviewEntry(prev => {
+      if (!prev?.filePath) return prev;
+      return deletedPathSet.has(prev.filePath) ? null : prev;
+    });
+  }, []);
+
   // ── Project CRUD ──
   const createProject = (name, description) => {
     const proj = { id: Date.now().toString(), name, description, characters: [], scenes: [], createdAt: new Date().toISOString() };
@@ -4921,7 +4981,61 @@ export default function AIStudio() {
     setView("project");
   };
 
-  const deleteProject = (id) => {
+  const deleteProject = async (id) => {
+    const proj = projects.find(x => x.id === id);
+    const projName = proj?.name || "questo progetto";
+    const projectEntries = history.filter(h => h.projectId === id && h.filePath);
+    const nFiles = projectEntries.length;
+    const msg = nFiles > 0
+      ? `Eliminare "${projName}" e tutti i ${nFiles} file generati al suo interno?\n\nI file verranno cancellati definitivamente dal disco.`
+      : `Eliminare "${projName}"?`;
+    if (!window.confirm(msg)) return;
+    const filePaths = projectEntries.map(h => h.filePath).filter(Boolean);
+
+    for (const fp of filePaths) {
+      try {
+        if (isElectron && window.electronAPI?.deleteFile) {
+          await window.electronAPI.deleteFile(fp);
+        }
+      } catch (e) {
+        console.error("[DELETE PROJECT] Failed to delete file:", fp, e);
+      }
+    }
+
+    const deletedPathSet = new Set(filePaths);
+    const deletedUrlSet = new Set(filePaths.map(fp => mediaFileUrl(fp)).filter(Boolean));
+
+    setHistory(h => h.filter(x => x.projectId !== id));
+    setDiskMediaEntries(d => d.filter(x => !x.filePath || !deletedPathSet.has(x.filePath)));
+    setGeneratedImages(p => p.filter(x => {
+      if (x === STUDIO_IMAGE_GENERATING || x === "FACE_SWAP_PENDING") return true;
+      if (deletedUrlSet.has(x)) return false;
+      const xfp = filePathFromAxstudioMediaUrl(x);
+      return !xfp || !deletedPathSet.has(xfp);
+    }));
+    setGeneratedVideos(p => p.filter(x => {
+      if (x === STUDIO_VIDEO_GENERATING || isClipPlaceholder(x)) return true;
+      if (deletedUrlSet.has(x)) return false;
+      const xfp = filePathFromAxstudioMediaUrl(x);
+      return !xfp || !deletedPathSet.has(xfp);
+    }));
+    setGenPreviewImg(prev => {
+      if (!prev) return prev;
+      if (deletedUrlSet.has(prev)) return null;
+      const pfp = filePathFromAxstudioMediaUrl(prev);
+      return pfp && deletedPathSet.has(pfp) ? null : prev;
+    });
+    setGenPreviewVideo(prev => {
+      if (!prev) return prev;
+      if (deletedUrlSet.has(prev)) return null;
+      const pfp = filePathFromAxstudioMediaUrl(prev);
+      return pfp && deletedPathSet.has(pfp) ? null : prev;
+    });
+    setGalleryPreviewEntry(prev => {
+      if (!prev?.filePath) return prev;
+      return deletedPathSet.has(prev.filePath) ? null : prev;
+    });
+
     setProjects(p => p.filter(x => x.id !== id));
     if (currentProject?.id === id) { setCurrentProject(null); setView("home"); }
   };
@@ -5011,14 +5125,72 @@ export default function AIStudio() {
     () => history.filter(h => h.type === "image" || h.type === "video"),
     [history],
   );
+  const screenplayProjectIds = useMemo(() => {
+    const ids = new Set();
+    for (const h of history) { if (h.params?.screenplayId && h.projectId) ids.add(h.projectId); }
+    return ids;
+  }, [history]);
+
   const homeRecentItems = useMemo(() => {
     const knownPaths = new Set(mediaHistory.map(h => h.filePath).filter(Boolean));
     const fromDisk = diskMediaEntries.filter(e => e.filePath && !knownPaths.has(e.filePath));
     let list = [...mediaHistory, ...fromDisk];
-    if (homeGalleryFilter === "image") list = list.filter(h => h.type === "image");
-    if (homeGalleryFilter === "video") list = list.filter(h => h.type === "video");
+    if (homeGalleryFilter === "image") list = list.filter(h => h.type === "image" && !h.params?.screenplayId && !screenplayProjectIds.has(h.projectId));
+    else if (homeGalleryFilter === "video") list = list.filter(h => h.type === "video" && !h.params?.screenplayId && !screenplayProjectIds.has(h.projectId));
     return [...list].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
-  }, [mediaHistory, homeGalleryFilter, diskMediaEntries]);
+  }, [mediaHistory, homeGalleryFilter, diskMediaEntries, screenplayProjectIds]);
+
+  const [homeExpandedSp, setHomeExpandedSp] = useState(new Set());
+  const homeScreenplayGroups = useMemo(() => {
+    const byId = new Map();
+    const assignedEntries = new Set();
+    for (const h of history) {
+      const spId = h.params?.screenplayId;
+      if (!spId || !h.filePath) continue;
+      if (!byId.has(spId)) {
+        byId.set(spId, {
+          id: spId,
+          projectId: h.projectId || null,
+          name: h.params?.screenplayName || "Sceneggiatura",
+          summary: h.params?.screenplaySummary || "",
+          media: [],
+          lastUpdated: h.createdAt,
+        });
+      }
+      const g = byId.get(spId);
+      const url = mediaFileUrl(h.filePath);
+      if (url) { g.media.push({ url, type: h.type, createdAt: h.createdAt, clipIndex: h.params?.clipIndex ?? null, prompt: h.prompt || "", entry: h }); assignedEntries.add(h.id); }
+      const t = h.createdAt ? new Date(h.createdAt).getTime() : 0;
+      if (t > new Date(g.lastUpdated || 0).getTime()) g.lastUpdated = h.createdAt;
+    }
+    for (const h of history) {
+      if (!h.filePath || assignedEntries.has(h.id) || h.params?.screenplayId) continue;
+      if (!h.projectId || !screenplayProjectIds.has(h.projectId)) continue;
+      let targetGroup = null;
+      for (const g of byId.values()) {
+        if (g.projectId === h.projectId) { targetGroup = g; break; }
+      }
+      if (!targetGroup) {
+        const projName = projects.find(p => p.id === h.projectId)?.name || "Progetto";
+        const fakeSpId = `proj-${h.projectId}`;
+        targetGroup = { id: fakeSpId, projectId: h.projectId, name: projName, summary: "", media: [], lastUpdated: h.createdAt };
+        byId.set(fakeSpId, targetGroup);
+      }
+      const url = mediaFileUrl(h.filePath);
+      if (url) { targetGroup.media.push({ url, type: h.type, createdAt: h.createdAt, clipIndex: null, prompt: h.prompt || "", entry: h }); assignedEntries.add(h.id); }
+      const t = h.createdAt ? new Date(h.createdAt).getTime() : 0;
+      if (t > new Date(targetGroup.lastUpdated || 0).getTime()) targetGroup.lastUpdated = h.createdAt;
+    }
+    return [...byId.values()]
+      .map(g => {
+        g.media.sort((a, b) => {
+          if (a.clipIndex != null && b.clipIndex != null) return a.clipIndex - b.clipIndex;
+          return new Date(a.createdAt || 0) - new Date(b.createdAt || 0);
+        });
+        return g;
+      })
+      .sort((a, b) => new Date(b.lastUpdated || 0) - new Date(a.lastUpdated || 0));
+  }, [history, screenplayProjectIds, projects]);
 
   /** Catalogo globale (storico + disco), nessun filtro progetto — usato per Home e viste libere. */
   const homeRecentCatalogBase = useMemo(() => {
@@ -5346,9 +5518,9 @@ export default function AIStudio() {
                 </div>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
                   {[
-                    { id: "all", label: "Tutti" },
                     { id: "image", label: "Immagini" },
                     { id: "video", label: "Video" },
+                    { id: "screenplay", label: "Sceneggiature" },
                   ].map(f => (
                     <button key={f.id} type="button" onClick={() => setHomeGalleryFilter(f.id)} style={{
                       padding: "8px 14px", borderRadius: 999, fontSize: 12, fontWeight: 600, cursor: "pointer", border: `1px solid ${homeGalleryFilter === f.id ? AX.violet : AX.border}`,
@@ -5360,12 +5532,117 @@ export default function AIStudio() {
             </div>
           </div>
 
-          {homeRecentItems.length === 0 ? (
+          {homeGalleryFilter === "screenplay" ? (
+            homeScreenplayGroups.length === 0 ? (
+              <div style={{ flex: 1, minHeight: 0, display: "flex", alignItems: "center", justifyContent: "center", textAlign: "center", padding: "32px 24px", borderRadius: 18, border: `1px dashed ${AX.border}`, background: "rgba(26,31,43,0.5)", color: AX.muted }}>
+                <div>
+                  <div style={{ display: "flex", justifyContent: "center", marginBottom: 12, opacity: 0.9, color: AX.text2 }}><HiClipboardDocumentList size={44} /></div>
+                  <p style={{ margin: 0, fontSize: 15, fontWeight: 600, color: AX.text2 }}>Nessuna sceneggiatura</p>
+                  <p style={{ margin: "10px auto 0", fontSize: 13, maxWidth: 420, lineHeight: 1.55 }}>Genera video da una sceneggiatura per vederli raggruppati qui.</p>
+                </div>
+              </div>
+            ) : (
+              <div style={{ flex: 1, minHeight: 0, overflowY: "auto", overflowX: "hidden", padding: "2px 4px 8px 0", display: "flex", flexDirection: "column", gap: 14 }}>
+                {homeScreenplayGroups.map(group => {
+                  const isOpen = homeExpandedSp.has(group.id);
+                  const coverItem = group.media[0];
+                  const nClips = group.media.length;
+                  const nVid = group.media.filter(m => m.type === "video").length;
+                  const nImg = group.media.filter(m => m.type === "image").length;
+                  const dateLabel = group.lastUpdated
+                    ? new Date(group.lastUpdated).toLocaleDateString("it-IT", { day: "numeric", month: "short", year: "numeric" })
+                    : "";
+                  const statsLabel = [nVid > 0 && `${nVid} video`, nImg > 0 && `${nImg} img`].filter(Boolean).join(" · ");
+                  return (
+                    <div key={group.id} style={{ borderRadius: 16, border: `1px solid ${isOpen ? "rgba(123,77,255,0.35)" : AX.border}`, background: isOpen ? "rgba(123,77,255,0.04)" : AX.surface, overflow: "hidden", transition: "border-color 0.2s, background 0.2s" }}>
+                      <button
+                        type="button"
+                        onClick={() => setHomeExpandedSp(prev => { const next = new Set(prev); if (next.has(group.id)) next.delete(group.id); else next.add(group.id); return next; })}
+                        style={{ width: "100%", display: "flex", alignItems: "center", gap: 14, padding: "14px 16px", border: "none", background: "transparent", cursor: "pointer", textAlign: "left" }}
+                      >
+                        {coverItem ? (
+                          coverItem.type === "video" ? (
+                            <video src={coverItem.url} muted playsInline preload="metadata" style={{ width: 56, height: 36, objectFit: "cover", objectPosition: THUMB_COVER_POSITION, borderRadius: 8, flexShrink: 0, background: AX.bg, display: "block", pointerEvents: "none" }} />
+                          ) : (
+                            <img alt="" src={coverItem.url} style={{ width: 56, height: 36, objectFit: "cover", objectPosition: THUMB_COVER_POSITION, borderRadius: 8, flexShrink: 0, background: AX.bg, display: "block" }} />
+                          )
+                        ) : (
+                          <div style={{ width: 56, height: 36, borderRadius: 8, flexShrink: 0, background: AX.bg, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                            <HiClipboardDocumentList size={18} style={{ color: AX.muted }} />
+                          </div>
+                        )}
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: 14, fontWeight: 700, color: AX.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                            {group.name}{dateLabel ? ` — ${dateLabel}` : ""}
+                          </div>
+                          {group.summary && (
+                            <div style={{ fontSize: 11, color: AX.text2, marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", fontStyle: "italic" }}>
+                              {group.summary}
+                            </div>
+                          )}
+                          <div style={{ fontSize: 11, color: AX.muted, marginTop: 3 }}>
+                            {nClips} clip{statsLabel ? ` — ${statsLabel}` : ""}
+                          </div>
+                        </div>
+                        <HiChevronRight
+                          size={18}
+                          style={{ color: AX.muted, flexShrink: 0, transform: isOpen ? "rotate(90deg)" : "rotate(0deg)", transition: "transform 0.2s ease" }}
+                        />
+                      </button>
+                      {isOpen && group.media.length > 0 && (
+                        <div style={{ padding: "4px 16px 14px" }}>
+                          <div style={{ display: "flex", gap: 10, overflowX: "auto", overflowY: "hidden", padding: "4px 0 6px" }} className="ax-hide-scrollbar">
+                            {group.media.map((m, mi) => (
+                              <div
+                                key={m.url + mi}
+                                style={{ position: "relative", flexShrink: 0, width: galleryThumbSize, minWidth: 100 }}
+                              >
+                                <button
+                                  type="button"
+                                  title={m.prompt || ""}
+                                  onClick={() => m.entry && setGalleryPreviewEntry(m.entry)}
+                                  style={{
+                                    position: "relative", width: "100%", aspectRatio: "1", borderRadius: 10, overflow: "hidden",
+                                    border: `1px solid ${AX.border}`, background: AX.bg, padding: 0, cursor: "pointer", display: "block",
+                                    transition: "transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease",
+                                  }}
+                                  onMouseEnter={e => { e.currentTarget.style.borderColor = AX.violet; e.currentTarget.style.transform = "scale(1.03)"; e.currentTarget.style.boxShadow = "0 8px 24px rgba(0,0,0,0.35)"; }}
+                                  onMouseLeave={e => { e.currentTarget.style.borderColor = AX.border; e.currentTarget.style.transform = "scale(1)"; e.currentTarget.style.boxShadow = "none"; }}
+                                >
+                                  {m.type === "video" ? (
+                                    <video src={m.url} muted playsInline preload="metadata" style={{ width: "100%", height: "100%", objectFit: "cover", objectPosition: THUMB_COVER_POSITION, pointerEvents: "none" }}
+                                      onLoadedData={e => { try { const v = e.currentTarget; if (v.duration && !Number.isNaN(v.duration)) v.currentTime = Math.min(0.05, v.duration * 0.01); } catch (_) { /* noop */ } }}
+                                    />
+                                  ) : (
+                                    <img alt="" src={m.url} loading="lazy" decoding="async" style={{ width: "100%", height: "100%", objectFit: "cover", objectPosition: THUMB_COVER_POSITION }} />
+                                  )}
+                                  <span style={{
+                                    position: "absolute", top: 5, left: 5, fontSize: 8, fontWeight: 700, padding: "2px 5px", borderRadius: 5,
+                                    background: m.type === "video" ? "rgba(123,77,255,0.9)" : "rgba(41,182,255,0.9)", color: AX.bg,
+                                  }}>{m.type === "video" ? "VIDEO" : "IMG"}</span>
+                                  {m.clipIndex != null && (
+                                    <span style={{
+                                      position: "absolute", bottom: 5, right: 5, fontSize: 8, fontWeight: 700, padding: "2px 6px", borderRadius: 5,
+                                      background: "rgba(0,0,0,0.7)", color: AX.text2,
+                                    }}>#{m.clipIndex + 1}</span>
+                                  )}
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )
+          ) : homeRecentItems.length === 0 ? (
             <div style={{ flex: 1, minHeight: 0, display: "flex", alignItems: "center", justifyContent: "center", textAlign: "center", padding: "32px 24px", borderRadius: 18, border: `1px dashed ${AX.border}`, background: "rgba(26,31,43,0.5)", color: AX.muted }}>
               <div>
-                <div style={{ display: "flex", justifyContent: "center", marginBottom: 12, opacity: 0.9, color: AX.text2 }}><HiPhoto size={44} /></div>
-                <p style={{ margin: 0, fontSize: 15, fontWeight: 600, color: AX.text2 }}>Nessuna generazione recente</p>
-                <p style={{ margin: "10px auto 0", fontSize: 13, maxWidth: 420, lineHeight: 1.55 }}>Genera e salva in app desktop: qui vedrai il catalogo di tutte le miniature (immagini e video sul disco).</p>
+                <div style={{ display: "flex", justifyContent: "center", marginBottom: 12, opacity: 0.9, color: AX.text2 }}>{homeGalleryFilter === "video" ? <HiFilm size={44} /> : <HiPhoto size={44} />}</div>
+                <p style={{ margin: 0, fontSize: 15, fontWeight: 600, color: AX.text2 }}>{homeGalleryFilter === "video" ? "Nessun video" : "Nessuna immagine"}</p>
+                <p style={{ margin: "10px auto 0", fontSize: 13, maxWidth: 420, lineHeight: 1.55 }}>Genera e salva in app desktop: qui vedrai il catalogo di tutte le miniature sul disco.</p>
               </div>
             </div>
           ) : (
@@ -5383,7 +5660,7 @@ export default function AIStudio() {
               }}
             >
               {homeRecentItems.map(h => (
-                <HomeGalleryTile key={h.id} entry={h} onOpenPreview={setGalleryPreviewEntry} />
+                <HomeGalleryTile key={h.id} entry={h} onOpenPreview={setGalleryPreviewEntry} onRequestDelete={setGalleryDeleteTarget} />
               ))}
             </div>
           )}
@@ -5956,6 +6233,7 @@ export default function AIStudio() {
             expandedScreenplays={expandedScreenplays}
             onExpandedScreenplaysChange={setExpandedScreenplays}
             isProjectContext={isProjectDetail}
+            onBulkDelete={handleBulkDelete}
           />
         ) : null}
       </main>
@@ -6427,17 +6705,17 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
             .filter(Boolean)
             .join(", ");
           const prefix = [scenePrefixForAI(), styleContext ? `Style: ${styleContext}` : ""].filter(Boolean).join(" | ");
-          const out = await translatePrompt(prompt.trim(), prefix);
+          const out = await translatePrompt(currentIt, prefix);
           if (out?.prompt_en) {
             resolvedEn = out.prompt_en;
-            preparedEnRef.current = { en: out.prompt_en, itSource: prompt.trim() };
+            preparedEnRef.current = { en: out.prompt_en, itSource: currentIt };
             enIsStaleRef.current = false;
           }
         } catch (silentErr) {
           console.error("[PROMPT] Traduzione silente fallita:", silentErr.message);
         }
         // Fallback estremo: se traduzione fallisce usa IT grezzo
-        if (!resolvedEn) resolvedEn = prompt.trim();
+        if (!resolvedEn) resolvedEn = currentIt;
       }
 
       // Determina aspect_ratio
