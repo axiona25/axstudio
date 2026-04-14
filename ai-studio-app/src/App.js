@@ -7110,12 +7110,21 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
       if (!faceDataUri) throw new Error("Impossibile caricare la foto del personaggio");
       const faceUrl = await uploadBase64ToFal(faceDataUri);
 
-      const swapResult = await falRequest("fal-ai/face-swap", {
+      const swap1 = await falRequest("fal-ai/face-swap", {
         base_image_url: sourceUrl,
         swap_image_url: faceUrl,
       });
-      const imgUrl = swapResult?.image?.url || swapResult?.images?.[0]?.url || null;
+      let imgUrl = swap1?.image?.url || swap1?.images?.[0]?.url || null;
       if (!imgUrl) throw new Error("Nessun risultato dal face swap");
+
+      if (imgUrl) {
+        const swap2 = await falRequest("fal-ai/face-swap", {
+          base_image_url: imgUrl,
+          swap_image_url: faceUrl,
+        });
+        if (swap2?.image?.url) imgUrl = swap2.image.url;
+        else if (swap2?.images?.[0]?.url) imgUrl = swap2.images[0].url;
+      }
 
       setGeneratedImages(p => [imgUrl, ...p.filter(x => x !== STUDIO_IMAGE_GENERATING)]);
       setImageStatus("✅ Face swap completato!");
@@ -7661,13 +7670,19 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
             const faceDataUri = await characterImageToDataUri(charImg).catch(() => null);
             if (faceDataUri) {
               const faceUrl = await uploadBase64ToFal(faceDataUri);
-              const swapResult = await falRequest("fal-ai/face-swap", {
+              const swap1 = await falRequest("fal-ai/face-swap", {
                 base_image_url: imgUrl,
                 swap_image_url: faceUrl,
               });
-              const swappedUrl = swapResult?.image?.url || swapResult?.images?.[0]?.url || null;
+              let swappedUrl = swap1?.image?.url || swap1?.images?.[0]?.url || null;
               if (swappedUrl) {
-                console.log("[UPDATE FACE-SWAP] Applied:", swappedUrl.slice(0, 80));
+                const swap2 = await falRequest("fal-ai/face-swap", {
+                  base_image_url: swappedUrl,
+                  swap_image_url: faceUrl,
+                });
+                if (swap2?.image?.url) swappedUrl = swap2.image.url;
+                else if (swap2?.images?.[0]?.url) swappedUrl = swap2.images[0].url;
+                console.log("[UPDATE FACE-SWAP] Applied (2-pass):", swappedUrl.slice(0, 80));
                 imgUrl = swappedUrl;
               } else {
                 console.warn("[UPDATE FACE-SWAP] No image URL in response, using Kontext result");
@@ -7759,13 +7774,19 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
             const faceDataUri = await characterImageToDataUri(charImg).catch(() => null);
             if (faceDataUri) {
               const faceUrl = await uploadBase64ToFal(faceDataUri);
-              const swapResult = await falRequest("fal-ai/face-swap", {
+              const swap1 = await falRequest("fal-ai/face-swap", {
                 base_image_url: imgUrl,
                 swap_image_url: faceUrl,
               });
-              const swappedUrl = swapResult?.image?.url || swapResult?.images?.[0]?.url || null;
+              let swappedUrl = swap1?.image?.url || swap1?.images?.[0]?.url || null;
               if (swappedUrl) {
-                console.log("[CREATE FACE-SWAP] Applied:", swappedUrl.slice(0, 80));
+                const swap2 = await falRequest("fal-ai/face-swap", {
+                  base_image_url: swappedUrl,
+                  swap_image_url: faceUrl,
+                });
+                if (swap2?.image?.url) swappedUrl = swap2.image.url;
+                else if (swap2?.images?.[0]?.url) swappedUrl = swap2.images[0].url;
+                console.log("[CREATE FACE-SWAP] Applied (2-pass):", swappedUrl.slice(0, 80));
                 imgUrl = swappedUrl;
               } else {
                 console.warn("[CREATE FACE-SWAP] No image URL in response, using base image");
@@ -9134,13 +9155,19 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
               const faceDataUri = await characterImageToDataUri(charImg).catch(() => null);
               if (faceDataUri) {
                 const faceUrl = await uploadBase64ToFal(faceDataUri);
-                const swapResult = await falRequest("fal-ai/face-swap", {
+                const swap1 = await falRequest("fal-ai/face-swap", {
                   base_image_url: imageUrl,
                   swap_image_url: faceUrl,
                 });
-                const swappedUrl = swapResult?.image?.url || swapResult?.images?.[0]?.url || null;
+                let swappedUrl = swap1?.image?.url || swap1?.images?.[0]?.url || null;
                 if (swappedUrl) {
-                  console.log("[VIDEO FACE-SWAP] Applied to start frame:", swappedUrl.slice(0, 80));
+                  const swap2 = await falRequest("fal-ai/face-swap", {
+                    base_image_url: swappedUrl,
+                    swap_image_url: faceUrl,
+                  });
+                  if (swap2?.image?.url) swappedUrl = swap2.image.url;
+                  else if (swap2?.images?.[0]?.url) swappedUrl = swap2.images[0].url;
+                  console.log("[VIDEO FACE-SWAP] Applied (2-pass) to start frame:", swappedUrl.slice(0, 80));
                   imageUrl = swappedUrl;
                 } else {
                   console.warn("[VIDEO FACE-SWAP] No image in response, using original frame");
@@ -9515,14 +9542,20 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
             const faceDataUri = await characterImageToDataUri(charImg).catch(() => null);
             if (faceDataUri) {
               const faceUrl = await uploadBase64ToFal(faceDataUri);
-              const swapResult = await falRequest("fal-ai/face-swap", {
+              const swap1 = await falRequest("fal-ai/face-swap", {
                 base_image_url: frameUrl,
                 swap_image_url: faceUrl,
               });
-              const swappedUrl = swapResult?.image?.url || swapResult?.images?.[0]?.url || null;
+              let swappedUrl = swap1?.image?.url || swap1?.images?.[0]?.url || null;
               if (swappedUrl) {
+                const swap2 = await falRequest("fal-ai/face-swap", {
+                  base_image_url: swappedUrl,
+                  swap_image_url: faceUrl,
+                });
+                if (swap2?.image?.url) swappedUrl = swap2.image.url;
+                else if (swap2?.images?.[0]?.url) swappedUrl = swap2.images[0].url;
                 vidFaceSwappedFrameRef.current = swappedUrl;
-                console.log("[SCREENPLAY FACE-SWAP] Applied once to source frame:", swappedUrl.slice(0, 80));
+                console.log("[SCREENPLAY FACE-SWAP] Applied (2-pass) to source frame:", swappedUrl.slice(0, 80));
               }
             }
           }
