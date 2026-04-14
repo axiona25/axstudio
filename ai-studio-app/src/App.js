@@ -2892,7 +2892,18 @@ const isClipPlaceholder = (v) => typeof v === "string" && v.startsWith(STUDIO_CL
 const VIDEO_GEN_ESTIMATED_SECONDS = { 3: 60, 5: 90, 7: 120, 10: 180, 15: 240 };
 const _vidGenProgress = { startTime: 0, duration: 5 };
 
-function VideoGenProgressOverlay() {
+function mapVideoStatusToPhase(status) {
+  if (!status) return { phase: "rendering", label: "Preparazione video…" };
+  const s = status.toLowerCase();
+  if (s.includes("errore") || s.includes("impossibile")) return { phase: "error", label: status.replace(/^errore:\s*/i, "") };
+  if (s.includes("traduzione") || s.includes("analisi") || s.includes("upload")) return { phase: "queued", label: "Preparazione…" };
+  if (s.includes("frame") || s.includes("volto") || s.includes("generazione frame")) return { phase: "processing", label: "Elaborazione frame…" };
+  if (s.includes("animazione") || s.includes("generazione video")) return { phase: "rendering", label: "Rendering video…" };
+  if (s.includes("download") || s.includes("ottimizzazione") || s.includes("finalizzazione")) return { phase: "finalizing", label: "Finalizzazione…" };
+  return { phase: "rendering", label: status };
+}
+
+function VideoGenProgressOverlay({ videoStatus }) {
   const [pct, setPct] = useState(0);
   useEffect(() => {
     const tick = () => {
@@ -2904,13 +2915,51 @@ function VideoGenProgressOverlay() {
     const id = setInterval(tick, 1000);
     return () => clearInterval(id);
   }, []);
+
+  const { phase, label } = mapVideoStatusToPhase(videoStatus);
+  const isError = phase === "error";
+
   return (
-    <>
-      <span style={{ fontSize: 13, fontWeight: 900, color: "#fff", zIndex: 1, fontVariantNumeric: "tabular-nums", textShadow: "0 0 10px rgba(255,79,163,0.5)" }}>{pct}%</span>
-      <div style={{ width: "60%", height: 4, borderRadius: 2, background: "rgba(255,255,255,0.1)", zIndex: 1, overflow: "hidden" }}>
-        <div style={{ height: "100%", borderRadius: 2, background: "linear-gradient(90deg, #FF4FA3, #7B4DFF)", width: `${pct}%`, transition: "width 0.6s ease" }} />
-      </div>
-    </>
+    <div style={{ position: "absolute", inset: 0, zIndex: 2, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 6, pointerEvents: "none" }}>
+      {/* Overlay scuro elegante */}
+      <div style={{ position: "absolute", inset: 0, background: isError ? "rgba(10,10,15,0.82)" : "rgba(10,10,15,0.55)", backdropFilter: "blur(2px)", transition: "background 0.6s ease" }} />
+
+      {/* Spinner / icona */}
+      {isError ? (
+        <div style={{ width: 28, height: 28, borderRadius: "50%", background: "rgba(239,68,68,0.2)", border: "2px solid rgba(239,68,68,0.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 3 }}>
+          <span style={{ fontSize: 14, color: "#ef4444", fontWeight: 900, lineHeight: 1 }}>!</span>
+        </div>
+      ) : (
+        <div style={{ width: 28, height: 28, border: "2.5px solid rgba(255,79,163,0.15)", borderTopColor: AX.magenta, borderRightColor: "rgba(123,77,255,0.6)", borderRadius: "50%", animation: "spin 0.9s linear infinite", zIndex: 3 }} />
+      )}
+
+      {/* Percentuale */}
+      {!isError && (
+        <span style={{ fontSize: 16, fontWeight: 900, color: "#fff", zIndex: 3, fontVariantNumeric: "tabular-nums", textShadow: "0 0 12px rgba(255,79,163,0.4), 0 1px 3px rgba(0,0,0,0.8)", letterSpacing: "-0.02em" }}>{pct}%</span>
+      )}
+
+      {/* Status label */}
+      <span style={{ fontSize: 9, fontWeight: 700, color: isError ? "#ef4444" : AX.muted, zIndex: 3, letterSpacing: "0.04em", textTransform: "uppercase", textAlign: "center", padding: "0 6px", lineHeight: 1.35, textShadow: "0 1px 4px rgba(0,0,0,0.9)", maxWidth: "90%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</span>
+
+      {/* Progress bar in basso */}
+      {!isError && (
+        <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, height: 3, background: "rgba(255,255,255,0.06)", zIndex: 3 }}>
+          <div style={{
+            height: "100%",
+            background: "linear-gradient(90deg, #FF4FA3, #7B4DFF, #29B6FF)",
+            backgroundSize: "200% 100%",
+            animation: "axstudio-shimmer 2.4s ease-in-out infinite",
+            width: `${pct}%`,
+            transition: "width 0.8s cubic-bezier(0.4, 0, 0.2, 1)",
+            borderRadius: "0 2px 2px 0",
+            boxShadow: "0 0 8px rgba(255,79,163,0.4)",
+          }} />
+        </div>
+      )}
+
+      {/* Brand */}
+      <span style={{ fontSize: 7, fontWeight: 600, color: "rgba(255,255,255,0.2)", zIndex: 3, letterSpacing: "0.08em", textTransform: "uppercase" }}>AXSTUDIO</span>
+    </div>
   );
 }
 
@@ -4071,7 +4120,7 @@ function ProjectListCard({ project, stats, onOpen, onDelete, onRename }) {
 }
 
 /** Griglia video singoli (usata sia in tab Video che dentro un gruppo sceneggiatura espanso). */
-const VideoThumbnailGrid = React.memo(function VideoThumbnailGrid({ videos, cfg, onVideoPreview, onVideoRecallPrompt, onRemoveVideo, indexOffset = 0, selectionMode, selectedItems, onToggleSelect }) {
+const VideoThumbnailGrid = React.memo(function VideoThumbnailGrid({ videos, cfg, onVideoPreview, onVideoRecallPrompt, onRemoveVideo, indexOffset = 0, selectionMode, selectedItems, onToggleSelect, videoStatus }) {
   return (
     <div style={{ display: "grid", gridTemplateColumns: `repeat(${cfg.cols}, minmax(0, 1fr))`, gap: cfg.gap }}>
       {videos.map((vid, i) => {
@@ -4091,6 +4140,7 @@ const VideoThumbnailGrid = React.memo(function VideoThumbnailGrid({ videos, cfg,
             border: `1px solid ${isSelected ? "rgba(139,92,246,0.7)" : isPlaceholder ? "rgba(255,79,163,0.45)" : AX.border}`,
             background: AX.bg,
             width: "100%",
+            transition: "border-color 0.4s ease, box-shadow 0.4s ease",
             ...(isPlaceholder ? { animation: "axstudio-glow-pulse 2.2s ease-in-out infinite" } : {}),
           }}
         >
@@ -4116,20 +4166,19 @@ const VideoThumbnailGrid = React.memo(function VideoThumbnailGrid({ videos, cfg,
                   display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 7,
                   background: isClipGen
                     ? "linear-gradient(145deg, rgba(123,77,255,0.18) 0%, rgba(255,79,163,0.08) 38%, rgba(41,182,255,0.06) 72%, rgba(10,10,15,0.96) 100%)"
-                    : "linear-gradient(145deg, rgba(255,79,163,0.22) 0%, rgba(123,77,255,0.1) 38%, rgba(41,182,255,0.06) 72%, rgba(10,10,15,0.96) 100%)",
+                    : "linear-gradient(145deg, rgba(255,79,163,0.12) 0%, rgba(123,77,255,0.06) 38%, rgba(10,10,15,0.98) 100%)",
                 }}
               >
-                <div aria-hidden style={{ position: "absolute", inset: 0, pointerEvents: "none", background: "linear-gradient(105deg, transparent 0%, rgba(255,79,163,0.12) 38%, rgba(79,216,255,0.1) 50%, transparent 58%)", backgroundSize: "220% 100%", animation: "axstudio-shimmer 2.4s ease-in-out infinite", opacity: 0.95 }} />
-                <HiFilm size={22} style={{ color: isClipGen ? AX.violet : AX.magenta, opacity: 0.95, zIndex: 1, filter: `drop-shadow(0 0 8px ${isClipGen ? "rgba(123,77,255,0.45)" : "rgba(255,79,163,0.45)"})` }} />
                 {isClipGen ? (
-                  <span style={{ fontSize: 11, fontWeight: 800, color: AX.violet, zIndex: 1, opacity: 0.9 }}>Clip {clipNum}</span>
-                ) : (
                   <>
-                    <div style={{ width: 22, height: 22, border: "2px solid rgba(255,79,163,0.22)", borderTopColor: AX.magenta, borderRadius: "50%", animation: "spin 0.85s linear infinite", zIndex: 1 }} />
-                    <VideoGenProgressOverlay />
+                    <div aria-hidden style={{ position: "absolute", inset: 0, pointerEvents: "none", background: "linear-gradient(105deg, transparent 0%, rgba(255,79,163,0.12) 38%, rgba(79,216,255,0.1) 50%, transparent 58%)", backgroundSize: "220% 100%", animation: "axstudio-shimmer 2.4s ease-in-out infinite", opacity: 0.95 }} />
+                    <HiFilm size={22} style={{ color: AX.violet, opacity: 0.95, zIndex: 1, filter: "drop-shadow(0 0 8px rgba(123,77,255,0.45))" }} />
+                    <span style={{ fontSize: 11, fontWeight: 800, color: AX.violet, zIndex: 1, opacity: 0.9 }}>Clip {clipNum}</span>
+                    <span style={{ fontSize: 8, fontWeight: 600, color: AX.muted, zIndex: 1, letterSpacing: "0.06em", textTransform: "uppercase" }}>In attesa</span>
                   </>
+                ) : (
+                  <VideoGenProgressOverlay videoStatus={videoStatus} />
                 )}
-                <span style={{ fontSize: 8, fontWeight: 600, color: AX.muted, zIndex: 1, letterSpacing: "0.06em", textTransform: "uppercase" }}>{isClipGen ? "In attesa" : "AXSTUDIO"}</span>
               </div>
             ) : (
               <video src={vid} muted playsInline preload="metadata" style={{ width: "100%", height: "100%", objectFit: "cover", objectPosition: THUMB_COVER_POSITION, display: "block", pointerEvents: "none" }} />
@@ -4194,7 +4243,7 @@ const VideoThumbnailGrid = React.memo(function VideoThumbnailGrid({ videos, cfg,
 });
 
 /** Sidebar fissa a destra: miniature sessione (immagini o video) con densità 2/3 colonne. */
-const StudioResultsSidebar = React.memo(function StudioResultsSidebar({ kind, images, videos, density, onDensityChange, onImagePreview, onVideoPreview, onRemoveImage, onRemoveVideo, onImageRecallPrompt, onVideoRecallPrompt, videoSidebarMode, onVideoSidebarModeChange, videoHistory, expandedScreenplays, onExpandedScreenplaysChange, isProjectContext, onBulkDelete }) {
+const StudioResultsSidebar = React.memo(function StudioResultsSidebar({ kind, images, videos, density, onDensityChange, onImagePreview, onVideoPreview, onRemoveImage, onRemoveVideo, onImageRecallPrompt, onVideoRecallPrompt, videoSidebarMode, onVideoSidebarModeChange, videoHistory, expandedScreenplays, onExpandedScreenplaysChange, isProjectContext, onBulkDelete, videoStatus }) {
   const cfg = STUDIO_SIDEBAR_DENSITY[density] || STUDIO_SIDEBAR_DENSITY.medium;
   const nImg = images?.length ?? 0;
   const isVideo = kind !== "image";
@@ -4629,7 +4678,7 @@ const StudioResultsSidebar = React.memo(function StudioResultsSidebar({ kind, im
             })}
           </div>
         ) : (
-          <VideoThumbnailGrid videos={singleVideos} cfg={cfg} onVideoPreview={onVideoPreview} onVideoRecallPrompt={onVideoRecallPrompt} onRemoveVideo={onRemoveVideo} selectionMode={selectionMode} selectedItems={selectedItems} onToggleSelect={toggleSelection} />
+          <VideoThumbnailGrid videos={singleVideos} cfg={cfg} onVideoPreview={onVideoPreview} onVideoRecallPrompt={onVideoRecallPrompt} onRemoveVideo={onRemoveVideo} selectionMode={selectionMode} selectedItems={selectedItems} onToggleSelect={toggleSelection} videoStatus={videoStatus} />
         )}
       </div>
     </aside>
@@ -6424,6 +6473,7 @@ export default function AIStudio() {
             onExpandedScreenplaysChange={setExpandedScreenplays}
             isProjectContext={isProjectDetail}
             onBulkDelete={handleBulkDelete}
+            videoStatus={videoStatus}
           />
         ) : null}
       </main>
@@ -6669,45 +6719,105 @@ const VideoPreviewModal = React.memo(function VideoPreviewModal({ src, onClose, 
     };
   }, []);
 
-  const handleDownload = async () => {
+  const handleDownload = async (e) => {
+    if (e) { e.stopPropagation(); e.preventDefault(); }
     if (!src) return;
     const fileName = `axstudio-video-${Date.now()}.mp4`;
-    // Path locale (axstudio-local:// o blob:) → anchor diretto
-    if (!src.startsWith("http")) {
+
+    // Electron con exportFileCopy: usa il dialog nativo "Salva con nome"
+    const filePath = filePathFromAxstudioMediaUrl(src);
+    if (isElectron && filePath && typeof window.electronAPI?.exportFileCopy === "function") {
+      try {
+        setDownloadMsg("Scaricamento…");
+        const r = await window.electronAPI.exportFileCopy(filePath, fileName);
+        if (r?.success) {
+          setDownloadMsg("✅ Salvato!");
+          setTimeout(() => setDownloadMsg(""), 2500);
+        } else if (r?.canceled) {
+          setDownloadMsg("");
+        } else {
+          setDownloadMsg("Download non riuscito");
+          setTimeout(() => setDownloadMsg(""), 3000);
+        }
+      } catch (err) {
+        console.error("Download video (export):", err);
+        setDownloadMsg("Download non riuscito");
+        setTimeout(() => setDownloadMsg(""), 3000);
+      }
+      return;
+    }
+
+    // blob: URL → anchor diretto con download attribute
+    if (src.startsWith("blob:")) {
       const a = document.createElement("a");
       a.href = src;
       a.download = fileName;
+      document.body.appendChild(a);
       a.click();
+      document.body.removeChild(a);
       return;
     }
+
+    // URL remoto → fetch come blob, poi download
+    if (src.startsWith("http")) {
+      try {
+        setDownloadMsg("Scaricamento…");
+        const response = await fetch(src);
+        const blob = await response.blob();
+        if (isElectron && window.electronAPI?.saveFile) {
+          const base64 = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => {
+              const dataUrl = reader.result;
+              resolve(dataUrl.startsWith("data:") ? dataUrl.split(",")[1] : dataUrl);
+            };
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+          });
+          await window.electronAPI.saveFile("videos", fileName, base64);
+        } else {
+          const blobUrl = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = blobUrl;
+          a.download = fileName;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          setTimeout(() => URL.revokeObjectURL(blobUrl), 5000);
+        }
+        setDownloadMsg("✅ Salvato!");
+        setTimeout(() => setDownloadMsg(""), 2500);
+      } catch (err) {
+        console.error("Download video:", err);
+        setDownloadMsg("Download non riuscito");
+        setTimeout(() => setDownloadMsg(""), 3000);
+      }
+      return;
+    }
+
+    // Fallback: data: URL o altro
     try {
       setDownloadMsg("Scaricamento…");
-      const response = await fetch(src);
-      const blob = await response.blob();
-      if (isElectron && window.electronAPI?.saveFile) {
-        const base64 = await new Promise((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => {
-            const dataUrl = reader.result;
-            resolve(dataUrl.startsWith("data:") ? dataUrl.split(",")[1] : dataUrl);
-          };
-          reader.onerror = reject;
-          reader.readAsDataURL(blob);
-        });
-        await window.electronAPI.saveFile("videos", fileName, base64);
-      } else {
-        const blobUrl = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = blobUrl;
-        a.download = fileName;
-        a.click();
-        setTimeout(() => URL.revokeObjectURL(blobUrl), 5000);
+      if (isElectron && window.electronAPI?.saveFile && src.startsWith("data:")) {
+        const b64 = src.split(",")[1];
+        if (b64) {
+          await window.electronAPI.saveFile("videos", fileName, b64);
+          setDownloadMsg("✅ Salvato!");
+          setTimeout(() => setDownloadMsg(""), 2500);
+          return;
+        }
       }
+      const a = document.createElement("a");
+      a.href = src;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
       setDownloadMsg("✅ Salvato!");
       setTimeout(() => setDownloadMsg(""), 2500);
     } catch (err) {
       console.error("Download video:", err);
-      setDownloadMsg("Errore: " + err.message);
+      setDownloadMsg("Download non riuscito");
       setTimeout(() => setDownloadMsg(""), 3000);
     }
   };
