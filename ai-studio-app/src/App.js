@@ -4454,7 +4454,32 @@ export default function AIStudio() {
       const rawHistory = await storage.loadJson("history.json", []);
       if (cancelled) return;
       setProjects(Array.isArray(savedProjects) ? savedProjects : []);
-      const savedHistory = Array.isArray(rawHistory) ? rawHistory : (Array.isArray(rawHistory?.data) ? rawHistory.data : []);
+      let savedHistory = Array.isArray(rawHistory) ? rawHistory : (Array.isArray(rawHistory?.data) ? rawHistory.data : []);
+
+      if (isElectron && window.electronAPI?.fileExists) {
+        const validHistory = [];
+        let removed = 0;
+        for (const entry of savedHistory) {
+          if (entry.filePath) {
+            const exists = await window.electronAPI.fileExists(entry.filePath);
+            if (cancelled) return;
+            if (exists) {
+              validHistory.push(entry);
+            } else {
+              removed++;
+              console.log("[CLEANUP] Removed phantom entry:", entry.fileName);
+            }
+          } else {
+            validHistory.push(entry);
+          }
+        }
+        if (removed > 0) {
+          savedHistory = validHistory;
+          await storage.saveJson("history.json", savedHistory);
+          console.log(`[CLEANUP] Purged ${removed} phantom entries from history.json`);
+        }
+      }
+
       setHistory(savedHistory);
       setStorageReady(true);
     })();

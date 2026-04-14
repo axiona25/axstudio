@@ -251,6 +251,11 @@ ipcMain.handle("open-in-system", async (_event, { filePath }) => {
 // ── Get data directory path ──
 ipcMain.handle("get-data-dir", async () => DATA_DIR);
 
+// ── Check if a file exists on disk ──
+ipcMain.handle("file-exists", async (_event, filePath) => {
+  try { await fs.promises.access(filePath); return true; } catch { return false; }
+});
+
 // ── OpenAI key from Connettori.txt (workspace / env CONNETTORI_DIR) ──
 ipcMain.handle("get-openai-key", async () => {
   const key = readOpenAiKeyFromConnettoriFile();
@@ -307,6 +312,13 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  const MIME_BY_EXT = {
+    ".mp4": "video/mp4", ".webm": "video/webm", ".mov": "video/quicktime",
+    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml",
+    ".wav": "audio/wav", ".mp3": "audio/mpeg", ".ogg": "audio/ogg",
+  };
+
   protocol.handle("axstudio-local", (request) => {
     try {
       const u = new URL(request.url);
@@ -325,7 +337,37 @@ app.whenReady().then(() => {
       if (!st.isFile()) {
         return new Response("Not a file", { status: 400 });
       }
-      return net.fetch(pathToFileURL(normalized).href);
+
+      const ext = path.extname(normalized).toLowerCase();
+      const contentType = MIME_BY_EXT[ext] || "application/octet-stream";
+
+      const rangeHeader = request.headers.get("range");
+      if (rangeHeader) {
+        const [startStr, endStr] = rangeHeader.replace("bytes=", "").split("-");
+        const start = parseInt(startStr, 10);
+        const end = endStr ? parseInt(endStr, 10) : st.size - 1;
+        const chunkSize = end - start + 1;
+        const stream = fs.createReadStream(normalized, { start, end });
+        return new Response(stream, {
+          status: 206,
+          headers: {
+            "Content-Range": `bytes ${start}-${end}/${st.size}`,
+            "Accept-Ranges": "bytes",
+            "Content-Length": String(chunkSize),
+            "Content-Type": contentType,
+          },
+        });
+      }
+
+      const body = fs.createReadStream(normalized);
+      return new Response(body, {
+        status: 200,
+        headers: {
+          "Content-Type": contentType,
+          "Content-Length": String(st.size),
+          "Accept-Ranges": "bytes",
+        },
+      });
     } catch (e) {
       console.error("axstudio-local:", e);
       return new Response("Error", { status: 500 });

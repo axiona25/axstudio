@@ -23,6 +23,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   openInSystem: (filePath) =>
     ipcRenderer.invoke("open-in-system", { filePath }),
   getDataDir: () => ipcRenderer.invoke("get-data-dir"),
+  fileExists: (filePath) => ipcRenderer.invoke("file-exists", filePath),
 
   /** Chiave OpenAI da `Connettori.txt` (cartella progetto), se presente. */
   getOpenAiKey: () => ipcRenderer.invoke("get-openai-key"),
