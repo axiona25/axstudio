@@ -1,0 +1,525 @@
+import React, { useRef, useCallback, useState, useEffect, memo } from "react";
+
+const AX = {
+  bg: "#0A0A0F", sidebar: "#11131A", surface: "#1A1F2B", border: "#2A3142",
+  hover: "#232A38", text: "#F5F7FF", text2: "#C9D1E3", muted: "#8E97AA",
+  blue: "#29B6FF", electric: "#4FD8FF", violet: "#7B4DFF", magenta: "#FF4FA3",
+  orange: "#FF8A2A", gold: "#FFB347",
+};
+
+const TRACK_COLORS = {
+  video: { bg: "rgba(123,77,255,0.18)", border: "rgba(123,77,255,0.45)", clip: "rgba(123,77,255,0.35)", clipBorder: "rgba(123,77,255,0.6)" },
+  audio: { bg: "rgba(41,182,255,0.12)", border: "rgba(41,182,255,0.35)", clip: "rgba(41,182,255,0.3)", clipBorder: "rgba(41,182,255,0.55)" },
+  text: { bg: "rgba(255,79,163,0.12)", border: "rgba(255,79,163,0.35)", clip: "rgba(255,79,163,0.3)", clipBorder: "rgba(255,79,163,0.55)" },
+};
+
+const TRACK_HEIGHT = 56;
+const HEADER_WIDTH = 140;
+const RULER_HEIGHT = 28;
+const MIN_ZOOM = 0.1;
+const MAX_ZOOM = 10;
+const BASE_PPS = 100;
+
+function formatTimecode(seconds) {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.floor(seconds % 60);
+  const f = Math.floor((seconds % 1) * 30);
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}:${String(f).padStart(2, "0")}`;
+}
+
+function RulerBar({ zoom, scrollX, totalDuration, playheadTime, onSeek, pxPerSec }) {
+  const canvasRef = useRef(null);
+  const isDraggingRef = useRef(false);
+
+  const getTimeFromMouseEvent = useCallback((e) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return 0;
+    const rect = canvas.getBoundingClientRect();
+    const cssX = e.clientX - rect.left;
+    const scaleX = canvas.width / rect.width;
+    const canvasX = cssX * scaleX;
+    return Math.max(0, (canvasX + scrollX) / pxPerSec);
+  }, [scrollX, pxPerSec]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const parent = canvas.parentElement;
+    if (!parent) return;
+    const cssW = Math.round(parent.clientWidth);
+    if (canvas.width !== cssW) canvas.width = cssW;
+  });
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    const w = canvas.width;
+    const h = canvas.height;
+    ctx.clearRect(0, 0, w, h);
+
+    ctx.fillStyle = "rgba(17,19,26,0.95)";
+    ctx.fillRect(0, 0, w, h);
+
+    const interval = pxPerSec >= 200 ? 1 : pxPerSec >= 80 ? 2 : pxPerSec >= 40 ? 5 : 10;
+    const subInterval = interval / (pxPerSec >= 200 ? 4 : 2);
+
+    const startSec = Math.floor(scrollX / pxPerSec / interval) * interval;
+    const endSec = Math.ceil((scrollX + w) / pxPerSec / interval) * interval + interval;
+
+    ctx.strokeStyle = AX.border;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, h - 0.5);
+    ctx.lineTo(w, h - 0.5);
+    ctx.stroke();
+
+    for (let t = startSec; t <= endSec; t += subInterval) {
+      const x = t * pxPerSec - scrollX;
+      if (x < -10 || x > w + 10) continue;
+      const isMajor = Math.abs(t % interval) < 0.001;
+
+      ctx.strokeStyle = isMajor ? AX.muted : "rgba(42,49,66,0.6)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(Math.round(x) + 0.5, isMajor ? 8 : 16);
+      ctx.lineTo(Math.round(x) + 0.5, h);
+      ctx.stroke();
+
+      if (isMajor) {
+        ctx.fillStyle = AX.muted;
+        ctx.font = "10px 'DM Sans', sans-serif";
+        ctx.textAlign = "center";
+        const label = t >= 60 ? `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, "0")}` : `${t}s`;
+        ctx.fillText(label, x, 7);
+      }
+    }
+
+    const phX = playheadTime * pxPerSec - scrollX;
+    if (phX >= -10 && phX <= w + 10) {
+      ctx.fillStyle = AX.magenta;
+      ctx.beginPath();
+      ctx.moveTo(phX - 6, 0);
+      ctx.lineTo(phX + 6, 0);
+      ctx.lineTo(phX + 3, 8);
+      ctx.lineTo(phX, 12);
+      ctx.lineTo(phX - 3, 8);
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.strokeStyle = AX.magenta;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(phX, 12);
+      ctx.lineTo(phX, h);
+      ctx.stroke();
+    }
+  }, [zoom, scrollX, totalDuration, playheadTime, pxPerSec]);
+
+  const handleMouseDown = useCallback((e) => {
+    isDraggingRef.current = true;
+    onSeek(getTimeFromMouseEvent(e));
+
+    const handleMouseMove = (ev) => {
+      if (!isDraggingRef.current) return;
+      onSeek(getTimeFromMouseEvent(ev));
+    };
+    const handleMouseUp = () => {
+      isDraggingRef.current = false;
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+    };
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+  }, [getTimeFromMouseEvent, onSeek]);
+
+  return (
+    <canvas
+      ref={canvasRef}
+      width={800}
+      height={RULER_HEIGHT}
+      style={{ display: "block", cursor: "pointer", width: "100%", height: RULER_HEIGHT }}
+      onMouseDown={handleMouseDown}
+    />
+  );
+}
+
+const ClipBlock = memo(function ClipBlock({ clip, track, pxPerSec, scrollX, selected, onSelect, onDragStart, onResizeStart, onContextMenu }) {
+  const colors = TRACK_COLORS[track.type] || TRACK_COLORS.video;
+  const left = clip.startTime * pxPerSec - scrollX;
+  const width = Math.max(clip.duration * pxPerSec, 4);
+
+  if (left + width < -20 || left > 4000) return null;
+
+  return (
+    <div
+      style={{
+        position: "absolute", left, width, top: 4, bottom: 4,
+        background: selected ? colors.clip.replace(/[\d.]+\)$/, "0.55)") : colors.clip,
+        border: `1px solid ${selected ? AX.electric : colors.clipBorder}`,
+        borderRadius: 6, cursor: "grab", overflow: "hidden",
+        display: "flex", alignItems: "center", userSelect: "none",
+        boxShadow: selected ? `0 0 12px ${AX.electric}40, inset 0 0 8px rgba(79,216,255,0.1)` : "none",
+        transition: "box-shadow 0.15s ease",
+      }}
+      onClick={(e) => { e.stopPropagation(); onSelect(clip.id); }}
+      onMouseDown={(e) => { if (e.button === 0) onDragStart(e, clip); }}
+      onContextMenu={(e) => { e.preventDefault(); onContextMenu?.(e, clip); }}
+    >
+      {clip.thumbnail && track.type === "video" && (
+        <div style={{
+          width: 44, height: "100%", flexShrink: 0, backgroundImage: `url(${clip.thumbnail})`,
+          backgroundSize: "cover", backgroundPosition: "center", opacity: 0.6,
+          borderRight: `1px solid ${colors.clipBorder}`,
+        }} />
+      )}
+      <span style={{
+        flex: 1, padding: "0 6px", fontSize: 11, fontWeight: 600, color: AX.text,
+        whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+        textShadow: "0 1px 3px rgba(0,0,0,0.5)",
+      }}>
+        {clip.name}
+      </span>
+      <span style={{ fontSize: 9, color: AX.muted, paddingRight: 6, flexShrink: 0 }}>
+        {clip.duration.toFixed(1)}s
+      </span>
+
+      {/* Left resize handle */}
+      <div
+        style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 6, cursor: "col-resize", zIndex: 2 }}
+        onMouseDown={(e) => { e.stopPropagation(); onResizeStart(e, clip, "left"); }}
+      >
+        <div style={{ position: "absolute", left: 1, top: "50%", transform: "translateY(-50%)", width: 2, height: 16, borderRadius: 1, background: "rgba(255,255,255,0.3)" }} />
+      </div>
+
+      {/* Right resize handle */}
+      <div
+        style={{ position: "absolute", right: 0, top: 0, bottom: 0, width: 6, cursor: "col-resize", zIndex: 2 }}
+        onMouseDown={(e) => { e.stopPropagation(); onResizeStart(e, clip, "right"); }}
+      >
+        <div style={{ position: "absolute", right: 1, top: "50%", transform: "translateY(-50%)", width: 2, height: 16, borderRadius: 1, background: "rgba(255,255,255,0.3)" }} />
+      </div>
+    </div>
+  );
+});
+
+function TrackHeader({ track, onMute, onLock }) {
+  const colors = TRACK_COLORS[track.type] || TRACK_COLORS.video;
+  return (
+    <div style={{
+      width: HEADER_WIDTH, height: TRACK_HEIGHT, flexShrink: 0, boxSizing: "border-box",
+      display: "flex", alignItems: "center", padding: "0 8px", gap: 6,
+      borderBottom: `1px solid ${AX.border}`, borderRight: `1px solid ${AX.border}`,
+      background: "rgba(17,19,26,0.7)",
+    }}>
+      <div style={{
+        width: 4, height: 28, borderRadius: 2,
+        background: colors.border,
+      }} />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 11, fontWeight: 600, color: AX.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{track.label}</div>
+        <div style={{ fontSize: 9, color: AX.muted, textTransform: "uppercase" }}>{track.type}</div>
+      </div>
+      <div style={{ display: "flex", gap: 3 }}>
+        <button type="button" onClick={() => onMute(track.id)} style={{
+          width: 20, height: 20, borderRadius: 4, border: "none", cursor: "pointer",
+          background: track.muted ? "rgba(255,79,163,0.25)" : "transparent",
+          color: track.muted ? AX.magenta : AX.muted, fontSize: 10, fontWeight: 700,
+          display: "flex", alignItems: "center", justifyContent: "center",
+        }} title={track.muted ? "Unmute" : "Mute"}>M</button>
+        <button type="button" onClick={() => onLock(track.id)} style={{
+          width: 20, height: 20, borderRadius: 4, border: "none", cursor: "pointer",
+          background: track.locked ? "rgba(255,138,42,0.25)" : "transparent",
+          color: track.locked ? AX.orange : AX.muted, fontSize: 10, fontWeight: 700,
+          display: "flex", alignItems: "center", justifyContent: "center",
+        }} title={track.locked ? "Unlock" : "Lock"}>L</button>
+      </div>
+    </div>
+  );
+}
+
+function TrackLane({ track, pxPerSec, scrollX, selectedClipId, onSelectClip, onDragStart, onResizeStart, onDrop, onContextMenu }) {
+  const colors = TRACK_COLORS[track.type] || TRACK_COLORS.video;
+  const laneRef = useRef(null);
+
+  const handleDragOver = (e) => { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; };
+  const handleDrop = (e) => {
+    e.preventDefault();
+    const rect = laneRef.current.getBoundingClientRect();
+    const x = e.clientX - rect.left + scrollX;
+    const time = Math.max(0, x / pxPerSec);
+    const data = e.dataTransfer.getData("application/json");
+    if (data) {
+      try { onDrop(JSON.parse(data), track.id, time); } catch {}
+    }
+  };
+
+  return (
+    <div
+      ref={laneRef}
+      style={{
+        height: TRACK_HEIGHT, position: "relative",
+        background: colors.bg, borderBottom: `1px solid ${AX.border}`,
+        minWidth: 0,
+      }}
+      onDragOver={handleDragOver}
+      onDrop={handleDrop}
+      onClick={() => onSelectClip(null)}
+    >
+      {track.clips.map(clip => (
+        <ClipBlock
+          key={clip.id}
+          clip={clip}
+          track={track}
+          pxPerSec={pxPerSec}
+          scrollX={scrollX}
+          selected={clip.id === selectedClipId}
+          onSelect={onSelectClip}
+          onDragStart={onDragStart}
+          onResizeStart={onResizeStart}
+          onContextMenu={onContextMenu}
+        />
+      ))}
+    </div>
+  );
+}
+
+export default function Timeline({
+  tracks, playheadTime, isPlaying, zoom, scrollX, selectedClipId, totalDuration,
+  onSeek, onZoomChange, onScrollChange, onSelectClip, onMoveClip, onResizeClip,
+  onSplitClip, onRemoveClip, onDropMedia, onToggleMute, onToggleLock,
+}) {
+  const containerRef = useRef(null);
+  const tracksAreaRef = useRef(null);
+  const [containerWidth, setContainerWidth] = useState(800);
+  const [dragging, setDragging] = useState(null);
+  const [resizing, setResizing] = useState(null);
+  const [contextMenu, setContextMenu] = useState(null);
+
+  const pxPerSec = BASE_PPS * zoom;
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const obs = new ResizeObserver((entries) => {
+      for (const entry of entries) setContainerWidth(entry.contentRect.width - HEADER_WIDTH);
+    });
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, []);
+
+  const handleWheel = useCallback((e) => {
+    if (e.ctrlKey || e.metaKey) {
+      e.preventDefault();
+      const factor = e.deltaY < 0 ? 1.15 : 0.87;
+      onZoomChange(Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom * factor)));
+    } else {
+      onScrollChange(Math.max(0, scrollX + e.deltaX + e.deltaY));
+    }
+  }, [zoom, scrollX, onZoomChange, onScrollChange]);
+
+  const handleDragStart = useCallback((e, clip) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    setDragging({
+      clipId: clip.id,
+      trackId: clip.trackId,
+      offsetX: e.clientX - rect.left,
+      startMouseX: e.clientX,
+      startMouseY: e.clientY,
+      originalStart: clip.startTime,
+      originalTrackId: clip.trackId,
+    });
+    onSelectClip(clip.id);
+  }, [onSelectClip]);
+
+  const handleResizeStart = useCallback((e, clip, side) => {
+    setResizing({
+      clipId: clip.id,
+      side,
+      startMouseX: e.clientX,
+      originalStart: clip.startTime,
+      originalDuration: clip.duration,
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!dragging && !resizing) return;
+
+    const handleMouseMove = (e) => {
+      if (dragging) {
+        const dx = e.clientX - dragging.startMouseX;
+        const newStart = Math.max(0, dragging.originalStart + dx / pxPerSec);
+
+        let newTrackId = dragging.originalTrackId;
+        const dy = e.clientY - dragging.startMouseY;
+        const trackShift = Math.round(dy / TRACK_HEIGHT);
+        if (trackShift !== 0) {
+          const currentIdx = tracks.findIndex(t => t.id === dragging.originalTrackId);
+          const newIdx = Math.max(0, Math.min(tracks.length - 1, currentIdx + trackShift));
+          if (tracks[newIdx].type === tracks[currentIdx].type) {
+            newTrackId = tracks[newIdx].id;
+          }
+        }
+
+        onMoveClip(dragging.clipId, newTrackId, newStart);
+      }
+
+      if (resizing) {
+        const dx = e.clientX - resizing.startMouseX;
+        const deltaSec = dx / pxPerSec;
+
+        if (resizing.side === "right") {
+          const newDuration = Math.max(0.2, resizing.originalDuration + deltaSec);
+          onResizeClip(resizing.clipId, { duration: newDuration });
+        } else {
+          const shift = Math.min(deltaSec, resizing.originalDuration - 0.2);
+          const newStart = resizing.originalStart + shift;
+          const newDuration = resizing.originalDuration - shift;
+          if (newStart >= 0 && newDuration >= 0.2) {
+            onResizeClip(resizing.clipId, { startTime: newStart, duration: newDuration, trimStart: shift });
+          }
+        }
+      }
+    };
+
+    const handleMouseUp = () => {
+      setDragging(null);
+      setResizing(null);
+    };
+
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, [dragging, resizing, pxPerSec, tracks, onMoveClip, onResizeClip]);
+
+  const handleContextMenu = useCallback((e, clip) => {
+    setContextMenu({ x: e.clientX, y: e.clientY, clipId: clip.id });
+  }, []);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    const close = () => setContextMenu(null);
+    window.addEventListener("click", close);
+    return () => window.removeEventListener("click", close);
+  }, [contextMenu]);
+
+  const playheadX = playheadTime * pxPerSec - scrollX;
+
+  return (
+    <div
+      ref={containerRef}
+      style={{
+        flex: 1, display: "flex", flexDirection: "column", minHeight: 0,
+        background: AX.bg, borderTop: `1px solid ${AX.border}`,
+        userSelect: (dragging || resizing) ? "none" : "auto",
+      }}
+      onWheel={handleWheel}
+    >
+      {/* Ruler */}
+      <div style={{ display: "flex" }}>
+        <div style={{
+          width: HEADER_WIDTH, flexShrink: 0, height: RULER_HEIGHT, boxSizing: "border-box",
+          background: "rgba(17,19,26,0.95)", borderBottom: `1px solid ${AX.border}`,
+          borderRight: `1px solid ${AX.border}`, display: "flex", alignItems: "center",
+          justifyContent: "center",
+        }}>
+          <span style={{ fontSize: 9, color: AX.muted, fontWeight: 600, letterSpacing: "0.05em" }}>
+            {formatTimecode(playheadTime)}
+          </span>
+        </div>
+        <div style={{ flex: 1, minWidth: 0, overflow: "hidden" }}>
+          <RulerBar
+            zoom={zoom}
+            scrollX={scrollX}
+            totalDuration={totalDuration}
+            playheadTime={playheadTime}
+            onSeek={onSeek}
+            pxPerSec={pxPerSec}
+          />
+        </div>
+      </div>
+
+      {/* Tracks area */}
+      <div ref={tracksAreaRef} style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "auto", position: "relative" }}>
+        {tracks.map(track => (
+          <div key={track.id} style={{ display: "flex" }}>
+            <TrackHeader track={track} onMute={onToggleMute} onLock={onToggleLock} />
+            <div style={{ flex: 1, minWidth: 0, overflow: "hidden", position: "relative" }}>
+              <TrackLane
+                track={track}
+                pxPerSec={pxPerSec}
+                scrollX={scrollX}
+                selectedClipId={selectedClipId}
+                onSelectClip={onSelectClip}
+                onDragStart={handleDragStart}
+                onResizeStart={handleResizeStart}
+                onDrop={onDropMedia}
+                onContextMenu={handleContextMenu}
+              />
+            </div>
+          </div>
+        ))}
+
+        {/* Playhead line (over tracks) */}
+        {playheadX >= 0 && playheadX <= containerWidth && (
+          <div style={{
+            position: "absolute", left: HEADER_WIDTH + playheadX, top: 0, bottom: 0,
+            width: 2, background: AX.magenta, zIndex: 10, pointerEvents: "none",
+            boxShadow: `0 0 8px ${AX.magenta}60`,
+          }} />
+        )}
+      </div>
+
+      {/* Zoom controls */}
+      <div style={{
+        display: "flex", alignItems: "center", gap: 8, padding: "6px 12px",
+        borderTop: `1px solid ${AX.border}`, background: "rgba(17,19,26,0.8)",
+      }}>
+        <button type="button" onClick={() => onZoomChange(Math.max(MIN_ZOOM, zoom * 0.8))}
+          style={{ background: "none", border: "none", color: AX.muted, cursor: "pointer", fontSize: 16, fontWeight: 700 }}>−</button>
+        <input
+          type="range" min={MIN_ZOOM} max={MAX_ZOOM} step={0.01} value={zoom}
+          onChange={(e) => onZoomChange(parseFloat(e.target.value))}
+          style={{ width: 100 }}
+        />
+        <button type="button" onClick={() => onZoomChange(Math.min(MAX_ZOOM, zoom * 1.25))}
+          style={{ background: "none", border: "none", color: AX.muted, cursor: "pointer", fontSize: 16, fontWeight: 700 }}>+</button>
+        <span style={{ fontSize: 10, color: AX.muted, marginLeft: 4 }}>{Math.round(zoom * 100)}%</span>
+        <div style={{ flex: 1 }} />
+        <span style={{ fontSize: 10, color: AX.muted }}>
+          Durata: {totalDuration.toFixed(1)}s
+        </span>
+      </div>
+
+      {/* Context menu */}
+      {contextMenu && (
+        <div style={{
+          position: "fixed", left: contextMenu.x, top: contextMenu.y, zIndex: 9999,
+          background: AX.surface, border: `1px solid ${AX.border}`, borderRadius: 8,
+          boxShadow: "0 8px 32px rgba(0,0,0,0.5)", backdropFilter: "blur(12px)",
+          padding: "4px 0", minWidth: 160,
+        }}>
+          {[
+            { label: "✂ Dividi al playhead", action: () => onSplitClip(contextMenu.clipId, playheadTime) },
+            { label: "🗑 Elimina clip", action: () => onRemoveClip(contextMenu.clipId) },
+          ].map((item, i) => (
+            <button key={i} type="button"
+              onClick={() => { item.action(); setContextMenu(null); }}
+              style={{
+                display: "block", width: "100%", padding: "8px 14px", textAlign: "left",
+                background: "none", border: "none", color: AX.text, fontSize: 12,
+                cursor: "pointer", fontFamily: "'DM Sans', sans-serif",
+              }}
+              onMouseEnter={e => { e.currentTarget.style.background = AX.hover; }}
+              onMouseLeave={e => { e.currentTarget.style.background = "none"; }}
+            >{item.label}</button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}

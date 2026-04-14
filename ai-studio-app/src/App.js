@@ -39,7 +39,9 @@ import {
   HiPencil,
   HiEye,
   HiChevronRight,
+  HiVideoCamera,
 } from "react-icons/hi2";
+import VideoEditor from "./editor/VideoEditor";
 
 // ── fal.ai Config ──
 const FAL_API_KEY = process.env.REACT_APP_FAL_API_KEY || "";
@@ -5072,16 +5074,18 @@ export default function AIStudio() {
   const headerTitle = view === "home" ? "Benvenuto"
     : view === "free-image" ? "Immagine libera"
       : view === "free-video" ? "Video libero"
-        : view === "projects" ? "Progetti"
-          : view === "project" && currentProject ? currentProject.name
-            : "AXSTUDIO";
+        : view === "video-editor" ? "Video Editor"
+          : view === "projects" ? "Progetti"
+            : view === "project" && currentProject ? currentProject.name
+              : "AXSTUDIO";
   const headerSubtitle = view === "home"
     ? "Cosa vuoi creare oggi?"
     : view === "free-image" ? "Genera un’immagine da prompt"
       : view === "free-video" ? "Genera un video da prompt"
-        : view === "projects" ? "Gestisci i tuoi progetti creativi"
-          : view === "project" ? "Personaggi, immagini e video"
-            : "";
+        : view === "video-editor" ? "Crea i tuoi video professionali"
+          : view === "projects" ? "Gestisci i tuoi progetti creativi"
+            : view === "project" ? "Personaggi, immagini e video"
+              : "";
 
   const studioSplitView =
     view === "free-image" ||
@@ -5117,7 +5121,7 @@ export default function AIStudio() {
     </a>
   );
 
-  const BackBtn = () => (view !== "home" && view !== "projects" && view !== "free-image" && view !== "free-video") ? <button type="button" onClick={() => { if (view === "project") { setView("projects"); } else { setView("home"); setCurrentProject(null); } }} style={{ background: AX.surface, border: `1px solid ${AX.border}`, color: AX.text2, cursor: "pointer", padding: "8px 12px", fontSize: 16, borderRadius: 10 }}>←</button> : null;
+  const BackBtn = () => (view !== "home" && view !== "projects" && view !== "free-image" && view !== "free-video" && view !== "video-editor") ? <button type="button" onClick={() => { if (view === "project") { setView("projects"); } else { setView("home"); setCurrentProject(null); } }} style={{ background: AX.surface, border: `1px solid ${AX.border}`, color: AX.text2, cursor: "pointer", padding: "8px 12px", fontSize: 16, borderRadius: 10 }}>←</button> : null;
 
   const NavBtn = ({ icon, label, active, onClick }) => (
     <button type="button" onClick={onClick} style={{
@@ -5171,10 +5175,17 @@ export default function AIStudio() {
           <NavBtn icon={<HiPhoto size={20} />} label="Immagine libera" active={view === "free-image"} onClick={() => { setView("free-image"); setCurrentProject(null); }} />
           <NavBtn icon={<HiFilm size={20} />} label="Video libero" active={view === "free-video"} onClick={() => { setView("free-video"); setCurrentProject(null); }} />
           <NavBtn icon={<HiFolder size={20} />} label="Progetti" active={view === "projects" || view === "project"} onClick={() => { setView("projects"); setCurrentProject(null); }} />
+          <NavBtn icon={<HiVideoCamera size={20} />} label="Video Editor" active={view === "video-editor"} onClick={() => { setView("video-editor"); setCurrentProject(null); }} />
         </nav>
       </aside>
 
       <div style={st.main}>
+        {view === "video-editor" ? (
+          <VideoEditor
+            projectName={currentProject?.name}
+            projectMedia={[]}
+          />
+        ) : (<>
         <header style={st.hdr}>
           <div style={{ display: "flex", alignItems: "center", gap: 14, minWidth: 0 }}>
             <BackBtn />
@@ -5887,6 +5898,7 @@ export default function AIStudio() {
           />
         ) : null}
       </main>
+      </>)}
       </div>
 
       {showNewProject && <Modal title="Nuovo Progetto" onClose={() => setShowNewProject(false)}><NewProjectForm onCreate={createProject} /></Modal>}
