@@ -1818,6 +1818,18 @@ const IMAGE_SYSTEM_PROMPT =
   "7) If the user asks for nudity or sexual content, include it faithfully with anatomical detail. Do NOT soften or replace with euphemisms. " +
   "8) The final prompt should be 40-80 words — rich but focused, not a wall of text. " +
   "\n\nSTRUCTURE: [user's subject/action], [user's setting enriched with atmosphere], [lighting], [camera/composition], [textures/details], [quality tags]. " +
+  "\n\nFLUX-SPECIFIC PROMPT RULES:" +
+  "\n- FLUX cannot reliably render specific symbols, logos, or letters. When the user asks for a specific symbol (treble clef, star, lightning bolt, etc.), describe it as a VISUAL SHAPE, not by name." +
+  "\n  BAD: 'a treble clef on the chest'" +
+  "\n  GOOD: 'a golden ornamental spiral symbol on the chest, shaped like a curving S with a vertical line through the center, reminiscent of a musical notation symbol, embossed metallic gold finish'" +
+  "\n- For letters/text on clothing: describe the letter shape explicitly." +
+  "\n  BAD: 'the letter K on the chest'" +
+  "\n  GOOD: 'a large bold capital letter K in red with gold outline, centered on the chest, serif font style'" +
+  "\n- For abstract concepts, translate them into concrete visual descriptions that FLUX can render." +
+  "\n- FLUX excels at: textures, lighting, materials, poses, facial expressions, clothing details, environments." +
+  "\n- FLUX struggles with: specific symbols, readable text, exact logos, mathematical notation, musical notation." +
+  "\n- When the user wants a specific shape, describe the GEOMETRY: curves, lines, spirals, angles, thickness, color, material, position, size relative to the body." +
+  "\n- Always describe emblems/symbols as physical objects with material properties: 'embossed gold metal', 'glowing neon blue light', 'stitched red fabric patch', 'engraved silver plate'." +
   "\n\nReturn ONLY valid JSON (no markdown, no backticks): " +
   '{"prompt_en": "the rich English FLUX prompt", "prompt_it": "Italian description — must closely reflect the user\'s idea PLUS describe the added visual details so the user understands what they will see"}';
 
