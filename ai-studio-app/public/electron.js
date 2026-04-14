@@ -321,6 +321,57 @@ ipcMain.handle("mix-audio-video", async (_event, videoPath, audioPath, outputPat
   });
 });
 
+// ── Estrai audio COMPLETO da URL web (YouTube ecc.) con yt-dlp ──
+ipcMain.handle("extract-web-audio", async (_event, url) => {
+  const voicesDir = path.join(DATA_DIR, "voices");
+  ensureDir(voicesDir);
+  const outputFile = path.join(voicesDir, `web_audio_${Date.now()}.mp3`);
+
+  return new Promise((resolve) => {
+    execFile("which", ["yt-dlp"], { timeout: 5000 }, (whichErr) => {
+      if (whichErr) {
+        return resolve({ success: false, error: "yt-dlp non trovato. Installa con: brew install yt-dlp" });
+      }
+      execFile("yt-dlp", [
+        "-x", "--audio-format", "mp3", "--audio-quality", "0",
+        "-o", outputFile, "--no-playlist", "--no-warnings",
+        url,
+      ], { timeout: 180000 }, (dlErr, _stdout, dlStderr) => {
+        if (dlErr) {
+          console.error("[YT-DLP]", dlErr.message, dlStderr);
+          const msg = dlErr.message.includes("ENOENT")
+            ? "yt-dlp non trovato. Installa con: brew install yt-dlp"
+            : "Download fallito: " + (dlErr.message || "URL non valido");
+          return resolve({ success: false, error: msg });
+        }
+        console.log("[EXTRACT-WEB-AUDIO] OK:", outputFile);
+        resolve({ success: true, path: outputFile });
+      });
+    });
+  });
+});
+
+// ── Taglia segmento audio con ffmpeg ──
+ipcMain.handle("trim-audio-segment", async (_event, inputPath, startSec, durationSec, outputPath) => {
+  return new Promise((resolve) => {
+    execFile("ffmpeg", [
+      "-y", "-i", inputPath,
+      "-ss", String(startSec),
+      "-t", String(durationSec),
+      "-vn", "-c:a", "libmp3lame", "-b:a", "192k",
+      outputPath,
+    ], { timeout: 30000 }, (err) => {
+      if (err) {
+        console.error("[TRIM-AUDIO]", err.message);
+        resolve({ success: false, error: err.message });
+      } else {
+        console.log("[TRIM-AUDIO] OK:", outputPath);
+        resolve({ success: true, path: outputPath });
+      }
+    });
+  });
+});
+
 // ── OpenAI key from Connettori.txt (workspace / env CONNETTORI_DIR) ──
 ipcMain.handle("get-openai-key", async () => {
   const key = readOpenAiKeyFromConnettoriFile();

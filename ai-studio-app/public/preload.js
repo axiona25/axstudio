@@ -36,6 +36,13 @@ contextBridge.exposeInMainWorld("electronAPI", {
   mixAudioVideo: (videoPath, audioPath, outputPath) =>
     ipcRenderer.invoke("mix-audio-video", videoPath, audioPath, outputPath),
 
+  /** Estrai audio completo da URL web (YouTube ecc.) con yt-dlp */
+  extractWebAudio: (url) =>
+    ipcRenderer.invoke("extract-web-audio", url),
+  /** Taglia segmento audio con ffmpeg */
+  trimAudioSegment: (inputPath, startSec, durationSec, outputPath) =>
+    ipcRenderer.invoke("trim-audio-segment", inputPath, startSec, durationSec, outputPath),
+
   /** Chiave OpenAI da `Connettori.txt` (cartella progetto), se presente. */
   getOpenAiKey: () => ipcRenderer.invoke("get-openai-key"),
 });

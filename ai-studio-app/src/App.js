@@ -42,6 +42,15 @@ import {
   HiChevronRight,
   HiVideoCamera,
   HiEllipsisVertical,
+  HiStar,
+  HiPlay,
+  HiStop,
+  HiMagnifyingGlass,
+  HiArrowPath,
+  HiCreditCard,
+  HiUserCircle,
+  HiLanguage,
+  HiLink,
 } from "react-icons/hi2";
 import VideoEditor from "./editor/VideoEditor";
 
@@ -5598,7 +5607,8 @@ export default function AIStudio() {
   const mainScrollLocked =
     (studioSplitView && view !== "free-video") ||
     view === "projects" ||
-    view === "home";
+    view === "home" ||
+    view === "settings";
   /** Riga principale + sidebar anteprime (solo image/video libero o progetto su tab immagine/video). */
   const mainFlexRow = studioSplitView;
   const studioSidebarKind =
@@ -6527,7 +6537,7 @@ export default function AIStudio() {
 
         {/* ═══ SETTINGS ═══ */}
         {view === "settings" && (
-          <VoiceLibrarySettings
+          <SettingsPage
             voiceLibrary={voiceLibrary}
             setVoiceLibrary={setVoiceLibrary}
             elFavorites={elFavorites}
@@ -10455,31 +10465,12 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
   );
 }
 
-// ── Label mapping for ElevenLabs voice tree ──
-const EL_LANG_MAP = { italian: "🇮🇹 Italiano", english: "🇬🇧 Inglese", spanish: "🇪🇸 Spagnolo", french: "🇫🇷 Francese", german: "🇩🇪 Tedesco", portuguese: "🇧🇷 Portoghese", japanese: "🇯🇵 Giapponese", korean: "🇰🇷 Coreano", chinese: "🇨🇳 Cinese", russian: "🇷🇺 Russo", arabic: "🇸🇦 Arabo", hindi: "🇮🇳 Hindi", dutch: "🇳🇱 Olandese", polish: "🇵🇱 Polacco", swedish: "🇸🇪 Svedese", turkish: "🇹🇷 Turco" };
-const EL_GENDER_MAP = { male: "👨 Uomo", female: "👩 Donna" };
+// ── Label mapping for ElevenLabs voice cards ──
 const EL_AGE_MAP = { old: "Anziano/a (60+)", middle_aged: "Adulto/a (30-60)", young: "Ragazzo/a (15-30)", child: "Bambino/a (0-15)" };
-const EL_AGE_ORDER = ["old", "middle_aged", "young", "child"];
 
-function buildVoiceTree(voices) {
-  const tree = {};
-  for (const v of voices) {
-    const rawLang = (v.labels?.language || "").toLowerCase();
-    const rawGender = (v.labels?.gender || "").toLowerCase();
-    const rawAge = (v.labels?.age || "").toLowerCase();
-    const langKey = rawLang || "_other";
-    const genderKey = rawGender === "male" || rawGender === "female" ? rawGender : "_other";
-    const ageKey = EL_AGE_ORDER.includes(rawAge) ? rawAge : "_other";
-    if (!tree[langKey]) tree[langKey] = {};
-    if (!tree[langKey][genderKey]) tree[langKey][genderKey] = {};
-    if (!tree[langKey][genderKey][ageKey]) tree[langKey][genderKey][ageKey] = [];
-    tree[langKey][genderKey][ageKey].push(v);
-  }
-  return tree;
-}
-
-// ── Voice Library Settings ──
-function VoiceLibrarySettings({ voiceLibrary, setVoiceLibrary, elFavorites, setElFavorites, myVoices, setMyVoices }) {
+// ── Settings Page ──
+function SettingsPage({ voiceLibrary, setVoiceLibrary, elFavorites, setElFavorites, myVoices, setMyVoices }) {
+  const [mainTab, setMainTab] = useState("voices"); // "voices" | "credits" | "plans" | "profile"
   const [settingsTab, setSettingsTab] = useState("catalog"); // "catalog" | "myvoices"
 
   // ── Catalog (Tab 1) state ──
@@ -10487,7 +10478,8 @@ function VoiceLibrarySettings({ voiceLibrary, setVoiceLibrary, elFavorites, setE
   const [elLoading, setElLoading] = useState(false);
   const [elError, setElError] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
-  const [expandedNodes, setExpandedNodes] = useState(new Set());
+  const [filterGender, setFilterGender] = useState("all"); // "all" | "male" | "female"
+  const [filterAge, setFilterAge] = useState("all"); // "all" | "young" | "middle_aged" | "old" | "child"
   const [elPreviewPlaying, setElPreviewPlaying] = useState(null);
   const elAudioRef = useRef(null);
 
@@ -10511,6 +10503,17 @@ function VoiceLibrarySettings({ voiceLibrary, setVoiceLibrary, elFavorites, setE
   const recordChunksRef = useRef([]);
   const recordTimerRef = useRef(null);
   const recordAudioRef = useRef(null);
+  // Web import
+  const [webUrl, setWebUrl] = useState("");
+  const [extracting, setExtracting] = useState(false);
+  const [extractedAudioPath, setExtractedAudioPath] = useState(null);
+  const [extractError, setExtractError] = useState("");
+  const [totalDuration, setTotalDuration] = useState(0);
+  const [segmentStart, setSegmentStart] = useState(0);
+  const [segmentDuration, setSegmentDuration] = useState(60);
+  const [isPlayingSegment, setIsPlayingSegment] = useState(false);
+  const webAudioRef = useRef(null);
+  const segmentTimerRef = useRef(null);
 
   // ── Catalog: fetch voices ──
   const fetchCatalog = async () => {
@@ -10535,31 +10538,19 @@ function VoiceLibrarySettings({ voiceLibrary, setVoiceLibrary, elFavorites, setE
   }, [settingsTab]);
 
   const filteredVoices = useMemo(() => {
-    if (!searchQuery.trim()) return elVoices;
-    const q = searchQuery.toLowerCase();
-    return elVoices.filter(v => v.name?.toLowerCase().includes(q));
-  }, [elVoices, searchQuery]);
-
-  const voiceTree = useMemo(() => buildVoiceTree(filteredVoices), [filteredVoices]);
-
-  const sortedLangs = useMemo(() => {
-    const keys = Object.keys(voiceTree);
-    const known = keys.filter(k => k !== "_other").sort((a, b) => {
-      const la = EL_LANG_MAP[a] || a;
-      const lb = EL_LANG_MAP[b] || b;
-      return la.localeCompare(lb);
-    });
-    if (keys.includes("_other")) known.push("_other");
-    return known;
-  }, [voiceTree]);
-
-  const toggleNode = (key) => {
-    setExpandedNodes(prev => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key); else next.add(key);
-      return next;
-    });
-  };
+    let list = elVoices.filter(v => !!v.preview_url);
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      list = list.filter(v => v.name?.toLowerCase().includes(q));
+    }
+    if (filterGender !== "all") {
+      list = list.filter(v => (v.labels?.gender || "").toLowerCase() === filterGender);
+    }
+    if (filterAge !== "all") {
+      list = list.filter(v => (v.labels?.age || "").toLowerCase() === filterAge);
+    }
+    return list;
+  }, [elVoices, searchQuery, filterGender, filterAge]);
 
   const isFavorite = (voiceId) => elFavorites.some(v => v.voice_id === voiceId);
 
@@ -10677,7 +10668,7 @@ function VoiceLibrarySettings({ voiceLibrary, setVoiceLibrary, elFavorites, setE
       recordTimerRef.current = setInterval(() => {
         sec++;
         setRecordingSeconds(sec);
-        if (sec >= 60) stopRecording();
+        if (sec >= 120) stopRecording();
       }, 1000);
     } catch (e) {
       console.error("[RECORD]", e);
@@ -10708,278 +10699,439 @@ function VoiceLibrarySettings({ voiceLibrary, setVoiceLibrary, elFavorites, setE
     a.onended = () => { setRecordingPreviewPlaying(false); recordAudioRef.current = null; };
   };
 
+  // ── Web import: extract full audio ──
+  const handleExtractWebAudio = async () => {
+    if (!webUrl.trim()) return;
+    if (!isElectron) { setExtractError("Funzione disponibile solo nell'app desktop"); return; }
+    setExtracting(true);
+    setExtractError("");
+    setExtractedAudioPath(null);
+    setTotalDuration(0);
+    setSegmentStart(0);
+    try {
+      const result = await window.electronAPI.extractWebAudio(webUrl.trim());
+      if (!result.success) { setExtractError(result.error || "Estrazione fallita"); }
+      else {
+        setExtractedAudioPath(result.path);
+        const a = new Audio(mediaFileUrl(result.path));
+        a.addEventListener("loadedmetadata", () => { setTotalDuration(a.duration || 0); });
+        a.addEventListener("error", () => { setTotalDuration(0); });
+      }
+    } catch (e) {
+      console.error("[EXTRACT-WEB]", e);
+      setExtractError(e.message || "Errore nell'estrazione");
+    }
+    setExtracting(false);
+  };
+
+  const formatTime = (s) => {
+    const m = Math.floor(s / 60);
+    const sec = Math.floor(s % 60);
+    return `${m}:${sec.toString().padStart(2, "0")}`;
+  };
+
+  const playSegment = (start, duration) => {
+    if (!extractedAudioPath) return;
+    if (isPlayingSegment && webAudioRef.current) {
+      webAudioRef.current.pause();
+      if (segmentTimerRef.current) { clearTimeout(segmentTimerRef.current); segmentTimerRef.current = null; }
+      setIsPlayingSegment(false);
+      return;
+    }
+    const a = new Audio(mediaFileUrl(extractedAudioPath));
+    webAudioRef.current = a;
+    a.currentTime = start;
+    setIsPlayingSegment(true);
+    a.play().catch(() => {});
+    segmentTimerRef.current = setTimeout(() => {
+      a.pause();
+      setIsPlayingSegment(false);
+      segmentTimerRef.current = null;
+    }, duration * 1000);
+    a.onended = () => {
+      if (segmentTimerRef.current) { clearTimeout(segmentTimerRef.current); segmentTimerRef.current = null; }
+      setIsPlayingSegment(false);
+    };
+  };
+
+  const handleCloneFromWeb = async () => {
+    if (!cloneName.trim() || !extractedAudioPath || !isElectron) return;
+    setCloning(true);
+    setCloneError("");
+    try {
+      const trimmedPath = extractedAudioPath.replace(".mp3", `_seg_${Date.now()}.mp3`);
+      const trimResult = await window.electronAPI.trimAudioSegment(
+        extractedAudioPath, segmentStart, segmentDuration, trimmedPath
+      );
+      if (!trimResult?.success) throw new Error("Errore nel taglio audio: " + (trimResult?.error || ""));
+      const loadResult = await window.electronAPI.loadFile(trimResult.path);
+      if (!loadResult?.base64Data) throw new Error("Impossibile leggere il file audio tagliato");
+      const binary = atob(loadResult.base64Data);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      const file = new File([bytes], "voice_sample.mp3", { type: "audio/mpeg" });
+      const result = await elevenLabsCloneVoice(cloneName.trim(), [file]);
+      if (!result?.voice_id) throw new Error("Nessun voice_id nella risposta");
+      setMyVoices(prev => [...prev, {
+        id: `el_voice_${result.voice_id}`,
+        name: cloneName.trim(),
+        provider: "elevenlabs",
+        voiceId: result.voice_id,
+        language: cloneLang,
+        source: "web",
+        sourceUrl: webUrl,
+        createdAt: new Date().toISOString(),
+      }]);
+      setShowCreateModal(false);
+      setCloneName(""); setWebUrl(""); setExtractedAudioPath(null); setTotalDuration(0); setSegmentStart(0);
+      void fetchCatalog();
+    } catch (e) {
+      console.error("[CLONE WEB]", e);
+      setCloneError(e.message || "Errore nella clonazione");
+    }
+    setCloning(false);
+  };
+
   const deleteMyVoice = (voiceId) => {
     setMyVoices(prev => prev.filter(v => v.id !== voiceId));
   };
 
-  // ── Voice row component (used in tree) ──
-  const VoiceRow = ({ v }) => (
-    <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", borderRadius: 8, background: isFavorite(v.voice_id) ? "rgba(255,179,71,0.06)" : "transparent", border: `1px solid ${isFavorite(v.voice_id) ? "rgba(255,179,71,0.2)" : "transparent"}` }}>
-      <span style={{ fontSize: 12, fontWeight: 600, color: AX.text, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-        {v.name}
-      </span>
-      {v.labels?.description && (
-        <span style={{ fontSize: 10, color: AX.muted, maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          {v.labels.description}
-        </span>
-      )}
-      <button type="button" onClick={() => playPreview(v)} style={{ background: "none", border: "none", cursor: v.preview_url ? "pointer" : "default", fontSize: 14, padding: 2, opacity: v.preview_url ? 1 : 0.3 }} title="Anteprima">
-        {elPreviewPlaying === v.voice_id ? "⏸" : "▶"}
-      </button>
-      <button type="button" onClick={() => toggleFavorite(v)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, padding: 2 }} title={isFavorite(v.voice_id) ? "Rimuovi dai preferiti" : "Aggiungi ai preferiti"}>
-        {isFavorite(v.voice_id) ? "⭐" : "☆"}
-      </button>
-    </div>
-  );
-
-  const chevronStyle = (open) => ({ display: "inline-block", transform: open ? "rotate(90deg)" : "rotate(0deg)", transition: "transform 0.15s", fontSize: 12, marginRight: 6, color: AX.muted });
-
   const LANG_LABELS = { it: "Italiano", en: "English", es: "Español", fr: "Français", de: "Deutsch", pt: "Português", ja: "日本語", ko: "한국어", zh: "中文", ru: "Русский" };
 
-  return (
-    <div style={{ padding: "24px 28px", maxWidth: 800 }}>
-      <h2 style={{ fontSize: 20, fontWeight: 800, color: AX.text, marginBottom: 6 }}>🗣 Libreria Voci</h2>
-      <p style={{ fontSize: 13, color: AX.muted, marginBottom: 16, lineHeight: 1.5 }}>
-        Esplora il catalogo ElevenLabs, salva le tue preferite o clona la tua voce.
-      </p>
+  const SETTINGS_TABS = [
+    { id: "voices", label: "Voci", TabIcon: HiSpeakerWave },
+    { id: "credits", label: "Crediti", TabIcon: HiCreditCard },
+    { id: "plans", label: "Piani", TabIcon: HiBolt },
+    { id: "profile", label: "Profilo", TabIcon: HiUserCircle },
+  ];
 
-      {/* Tab switcher */}
-      <div style={{ display: "flex", gap: 4, marginBottom: 20, background: AX.bg, borderRadius: 12, padding: 4, border: `1px solid ${AX.border}` }}>
-        {[{ id: "catalog", label: "📚 Catalogo Voci" }, { id: "myvoices", label: "🎤 Le mie Voci" }].map(t => (
-          <button key={t.id} type="button" onClick={() => setSettingsTab(t.id)} style={{ flex: 1, padding: "10px 14px", borderRadius: 10, border: "none", background: settingsTab === t.id ? AX.gradPrimary : "transparent", color: settingsTab === t.id ? "#fff" : AX.muted, fontWeight: settingsTab === t.id ? 700 : 500, fontSize: 13, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, boxShadow: settingsTab === t.id ? "0 4px 20px rgba(41,182,255,0.2)" : "none" }}>
-            {t.label}
-          </button>
-        ))}
+  const filterPill = (active, color = "41,182,255") => ({
+    padding: "7px 14px", borderRadius: 999, fontSize: 12, fontWeight: 600, cursor: "pointer",
+    border: `1px solid ${active ? `rgba(${color},0.45)` : AX.border}`,
+    background: active ? `rgba(${color},0.15)` : "transparent",
+    color: active ? AX.text : AX.muted,
+    transition: "all 0.15s ease", whiteSpace: "nowrap",
+    display: "inline-flex", alignItems: "center", gap: 5,
+  });
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", minHeight: 0, flex: 1 }}>
+      {/* ── Top-level tab bar ── */}
+      <div style={{ display: "flex", gap: 8, marginBottom: 22, flexShrink: 0, flexWrap: "wrap" }}>
+        {SETTINGS_TABS.map(t => {
+          const active = mainTab === t.id;
+          return (
+            <button key={t.id} type="button" onClick={() => setMainTab(t.id)} style={{
+              padding: "9px 20px", borderRadius: 999, border: `1px solid ${active ? AX.violet : AX.border}`,
+              background: active ? "rgba(123,77,255,0.18)" : "transparent",
+              color: active ? AX.text : AX.muted, fontWeight: active ? 700 : 500, fontSize: 12, cursor: "pointer",
+              display: "inline-flex", alignItems: "center", gap: 7, transition: "all 0.15s ease", whiteSpace: "nowrap",
+            }}>
+              <t.TabIcon size={15} />{t.label}
+            </button>
+          );
+        })}
       </div>
 
-      {/* ═══ TAB 1: CATALOGO VOCI ═══ */}
-      {settingsTab === "catalog" && (
-        <div>
-          {!ELEVENLABS_API_KEY && (
-            <div style={{ padding: 16, borderRadius: 10, background: "rgba(255,79,163,0.08)", border: "1px solid rgba(255,79,163,0.2)", marginBottom: 16, fontSize: 12, color: AX.magenta }}>
-              ⚠ Imposta <code>REACT_APP_ELEVENLABS_API_KEY</code> nel file <code>.env</code> per utilizzare ElevenLabs.
+      {/* ═══════════ TAB: VOCI ═══════════ */}
+      {mainTab === "voices" && (
+        <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
+          {/* Sub-header + sub-tabs inline */}
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12, marginBottom: 16, flexShrink: 0 }}>
+            <div>
+              <h2 style={{ fontFamily: "'Playfair Display', serif", fontSize: 22, fontWeight: 600, color: AX.text, margin: 0 }}>Libreria Voci</h2>
+              <p style={{ fontSize: 12, color: AX.muted, margin: "2px 0 0" }}>Esplora il catalogo, salva le tue preferite o clona la tua voce.</p>
             </div>
-          )}
-
-          {/* Search + refresh */}
-          <div style={{ display: "flex", gap: 8, marginBottom: 14, alignItems: "center" }}>
-            <input
-              value={searchQuery}
-              onChange={e => setSearchQuery(e.target.value)}
-              placeholder="🔍 Cerca per nome voce…"
-              style={{ flex: 1, padding: "8px 14px", borderRadius: 10, background: AX.surface, border: `1px solid ${AX.border}`, color: AX.text, fontSize: 13, outline: "none" }}
-            />
-            <button type="button" onClick={fetchCatalog} disabled={elLoading} style={{ padding: "8px 14px", borderRadius: 10, border: "none", background: AX.surface, color: AX.text, fontSize: 12, cursor: elLoading ? "not-allowed" : "pointer", opacity: elLoading ? 0.5 : 1, whiteSpace: "nowrap" }}>
-              {elLoading ? "⏳ Caricamento…" : "🔄 Aggiorna"}
-            </button>
+            <div style={{ display: "flex", gap: 4, background: AX.bg, borderRadius: 12, padding: 4, border: `1px solid ${AX.border}` }}>
+              {[{ id: "catalog", label: "Catalogo", TabIcon: HiGlobeAlt }, { id: "myvoices", label: "Le mie Voci", TabIcon: HiMicrophone }].map(t => (
+                <button key={t.id} type="button" onClick={() => setSettingsTab(t.id)} style={{ padding: "8px 16px", borderRadius: 10, border: "none", background: settingsTab === t.id ? AX.gradPrimary : "transparent", color: settingsTab === t.id ? "#fff" : AX.muted, fontWeight: settingsTab === t.id ? 700 : 500, fontSize: 12, cursor: "pointer", display: "flex", alignItems: "center", gap: 6, boxShadow: settingsTab === t.id ? "0 4px 16px rgba(41,182,255,0.15)" : "none", transition: "all 0.15s ease" }}>
+                  <t.TabIcon size={14} /> {t.label}
+                </button>
+              ))}
+            </div>
           </div>
 
-          {elError && <div style={{ marginBottom: 12, fontSize: 12, color: AX.magenta, padding: "8px 12px", background: "rgba(255,79,163,0.08)", borderRadius: 8 }}>{elError}</div>}
+          {/* ── Catalogo Voci ── */}
+          {settingsTab === "catalog" && (
+            <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
+              {!ELEVENLABS_API_KEY && (
+                <div style={{ padding: "10px 14px", borderRadius: 10, background: "rgba(255,79,163,0.06)", border: "1px solid rgba(255,79,163,0.15)", marginBottom: 12, fontSize: 12, color: AX.magenta, flexShrink: 0, display: "flex", alignItems: "center", gap: 8 }}>
+                  <HiExclamationTriangle size={14} /> Imposta <code style={{ background: "rgba(255,255,255,0.06)", padding: "1px 6px", borderRadius: 4 }}>REACT_APP_ELEVENLABS_API_KEY</code> nel <code style={{ background: "rgba(255,255,255,0.06)", padding: "1px 6px", borderRadius: 4 }}>.env</code>
+                </div>
+              )}
 
-          {/* Favorites summary */}
-          {elFavorites.length > 0 && (
-            <div style={{ marginBottom: 14, padding: "10px 14px", borderRadius: 10, background: "rgba(255,179,71,0.06)", border: "1px solid rgba(255,179,71,0.15)" }}>
-              <div style={{ fontSize: 12, fontWeight: 700, color: AX.gold, marginBottom: 6 }}>⭐ Preferite ({elFavorites.length})</div>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                {elFavorites.map(f => (
-                  <span key={f.voice_id} style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "3px 10px", borderRadius: 8, background: "rgba(255,179,71,0.1)", fontSize: 11, fontWeight: 600, color: AX.text }}>
-                    {f.name}
-                    <button type="button" onClick={() => setElFavorites(prev => prev.filter(x => x.voice_id !== f.voice_id))} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 11, color: AX.muted, padding: 0, lineHeight: 1 }} title="Rimuovi">✕</button>
-                  </span>
-                ))}
+              {/* Filters row */}
+              <div style={{ display: "flex", gap: 8, marginBottom: 14, alignItems: "center", flexShrink: 0, flexWrap: "wrap" }}>
+                <div style={{ position: "relative", minWidth: 200, flex: 1, maxWidth: 320 }}>
+                  <HiMagnifyingGlass size={14} style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", color: AX.muted, pointerEvents: "none" }} />
+                  <input value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Cerca voce…" style={{ width: "100%", padding: "9px 12px 9px 34px", borderRadius: 10, background: AX.surface, border: `1px solid ${AX.border}`, color: AX.text, fontSize: 12, outline: "none", boxSizing: "border-box", fontFamily: "'DM Sans', sans-serif" }} />
+                </div>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  {[{ v: "all", l: "Tutti" }, { v: "female", l: "Donna", I: HiUser }, { v: "male", l: "Uomo", I: HiUser }].map(g => (
+                    <button key={g.v} type="button" onClick={() => setFilterGender(g.v)} style={filterPill(filterGender === g.v, "123,77,255")}>{g.l}</button>
+                  ))}
+                </div>
+                <div style={{ width: 1, height: 20, background: AX.border, flexShrink: 0 }} />
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  {[{ v: "all", l: "Tutte le età" }, { v: "young", l: "Giovane" }, { v: "middle_aged", l: "Adulto" }, { v: "old", l: "Anziano" }].map(a => (
+                    <button key={a.v} type="button" onClick={() => setFilterAge(a.v)} style={filterPill(filterAge === a.v, "245,158,11")}>{a.l}</button>
+                  ))}
+                </div>
+                <button type="button" onClick={fetchCatalog} disabled={elLoading} style={{ padding: "7px 12px", borderRadius: 10, border: `1px solid ${AX.border}`, background: "transparent", color: AX.muted, cursor: elLoading ? "not-allowed" : "pointer", opacity: elLoading ? 0.5 : 1, display: "flex", alignItems: "center", gap: 5, fontSize: 12, fontWeight: 600 }}>
+                  <HiArrowPath size={13} style={elLoading ? { animation: "spin 0.8s linear infinite" } : {}} /> {elLoading ? "…" : "Aggiorna"}
+                </button>
+                <span style={{ fontSize: 11, color: AX.muted }}>{filteredVoices.length} voci</span>
               </div>
-            </div>
-          )}
 
-          {/* Voice tree */}
-          {elLoading && elVoices.length === 0 ? (
-            <div style={{ padding: 40, textAlign: "center", color: AX.muted, fontSize: 13 }}>
-              <div style={{ width: 20, height: 20, border: "2px solid rgba(255,255,255,0.15)", borderTopColor: AX.violet, borderRadius: "50%", animation: "spin 0.8s linear infinite", margin: "0 auto 12px" }} />
-              Caricamento catalogo voci…
-            </div>
-          ) : sortedLangs.length > 0 ? (
-            <div style={{ maxHeight: 500, overflowY: "auto", paddingRight: 4 }}>
-              {sortedLangs.map(langKey => {
-                const langLabel = EL_LANG_MAP[langKey] || (langKey === "_other" ? "🌐 Altro" : `🌍 ${langKey.charAt(0).toUpperCase() + langKey.slice(1)}`);
-                const langNode = `lang:${langKey}`;
-                const langOpen = expandedNodes.has(langNode);
-                const genderKeys = Object.keys(voiceTree[langKey]).sort((a, b) => a === "_other" ? 1 : b === "_other" ? -1 : a.localeCompare(b));
-                const totalInLang = genderKeys.reduce((sum, gk) => sum + Object.values(voiceTree[langKey][gk]).reduce((s2, arr) => s2 + arr.length, 0), 0);
+              {elError && <div style={{ marginBottom: 12, fontSize: 12, color: AX.magenta, padding: "8px 12px", background: "rgba(255,79,163,0.06)", borderRadius: 8, border: "1px solid rgba(255,79,163,0.15)", flexShrink: 0, display: "flex", alignItems: "center", gap: 6 }}><HiExclamationTriangle size={13} /> {elError}</div>}
 
-                return (
-                  <div key={langKey} style={{ marginBottom: 4 }}>
-                    <button type="button" onClick={() => toggleNode(langNode)} style={{ width: "100%", display: "flex", alignItems: "center", padding: "8px 10px", borderRadius: 8, border: "none", background: langOpen ? "rgba(123,77,255,0.08)" : "transparent", cursor: "pointer", textAlign: "left" }}>
-                      <span style={chevronStyle(langOpen)}>▶</span>
-                      <span style={{ fontSize: 14, fontWeight: 700, color: AX.text, flex: 1 }}>{langLabel}</span>
-                      <span style={{ fontSize: 11, color: AX.muted }}>{totalInLang} voci</span>
-                    </button>
-
-                    {langOpen && genderKeys.map(genderKey => {
-                      const genderLabel = EL_GENDER_MAP[genderKey] || (genderKey === "_other" ? "Altro" : genderKey);
-                      const genderNode = `${langNode}:${genderKey}`;
-                      const genderOpen = expandedNodes.has(genderNode);
-                      const ageKeys = Object.keys(voiceTree[langKey][genderKey]);
-                      const sortedAges = [...EL_AGE_ORDER.filter(a => ageKeys.includes(a)), ...(ageKeys.includes("_other") ? ["_other"] : [])];
-                      const totalInGender = sortedAges.reduce((s, ak) => s + (voiceTree[langKey][genderKey][ak]?.length || 0), 0);
-
+              {/* Voice card grid */}
+              {elLoading && elVoices.length === 0 ? (
+                <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 14 }}>
+                  <div style={{ width: 28, height: 28, border: "2.5px solid rgba(255,255,255,0.08)", borderTopColor: AX.violet, borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
+                  <span style={{ fontSize: 13, color: AX.muted }}>Caricamento catalogo voci…</span>
+                </div>
+              ) : filteredVoices.length > 0 ? (
+                <div className="ax-hide-scrollbar" style={{ flex: 1, overflowY: "auto", minHeight: 0 }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 12 }}>
+                    {filteredVoices.map(v => {
+                      const fav = isFavorite(v.voice_id);
+                      const playing = elPreviewPlaying === v.voice_id;
+                      const gRaw = (v.labels?.gender || "").toLowerCase();
+                      const aRaw = (v.labels?.age || "").toLowerCase();
+                      const genderBadge = gRaw === "male" ? "Uomo" : gRaw === "female" ? "Donna" : null;
+                      const ageBadge = EL_AGE_MAP[aRaw] || (aRaw ? aRaw.charAt(0).toUpperCase() + aRaw.slice(1) : null);
                       return (
-                        <div key={genderKey} style={{ marginLeft: 20 }}>
-                          <button type="button" onClick={() => toggleNode(genderNode)} style={{ width: "100%", display: "flex", alignItems: "center", padding: "6px 8px", borderRadius: 6, border: "none", background: genderOpen ? "rgba(41,182,255,0.06)" : "transparent", cursor: "pointer", textAlign: "left" }}>
-                            <span style={chevronStyle(genderOpen)}>▶</span>
-                            <span style={{ fontSize: 13, fontWeight: 600, color: AX.text2 || AX.text, flex: 1 }}>{genderLabel}</span>
-                            <span style={{ fontSize: 10, color: AX.muted }}>{totalInGender}</span>
+                        <div key={v.voice_id} style={{ background: AX.surface, borderRadius: 16, padding: 14, display: "flex", flexDirection: "column", gap: 8, border: fav ? `2px solid ${AX.violet}` : `1px solid ${AX.border}`, position: "relative", minHeight: 120, transition: "border-color 0.2s ease, box-shadow 0.2s ease", boxShadow: fav ? "0 4px 20px rgba(123,77,255,0.12)" : "none" }}
+                          onMouseEnter={e => { if (!fav) e.currentTarget.style.borderColor = AX.hover; }}
+                          onMouseLeave={e => { if (!fav) e.currentTarget.style.borderColor = AX.border; }}
+                        >
+                          {/* Name + fav */}
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 6 }}>
+                            <span style={{ fontSize: 14, fontWeight: 700, color: AX.text, lineHeight: 1.3, overflow: "hidden", textOverflow: "ellipsis", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", flex: 1 }}>{v.name}</span>
+                            <button type="button" onClick={() => toggleFavorite(v)} style={{ width: 28, height: 28, borderRadius: 8, background: fav ? "rgba(123,77,255,0.15)" : "rgba(255,255,255,0.04)", border: `1px solid ${fav ? AX.violet : "transparent"}`, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, transition: "all 0.15s ease", color: fav ? AX.violet : AX.muted }} title={fav ? "Rimuovi dai preferiti" : "Aggiungi ai preferiti"}>
+                              <HiStar size={14} style={{ fill: fav ? AX.violet : "none", stroke: fav ? AX.violet : AX.muted, strokeWidth: fav ? 0 : 1.5 }} />
+                            </button>
+                          </div>
+                          {/* Description */}
+                          {v.labels?.description && (
+                            <span style={{ fontSize: 11, color: AX.muted, lineHeight: 1.35, overflow: "hidden", textOverflow: "ellipsis", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>{v.labels.description}</span>
+                          )}
+                          {/* Badges */}
+                          <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+                            {genderBadge && <span style={{ fontSize: 10, padding: "3px 8px", borderRadius: 6, background: "rgba(123,77,255,0.12)", color: "#c4b5fd", fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 3 }}><HiUser size={10} /> {genderBadge}</span>}
+                            {ageBadge && <span style={{ fontSize: 10, padding: "3px 8px", borderRadius: 6, background: "rgba(245,158,11,0.12)", color: "#fbbf24", fontWeight: 600 }}>{ageBadge}</span>}
+                            <span style={{ fontSize: 10, padding: "3px 8px", borderRadius: 6, background: "rgba(16,185,129,0.1)", color: "#34d399", fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 3 }}><HiLanguage size={10} /> Multilingua</span>
+                          </div>
+                          {/* Play */}
+                          <button type="button" onClick={() => playPreview(v)} disabled={!v.preview_url} style={{ marginTop: "auto", padding: "7px 0", borderRadius: 10, background: playing ? "rgba(239,68,68,0.1)" : "rgba(255,255,255,0.04)", border: `1px solid ${playing ? "rgba(239,68,68,0.25)" : AX.border}`, color: playing ? "#f87171" : AX.text2, fontSize: 11, fontWeight: 600, cursor: v.preview_url ? "pointer" : "default", opacity: v.preview_url ? 1 : 0.3, transition: "all 0.15s ease", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+                            {playing ? <><HiStop size={12} /> Stop</> : <><HiPlay size={12} /> Ascolta</>}
                           </button>
-
-                          {genderOpen && sortedAges.map(ageKey => {
-                            const ageLabel = EL_AGE_MAP[ageKey] || (ageKey === "_other" ? "Altro" : ageKey);
-                            const ageNode = `${genderNode}:${ageKey}`;
-                            const ageOpen = expandedNodes.has(ageNode);
-                            const voices = voiceTree[langKey][genderKey][ageKey] || [];
-
-                            return (
-                              <div key={ageKey} style={{ marginLeft: 20 }}>
-                                <button type="button" onClick={() => toggleNode(ageNode)} style={{ width: "100%", display: "flex", alignItems: "center", padding: "5px 6px", borderRadius: 6, border: "none", background: "transparent", cursor: "pointer", textAlign: "left" }}>
-                                  <span style={chevronStyle(ageOpen)}>▶</span>
-                                  <span style={{ fontSize: 12, fontWeight: 500, color: AX.muted, flex: 1 }}>- {ageLabel}</span>
-                                  <span style={{ fontSize: 10, color: AX.muted }}>{voices.length}</span>
-                                </button>
-                                {ageOpen && (
-                                  <div style={{ marginLeft: 16, display: "flex", flexDirection: "column", gap: 2, marginBottom: 4 }}>
-                                    {voices.map(v => <VoiceRow key={v.voice_id} v={v} />)}
-                                  </div>
-                                )}
-                              </div>
-                            );
-                          })}
                         </div>
                       );
                     })}
                   </div>
-                );
-              })}
-            </div>
-          ) : (
-            !elLoading && <div style={{ padding: 30, textAlign: "center", color: AX.muted, fontSize: 12 }}>Nessuna voce trovata{searchQuery ? " per la ricerca corrente" : ""}.</div>
-          )}
-        </div>
-      )}
-
-      {/* ═══ TAB 2: LE MIE VOCI ═══ */}
-      {settingsTab === "myvoices" && (
-        <div>
-          <button
-            type="button"
-            onClick={() => { setShowCreateModal(true); setCreateMode("upload"); setCloneError(""); setCloneName(""); setCloneFile(null); setCloneFileName(""); setRecordedBlob(null); setRecordedUrl(null); setRecordingSeconds(0); }}
-            style={{ padding: "10px 20px", borderRadius: 10, border: "none", background: AX.gradPrimary, color: "#fff", fontWeight: 700, fontSize: 13, cursor: "pointer", marginBottom: 20, display: "flex", alignItems: "center", gap: 8 }}
-          >
-            <HiMicrophone size={16} /> + Crea voce
-          </button>
-
-          {myVoices.length === 0 ? (
-            <div style={{ padding: 30, textAlign: "center", color: AX.muted, border: `1px dashed ${AX.border}`, borderRadius: 12 }}>
-              <HiSpeakerWave size={32} style={{ opacity: 0.4, marginBottom: 8 }} />
-              <p style={{ margin: 0, fontSize: 13 }}>Nessuna voce personale creata.</p>
-              <p style={{ margin: "6px 0 0", fontSize: 11, opacity: 0.7 }}>Carica un audio o registra la tua voce per clonarla con ElevenLabs.</p>
-            </div>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              {myVoices.map(v => (
-                <div key={v.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px", borderRadius: 10, background: AX.surface, border: `1px solid ${AX.border}` }}>
-                  <div style={{ width: 36, height: 36, borderRadius: "50%", background: "rgba(123,77,255,0.15)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                    <HiSpeakerWave size={16} style={{ color: AX.violet }} />
+                </div>
+              ) : (
+                !elLoading && <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 10, padding: "40px 20px" }}>
+                  <div style={{ position: "relative", marginBottom: 8 }}>
+                    <div style={{ position: "absolute", inset: -16, borderRadius: "50%", background: "radial-gradient(circle, rgba(123,77,255,0.1) 0%, transparent 70%)", pointerEvents: "none" }} />
+                    <HiSpeakerWave size={44} style={{ opacity: 0.3, color: AX.muted }} />
                   </div>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: AX.text }}>{v.name}</div>
-                    <div style={{ fontSize: 11, color: AX.muted }}>
-                      {LANG_LABELS[v.language] || v.language || "—"} — {new Date(v.createdAt).toLocaleDateString("it-IT")}
+                  <span style={{ fontSize: 14, fontWeight: 600, color: AX.text2 }}>Nessuna voce trovata</span>
+                  <span style={{ fontSize: 12, color: AX.muted }}>{searchQuery || filterGender !== "all" || filterAge !== "all" ? "Prova a modificare i filtri." : ""}</span>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── Le mie Voci ── */}
+          {settingsTab === "myvoices" && (
+            <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
+              <div className="ax-hide-scrollbar" style={{ flex: 1, overflowY: "auto", minHeight: 0 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 12 }}>
+                  {/* + Crea voce card */}
+                  <button type="button" onClick={() => { setShowCreateModal(true); setCreateMode("upload"); setCloneError(""); setCloneName(""); setCloneFile(null); setCloneFileName(""); setRecordedBlob(null); setRecordedUrl(null); setRecordingSeconds(0); setWebUrl(""); setExtractedAudioPath(null); setExtractError(""); setTotalDuration(0); setSegmentStart(0); setSegmentDuration(60); }} style={{ background: "transparent", borderRadius: 16, padding: 14, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10, border: `2px dashed ${AX.border}`, cursor: "pointer", minHeight: 140, transition: "border-color 0.2s ease, background 0.2s ease" }}
+                    onMouseEnter={e => { e.currentTarget.style.borderColor = AX.violet; e.currentTarget.style.background = "rgba(123,77,255,0.04)"; }}
+                    onMouseLeave={e => { e.currentTarget.style.borderColor = AX.border; e.currentTarget.style.background = "transparent"; }}
+                  >
+                    <div style={{ width: 48, height: 48, borderRadius: 14, background: "rgba(123,77,255,0.1)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      <HiMicrophone size={22} style={{ color: AX.violet }} />
+                    </div>
+                    <span style={{ fontSize: 13, fontWeight: 700, color: AX.text }}>+ Crea voce</span>
+                    <span style={{ fontSize: 11, color: AX.muted }}>Clona la tua voce</span>
+                  </button>
+
+                  {/* My cloned voices */}
+                  {myVoices.map(v => {
+                    const playing = elPreviewPlaying === v.voiceId;
+                    return (
+                      <div key={v.id} style={{ background: AX.surface, borderRadius: 16, padding: 14, display: "flex", flexDirection: "column", gap: 8, border: `1px solid ${AX.border}`, position: "relative", minHeight: 120, transition: "border-color 0.2s ease" }}
+                        onMouseEnter={e => { e.currentTarget.style.borderColor = AX.hover; }}
+                        onMouseLeave={e => { e.currentTarget.style.borderColor = AX.border; }}
+                      >
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 6 }}>
+                          <span style={{ fontSize: 14, fontWeight: 700, color: AX.text, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{v.name}</span>
+                          <button type="button" onClick={() => deleteMyVoice(v.id)} style={{ width: 28, height: 28, borderRadius: 8, background: "rgba(255,255,255,0.04)", border: "1px solid transparent", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, color: AX.muted, opacity: 0.5, transition: "all 0.15s ease" }} title="Elimina voce"><HiTrash size={14} /></button>
+                        </div>
+                        <div style={{ fontSize: 11, color: AX.muted }}>{LANG_LABELS[v.language] || v.language || "—"} — {new Date(v.createdAt).toLocaleDateString("it-IT")}</div>
+                        <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+                          <span style={{ fontSize: 10, padding: "3px 8px", borderRadius: 6, background: "rgba(123,77,255,0.12)", color: "#c4b5fd", fontWeight: 600 }}>Clonata</span>
+                          <span style={{ fontSize: 10, padding: "3px 8px", borderRadius: 6, background: "rgba(16,185,129,0.1)", color: "#34d399", fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 3 }}><HiLanguage size={10} /> Multilingua</span>
+                        </div>
+                        <button type="button" onClick={() => { const cv = elVoices.find(ev => ev.voice_id === v.voiceId); if (cv) playPreview(cv); }} style={{ marginTop: "auto", padding: "7px 0", borderRadius: 10, background: playing ? "rgba(239,68,68,0.1)" : "rgba(255,255,255,0.04)", border: `1px solid ${playing ? "rgba(239,68,68,0.25)" : AX.border}`, color: playing ? "#f87171" : AX.text2, fontSize: 11, fontWeight: 600, cursor: "pointer", transition: "all 0.15s ease", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+                          {playing ? <><HiStop size={12} /> Stop</> : <><HiPlay size={12} /> Ascolta</>}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Kling voices */}
+                {voiceLibrary.length > 0 && (
+                  <div style={{ marginTop: 28 }}>
+                    <h2 style={{ fontSize: 13, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: AX.muted, margin: "0 0 12px" }}>Voci Kling (native)</h2>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 12 }}>
+                      {voiceLibrary.map(v => (
+                        <div key={v.id} style={{ background: AX.surface, borderRadius: 16, padding: 14, display: "flex", flexDirection: "column", gap: 8, border: `1px solid ${AX.border}`, minHeight: 80 }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                            <span style={{ fontSize: 14, fontWeight: 700, color: AX.text }}>{v.name}</span>
+                            <button type="button" onClick={() => setVoiceLibrary(prev => prev.filter(x => x.id !== v.id))} style={{ width: 26, height: 26, borderRadius: 7, background: "rgba(255,255,255,0.04)", border: "none", color: AX.muted, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", opacity: 0.5 }} title="Elimina"><HiTrash size={13} /></button>
+                          </div>
+                          <div style={{ display: "flex", gap: 5 }}>
+                            <span style={{ fontSize: 10, padding: "3px 8px", borderRadius: 6, background: "rgba(41,182,255,0.12)", color: AX.electric, fontWeight: 600 }}>Kling</span>
+                            <span style={{ fontSize: 10, color: AX.muted, padding: "3px 0" }}>{v.language}</span>
+                          </div>
+                        </div>
+                      ))}
                     </div>
                   </div>
-                  <span style={{ fontSize: 9, color: AX.muted, fontFamily: "monospace", opacity: 0.6 }}>{v.voiceId?.slice(0, 10)}…</span>
-                  <button type="button" onClick={() => {
-                    const catalogVoice = elVoices.find(ev => ev.voice_id === v.voiceId);
-                    if (catalogVoice) playPreview(catalogVoice);
-                  }} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 14, padding: 2 }} title="Anteprima">
-                    {elPreviewPlaying === v.voiceId ? "⏸" : "▶"}
-                  </button>
-                  <button type="button" onClick={() => deleteMyVoice(v.id)} style={{ background: "none", border: "none", color: AX.muted, cursor: "pointer", fontSize: 14, opacity: 0.5, padding: 4 }} title="Elimina voce">
-                    <HiTrash size={16} />
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* Kling voices section */}
-          {voiceLibrary.length > 0 && (
-            <div style={{ marginTop: 24 }}>
-              <div style={{ fontSize: 12, fontWeight: 700, color: AX.muted, marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.06em" }}>Voci Kling (native)</div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                {voiceLibrary.map(v => (
-                  <div key={v.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", borderRadius: 8, background: "rgba(41,182,255,0.04)", border: `1px solid rgba(41,182,255,0.15)` }}>
-                    <HiSpeakerWave size={14} style={{ color: AX.electric || "#29B6FF", flexShrink: 0 }} />
-                    <span style={{ fontSize: 12, fontWeight: 600, color: AX.text, flex: 1 }}>{v.name}</span>
-                    <span style={{ fontSize: 10, color: AX.muted }}>{v.language}</span>
-                    <button type="button" onClick={() => setVoiceLibrary(prev => prev.filter(x => x.id !== v.id))} style={{ background: "none", border: "none", color: AX.muted, cursor: "pointer", fontSize: 13, opacity: 0.5, padding: 2 }} title="Elimina"><HiTrash size={14} /></button>
-                  </div>
-                ))}
+                )}
               </div>
             </div>
           )}
+
+        </div>
+      )}
+
+      {/* ═══════════ TAB: CREDITI ═══════════ */}
+      {mainTab === "credits" && (
+        <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
+          <h2 style={{ fontFamily: "'Playfair Display', serif", fontSize: 22, fontWeight: 600, color: AX.text, margin: 0, marginBottom: 4 }}>Crediti</h2>
+          <p style={{ fontSize: 12, color: AX.muted, margin: "0 0 24px" }}>Gestisci i tuoi crediti, acquistane di nuovi o guadagnali.</p>
+          <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <div style={{ textAlign: "center", padding: 40 }}>
+              <div style={{ position: "relative", display: "inline-block", marginBottom: 16 }}>
+                <div style={{ position: "absolute", inset: -20, borderRadius: "50%", background: "radial-gradient(circle, rgba(41,182,255,0.1) 0%, transparent 70%)", pointerEvents: "none" }} />
+                <HiCreditCard size={52} style={{ color: AX.electric, opacity: 0.35 }} />
+              </div>
+              <p style={{ fontSize: 15, fontWeight: 600, color: AX.text2, margin: 0 }}>Sezione crediti</p>
+              <p style={{ fontSize: 13, color: AX.muted, margin: "10px 0 0", lineHeight: 1.6 }}>Questa sezione sarà disponibile a breve.</p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ═══════════ TAB: PIANI ═══════════ */}
+      {mainTab === "plans" && (
+        <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
+          <h2 style={{ fontFamily: "'Playfair Display', serif", fontSize: 22, fontWeight: 600, color: AX.text, margin: 0, marginBottom: 4 }}>Piani</h2>
+          <p style={{ fontSize: 12, color: AX.muted, margin: "0 0 24px" }}>Il tuo abbonamento e le opzioni di upgrade.</p>
+          <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <div style={{ textAlign: "center", padding: 40 }}>
+              <div style={{ position: "relative", display: "inline-block", marginBottom: 16 }}>
+                <div style={{ position: "absolute", inset: -20, borderRadius: "50%", background: "radial-gradient(circle, rgba(123,77,255,0.1) 0%, transparent 70%)", pointerEvents: "none" }} />
+                <HiBolt size={52} style={{ color: AX.violet, opacity: 0.35 }} />
+              </div>
+              <p style={{ fontSize: 15, fontWeight: 600, color: AX.text2, margin: 0 }}>Gestione piani</p>
+              <p style={{ fontSize: 13, color: AX.muted, margin: "10px 0 0", lineHeight: 1.6 }}>Questa sezione sarà disponibile a breve.</p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ═══════════ TAB: PROFILO ═══════════ */}
+      {mainTab === "profile" && (
+        <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
+          <h2 style={{ fontFamily: "'Playfair Display', serif", fontSize: 22, fontWeight: 600, color: AX.text, margin: 0, marginBottom: 4 }}>Profilo</h2>
+          <p style={{ fontSize: 12, color: AX.muted, margin: "0 0 24px" }}>Le tue informazioni personali e impostazioni account.</p>
+          <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <div style={{ textAlign: "center", padding: 40 }}>
+              <div style={{ position: "relative", display: "inline-block", marginBottom: 16 }}>
+                <div style={{ position: "absolute", inset: -20, borderRadius: "50%", background: "radial-gradient(circle, rgba(255,138,42,0.1) 0%, transparent 70%)", pointerEvents: "none" }} />
+                <HiUserCircle size={52} style={{ color: AX.orange, opacity: 0.35 }} />
+              </div>
+              <p style={{ fontSize: 15, fontWeight: 600, color: AX.text2, margin: 0 }}>Impostazioni profilo</p>
+              <p style={{ fontSize: 13, color: AX.muted, margin: "10px 0 0", lineHeight: 1.6 }}>Questa sezione sarà disponibile a breve.</p>
+            </div>
+          </div>
         </div>
       )}
 
       {/* ═══ MODALE CREA VOCE ═══ */}
       {showCreateModal && (
-        <Modal title="Crea voce personale" titleIcon={<HiMicrophone size={20} />} onClose={() => { setShowCreateModal(false); setCloneError(""); stopRecording(); }}>
+        <Modal title="Crea voce personale" titleIcon={<HiMicrophone size={17} style={{ color: AX.violet }} />} onClose={() => { setShowCreateModal(false); setCloneError(""); stopRecording(); }}>
           {/* Mode switcher */}
-          <div style={{ display: "flex", gap: 4, marginBottom: 16, background: AX.bg, borderRadius: 10, padding: 3, border: `1px solid ${AX.border}` }}>
-            {[{ id: "upload", label: "📁 Upload audio" }, { id: "record", label: "🎙 Registra in-app" }].map(m => (
-              <button key={m.id} type="button" onClick={() => { setCreateMode(m.id); setCloneError(""); }} style={{ flex: 1, padding: "8px 10px", borderRadius: 8, border: "none", background: createMode === m.id ? AX.gradPrimary : "transparent", color: createMode === m.id ? "#fff" : AX.muted, fontWeight: createMode === m.id ? 700 : 500, fontSize: 12, cursor: "pointer" }}>
-                {m.label}
-              </button>
-            ))}
+          <div style={{ display: "flex", gap: 0, marginBottom: 20, borderRadius: 12, overflow: "hidden", border: `1px solid ${AX.border}` }}>
+            {[{ id: "upload", label: "Upload audio", MIcon: HiArrowUpTray }, { id: "record", label: "Registra in-app", MIcon: HiMicrophone }, { id: "web", label: "Importa dal web", MIcon: HiGlobeAlt }].map(m => {
+              const active = createMode === m.id;
+              return (
+                <button key={m.id} type="button" onClick={() => { setCreateMode(m.id); setCloneError(""); }} style={{ flex: 1, padding: "10px 12px", border: "none", background: active ? AX.surface : AX.bg, color: active ? AX.text : AX.muted, fontWeight: active ? 700 : 500, fontSize: 12, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, borderBottom: active ? `2px solid ${AX.violet}` : "2px solid transparent", transition: "all 0.15s ease" }}>
+                  <m.MIcon size={14} /> {m.label}
+                </button>
+              );
+            })}
           </div>
 
           {/* Nome voce */}
-          <div style={{ marginBottom: 14 }}>
-            <label style={{ fontSize: 12, color: AX.muted, fontWeight: 600, display: "block", marginBottom: 5 }}>Nome voce *</label>
+          <div style={{ marginBottom: 16 }}>
+            <label style={{ fontSize: 11, color: AX.muted, fontWeight: 700, display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.06em" }}>Nome voce</label>
             <input
               value={cloneName}
               onChange={e => setCloneName(e.target.value)}
               placeholder="Es. Voce Raffaele, Voce Sofia…"
-              style={{ width: "100%", padding: "11px 14px", borderRadius: 10, background: AX.bg, border: `1px solid ${AX.border}`, color: AX.text, fontSize: 14, outline: "none", boxSizing: "border-box" }}
+              style={{ width: "100%", padding: "11px 14px", borderRadius: 12, background: AX.bg, border: `1px solid ${AX.border}`, color: AX.text, fontSize: 13, outline: "none", boxSizing: "border-box", fontFamily: "'DM Sans', sans-serif", transition: "border-color 0.15s ease" }}
+              onFocus={e => { e.target.style.borderColor = AX.violet; }}
+              onBlur={e => { e.target.style.borderColor = AX.border; }}
             />
           </div>
 
           {/* Lingua */}
-          <div style={{ marginBottom: 14 }}>
-            <label style={{ fontSize: 12, color: AX.muted, fontWeight: 600, display: "block", marginBottom: 5 }}>Lingua</label>
-            <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
-              {[["it", "Italiano"], ["en", "English"], ["es", "Español"], ["fr", "Français"], ["de", "Deutsch"]].map(([id, label]) => (
-                <button key={id} type="button" onClick={() => setCloneLang(id)} style={{ padding: "6px 12px", borderRadius: 8, fontSize: 11, fontWeight: 600, border: "1px solid", cursor: "pointer", borderColor: cloneLang === id ? AX.violet : AX.border, background: cloneLang === id ? "rgba(123,77,255,0.14)" : "transparent", color: cloneLang === id ? AX.electric : AX.muted }}>{label}</button>
-              ))}
+          <div style={{ marginBottom: 18 }}>
+            <label style={{ fontSize: 11, color: AX.muted, fontWeight: 700, display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.06em" }}>Lingua dell'accento</label>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              {[["it", "Italiano"], ["en", "English"], ["es", "Español"], ["fr", "Français"], ["de", "Deutsch"]].map(([id, label]) => {
+                const active = cloneLang === id;
+                return (
+                  <button key={id} type="button" onClick={() => setCloneLang(id)} style={{ padding: "7px 14px", borderRadius: 999, fontSize: 11, fontWeight: 600, cursor: "pointer", border: `1px solid ${active ? AX.violet : AX.border}`, background: active ? "rgba(123,77,255,0.15)" : "transparent", color: active ? AX.text : AX.muted, transition: "all 0.15s ease" }}>{label}</button>
+                );
+              })}
             </div>
           </div>
 
           {/* Upload mode */}
           {createMode === "upload" && (
-            <div style={{ marginBottom: 18 }}>
-              <label style={{ fontSize: 12, color: AX.muted, fontWeight: 600, display: "block", marginBottom: 5 }}>Audio di riferimento * (10–60 secondi)</label>
+            <div style={{ marginBottom: 20 }}>
+              <label style={{ fontSize: 11, color: AX.muted, fontWeight: 700, display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.06em" }}>Audio di riferimento <span style={{ fontWeight: 400, textTransform: "none", letterSpacing: 0 }}>(30–120 secondi)</span></label>
               <div
                 onClick={() => cloneFileRef.current?.click()}
-                style={{ width: "100%", minHeight: 80, borderRadius: 12, border: `1px dashed ${cloneFile ? AX.violet : AX.border}`, background: AX.bg, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 6, padding: 16 }}
+                onMouseEnter={e => { e.currentTarget.style.borderColor = AX.violet; e.currentTarget.style.background = "rgba(123,77,255,0.04)"; }}
+                onMouseLeave={e => { e.currentTarget.style.borderColor = cloneFile ? "rgba(16,185,129,0.4)" : AX.border; e.currentTarget.style.background = AX.bg; }}
+                style={{ width: "100%", minHeight: 88, borderRadius: 14, border: `2px dashed ${cloneFile ? "rgba(16,185,129,0.4)" : AX.border}`, background: AX.bg, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 8, padding: 18, transition: "all 0.15s ease", boxSizing: "border-box" }}
               >
                 {cloneFile ? (
                   <>
-                    <HiCheckCircle size={22} style={{ color: "#10b981" }} />
-                    <span style={{ fontSize: 12, color: "#10b981", fontWeight: 600 }}>{cloneFileName}</span>
+                    <HiCheckCircle size={24} style={{ color: "#34d399" }} />
+                    <span style={{ fontSize: 13, color: "#34d399", fontWeight: 700 }}>{cloneFileName}</span>
                     <span style={{ fontSize: 10, color: AX.muted }}>Clicca per cambiare file</span>
                   </>
                 ) : (
                   <>
-                    <HiArrowUpTray size={22} style={{ opacity: 0.6, color: AX.muted }} />
-                    <span style={{ fontSize: 12, color: AX.muted }}>Carica audio MP3, WAV o M4A</span>
-                    <span style={{ fontSize: 10, color: AX.muted, opacity: 0.7 }}>Durata: 10–60 secondi di parlato chiaro</span>
+                    <div style={{ width: 40, height: 40, borderRadius: 12, background: "rgba(255,255,255,0.04)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      <HiArrowUpTray size={20} style={{ color: AX.muted }} />
+                    </div>
+                    <span style={{ fontSize: 12, color: AX.text2, fontWeight: 600 }}>Carica audio MP3, WAV o M4A</span>
+                    <span style={{ fontSize: 10, color: AX.muted }}>Durata: 30–120 secondi di parlato chiaro</span>
                   </>
                 )}
               </div>
@@ -10989,71 +11141,199 @@ function VoiceLibrarySettings({ voiceLibrary, setVoiceLibrary, elFavorites, setE
 
           {/* Record mode */}
           {createMode === "record" && (
-            <div style={{ marginBottom: 18 }}>
-              <label style={{ fontSize: 12, color: AX.muted, fontWeight: 600, display: "block", marginBottom: 8 }}>Registra la tua voce (10–60 secondi)</label>
+            <div style={{ marginBottom: 20 }}>
+              <label style={{ fontSize: 11, color: AX.muted, fontWeight: 700, display: "block", marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.06em" }}>Registra la tua voce <span style={{ fontWeight: 400, textTransform: "none", letterSpacing: 0 }}>(30–120 secondi)</span></label>
 
               {!isRecording && !recordedBlob && (
-                <button type="button" onClick={startRecording} style={{ width: "100%", padding: "16px", borderRadius: 12, border: `2px dashed ${AX.violet}`, background: "rgba(123,77,255,0.06)", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 10, flexDirection: "column" }}>
-                  <div style={{ width: 48, height: 48, borderRadius: "50%", background: "rgba(255,79,163,0.15)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                    <HiMicrophone size={24} style={{ color: AX.magenta || "#FF4FA3" }} />
+                <button type="button" onClick={startRecording} style={{ width: "100%", padding: 20, borderRadius: 14, border: `2px dashed ${AX.border}`, background: AX.bg, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 12, flexDirection: "column", transition: "border-color 0.15s ease" }}
+                  onMouseEnter={e => { e.currentTarget.style.borderColor = AX.violet; }}
+                  onMouseLeave={e => { e.currentTarget.style.borderColor = AX.border; }}
+                >
+                  <div style={{ width: 52, height: 52, borderRadius: 16, background: "rgba(123,77,255,0.1)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    <HiMicrophone size={24} style={{ color: AX.violet }} />
                   </div>
-                  <span style={{ fontSize: 13, fontWeight: 600, color: AX.text }}>Premi per registrare</span>
-                  <span style={{ fontSize: 10, color: AX.muted }}>Parla chiaramente per almeno 10 secondi</span>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: AX.text }}>Premi per registrare</span>
+                  <span style={{ fontSize: 11, color: AX.muted }}>Parla chiaramente per almeno 10 secondi</span>
                 </button>
               )}
 
               {isRecording && (
-                <div style={{ width: "100%", padding: "20px", borderRadius: 12, border: "2px solid rgba(255,79,163,0.4)", background: "rgba(255,79,163,0.06)", textAlign: "center" }}>
-                  <div style={{ fontSize: 28, fontWeight: 800, color: AX.magenta || "#FF4FA3", fontFamily: "monospace", marginBottom: 8 }}>
+                <div style={{ width: "100%", padding: 22, borderRadius: 14, border: `1px solid rgba(255,79,163,0.3)`, background: "rgba(255,79,163,0.04)", textAlign: "center", boxSizing: "border-box" }}>
+                  <div style={{ fontSize: 32, fontWeight: 800, color: AX.magenta, fontFamily: "monospace", marginBottom: 10, letterSpacing: "0.05em" }}>
                     {Math.floor(recordingSeconds / 60).toString().padStart(2, "0")}:{(recordingSeconds % 60).toString().padStart(2, "0")}
                   </div>
-                  <div style={{ width: "100%", height: 4, borderRadius: 2, background: AX.border, marginBottom: 12 }}>
-                    <div style={{ height: "100%", borderRadius: 2, background: recordingSeconds < 10 ? AX.magenta : "#10b981", width: `${Math.min(100, (recordingSeconds / 60) * 100)}%`, transition: "width 1s linear" }} />
+                  <div style={{ width: "100%", height: 4, borderRadius: 4, background: AX.border, marginBottom: 14 }}>
+                    <div style={{ height: "100%", borderRadius: 4, background: recordingSeconds < 30 ? AX.magenta : "#34d399", width: `${Math.min(100, (recordingSeconds / 120) * 100)}%`, transition: "width 1s linear" }} />
                   </div>
-                  <div style={{ fontSize: 11, color: recordingSeconds < 10 ? (AX.magenta || "#FF4FA3") : "#10b981", marginBottom: 12 }}>
-                    {recordingSeconds < 10 ? `Minimo 10s — ancora ${10 - recordingSeconds}s` : `✓ Durata sufficiente (max 60s)`}
+                  <div style={{ fontSize: 11, color: recordingSeconds < 30 ? AX.magenta : "#34d399", marginBottom: 14, fontWeight: 600 }}>
+                    {recordingSeconds < 30 ? `Minimo 30s — ancora ${30 - recordingSeconds}s` : <><HiCheck size={12} style={{ verticalAlign: "middle" }} /> Durata sufficiente (max 120s)</>}
                   </div>
-                  <button type="button" onClick={stopRecording} disabled={recordingSeconds < 10} style={{ padding: "10px 24px", borderRadius: 10, border: "none", background: recordingSeconds < 10 ? AX.border : "linear-gradient(135deg, #FF4FA3, #7B4DFF)", color: recordingSeconds < 10 ? AX.muted : "#fff", fontWeight: 700, fontSize: 13, cursor: recordingSeconds < 10 ? "not-allowed" : "pointer" }}>
-                    ⏹ Stop
+                  <button type="button" onClick={stopRecording} disabled={recordingSeconds < 30} style={{ padding: "10px 28px", borderRadius: 10, border: "none", background: recordingSeconds < 30 ? AX.border : AX.gradCreative, color: recordingSeconds < 30 ? AX.muted : "#fff", fontWeight: 700, fontSize: 13, cursor: recordingSeconds < 30 ? "not-allowed" : "pointer", display: "inline-flex", alignItems: "center", gap: 6 }}>
+                    <HiStop size={13} /> Stop
                   </button>
                 </div>
               )}
 
               {!isRecording && recordedBlob && (
-                <div style={{ width: "100%", padding: "16px", borderRadius: 12, border: `1px solid ${AX.border}`, background: AX.surface }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
-                    <HiCheckCircle size={20} style={{ color: "#10b981" }} />
-                    <span style={{ fontSize: 13, fontWeight: 600, color: "#10b981" }}>Registrazione completata — {recordingSeconds}s</span>
+                <div style={{ width: "100%", padding: 16, borderRadius: 14, border: `1px solid rgba(16,185,129,0.25)`, background: "rgba(16,185,129,0.04)", boxSizing: "border-box" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
+                    <HiCheckCircle size={20} style={{ color: "#34d399", flexShrink: 0 }} />
+                    <span style={{ fontSize: 13, fontWeight: 700, color: "#34d399" }}>Registrazione completata — {recordingSeconds}s</span>
                   </div>
                   <div style={{ display: "flex", gap: 8 }}>
-                    <button type="button" onClick={playRecordingPreview} style={{ flex: 1, padding: "8px", borderRadius: 8, border: `1px solid ${AX.border}`, background: "transparent", color: AX.text, fontSize: 12, cursor: "pointer" }}>
-                      {recordingPreviewPlaying ? "⏸ Pausa" : "▶ Ascolta"}
+                    <button type="button" onClick={playRecordingPreview} style={{ flex: 1, padding: "9px", borderRadius: 10, border: `1px solid ${AX.border}`, background: "rgba(255,255,255,0.04)", color: AX.text, fontSize: 12, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 5 }}>
+                      {recordingPreviewPlaying ? <><HiStop size={12} /> Pausa</> : <><HiPlay size={12} /> Ascolta</>}
                     </button>
-                    <button type="button" onClick={() => { setRecordedBlob(null); setRecordedUrl(null); setRecordingSeconds(0); }} style={{ flex: 1, padding: "8px", borderRadius: 8, border: `1px solid ${AX.border}`, background: "transparent", color: AX.muted, fontSize: 12, cursor: "pointer" }}>
-                      🔄 Registra di nuovo
+                    <button type="button" onClick={() => { setRecordedBlob(null); setRecordedUrl(null); setRecordingSeconds(0); }} style={{ flex: 1, padding: "9px", borderRadius: 10, border: `1px solid ${AX.border}`, background: "rgba(255,255,255,0.04)", color: AX.muted, fontSize: 12, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 5 }}>
+                      <HiArrowPath size={12} /> Registra di nuovo
                     </button>
                   </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Web import mode */}
+          {createMode === "web" && (
+            <div style={{ marginBottom: 20 }}>
+              <label style={{ fontSize: 11, color: AX.muted, fontWeight: 700, display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.06em" }}>URL video o audio</label>
+              <div style={{ position: "relative" }}>
+                <HiLink size={14} style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", color: AX.muted, pointerEvents: "none" }} />
+                <input
+                  value={webUrl}
+                  onChange={e => setWebUrl(e.target.value)}
+                  placeholder="https://www.youtube.com/watch?v=..."
+                  style={{ width: "100%", padding: "11px 14px 11px 34px", borderRadius: 12, background: AX.bg, border: `1px solid ${AX.border}`, color: AX.text, fontSize: 13, outline: "none", boxSizing: "border-box", fontFamily: "'DM Sans', sans-serif", transition: "border-color 0.15s ease" }}
+                  onFocus={e => { e.target.style.borderColor = AX.violet; }}
+                  onBlur={e => { e.target.style.borderColor = AX.border; }}
+                />
+              </div>
+
+              <button
+                type="button"
+                onClick={handleExtractWebAudio}
+                disabled={!webUrl.trim() || extracting}
+                style={{ width: "100%", marginTop: 12, padding: "12px", borderRadius: 12, border: "none", background: (!webUrl.trim() || extracting) ? AX.border : AX.gradCreative, color: (!webUrl.trim() || extracting) ? AX.muted : "#fff", fontWeight: 700, fontSize: 13, cursor: (!webUrl.trim() || extracting) ? "not-allowed" : "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, transition: "all 0.15s ease" }}
+              >
+                {extracting ? (
+                  <><div style={{ width: 14, height: 14, border: "2px solid rgba(255,255,255,0.2)", borderTopColor: "#fff", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} /> Estrazione in corso…</>
+                ) : (
+                  <><HiMicrophone size={15} /> Estrai audio</>
+                )}
+              </button>
+
+              {extractError && (
+                <div style={{ marginTop: 10, fontSize: 12, color: AX.magenta, padding: "10px 14px", background: "rgba(255,79,163,0.06)", borderRadius: 10, border: "1px solid rgba(255,79,163,0.15)", display: "flex", alignItems: "center", gap: 8 }}>
+                  <HiExclamationTriangle size={14} /> {extractError}
+                </div>
+              )}
+
+              {/* ── Segment selector ── */}
+              {extractedAudioPath && totalDuration > 0 && (() => {
+                const maxStart = Math.max(0, totalDuration - segmentDuration);
+                const effectiveEnd = Math.min(segmentStart + segmentDuration, totalDuration);
+                const effectiveDur = effectiveEnd - segmentStart;
+                return (
+                  <div style={{ marginTop: 16 }}>
+                    {/* Header: durata + dropdown */}
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                      <span style={{ fontSize: 12, color: AX.muted, fontWeight: 600 }}>Durata totale: <span style={{ color: AX.text }}>{formatTime(totalDuration)}</span></span>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <span style={{ fontSize: 11, color: AX.muted }}>Segmento:</span>
+                        <select value={segmentDuration} onChange={e => { const d = Number(e.target.value); setSegmentDuration(d); setSegmentStart(Math.min(segmentStart, Math.max(0, totalDuration - d))); }}
+                          style={{ background: AX.bg, color: AX.text, border: `1px solid ${AX.border}`, borderRadius: 8, padding: "4px 8px", fontSize: 11, fontWeight: 600, outline: "none", cursor: "pointer" }}>
+                          <option value={30}>30s</option>
+                          <option value={60}>60s (consigliato)</option>
+                          <option value={90}>90s</option>
+                          <option value={120}>120s</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    {/* Waveform-style bar with selection zone */}
+                    <div style={{ position: "relative", height: 52, background: "rgba(255,255,255,0.03)", borderRadius: 10, overflow: "hidden", cursor: "pointer", border: `1px solid ${AX.border}` }}
+                      onClick={(e) => {
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        const clickTime = ((e.clientX - rect.left) / rect.width) * totalDuration;
+                        setSegmentStart(Math.max(0, Math.min(clickTime - segmentDuration / 2, maxStart)));
+                      }}>
+                      {/* Selected zone */}
+                      <div style={{
+                        position: "absolute", top: 0,
+                        left: `${(segmentStart / totalDuration) * 100}%`,
+                        width: `${(effectiveDur / totalDuration) * 100}%`,
+                        height: "100%",
+                        background: "rgba(123,77,255,0.2)",
+                        borderLeft: `2px solid ${AX.violet}`,
+                        borderRight: `2px solid ${AX.violet}`,
+                        transition: "left 0.1s ease, width 0.1s ease",
+                      }} />
+                      {/* Time markers every 30s */}
+                      {Array.from({ length: Math.floor(totalDuration / 30) + 1 }, (_, i) => i * 30).map(t => (
+                        <div key={t} style={{ position: "absolute", left: `${(t / totalDuration) * 100}%`, top: 0, height: "100%", borderLeft: "1px solid rgba(255,255,255,0.08)", pointerEvents: "none" }}>
+                          <span style={{ position: "absolute", bottom: 4, left: 4, fontSize: 9, color: "rgba(255,255,255,0.25)", fontFamily: "monospace" }}>{formatTime(t)}</span>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Range slider */}
+                    <input type="range" min={0} max={maxStart} step={0.5}
+                      value={segmentStart} onChange={e => setSegmentStart(parseFloat(e.target.value))}
+                      style={{ width: "100%", marginTop: 6, accentColor: AX.violet, height: 4, cursor: "pointer" }} />
+
+                    {/* Info + play segment */}
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 8 }}>
+                      <span style={{ fontSize: 12, color: "rgba(196,181,253,0.9)", fontWeight: 600, fontFamily: "monospace" }}>
+                        {formatTime(segmentStart)} → {formatTime(effectiveEnd)} ({Math.round(effectiveDur)}s)
+                      </span>
+                      <button type="button" onClick={() => playSegment(segmentStart, effectiveDur)}
+                        style={{ padding: "7px 16px", borderRadius: 10, border: `1px solid ${isPlayingSegment ? "rgba(239,68,68,0.25)" : "rgba(123,77,255,0.3)"}`, background: isPlayingSegment ? "rgba(239,68,68,0.08)" : "rgba(123,77,255,0.08)", color: isPlayingSegment ? "#f87171" : "rgba(196,181,253,0.9)", fontSize: 12, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", gap: 6, transition: "all 0.15s ease" }}>
+                        {isPlayingSegment ? <><HiStop size={12} /> Stop</> : <><HiPlay size={12} /> Ascolta segmento</>}
+                      </button>
+                    </div>
+
+                    {/* Re-extract */}
+                    <button type="button" onClick={() => { setExtractedAudioPath(null); setTotalDuration(0); setSegmentStart(0); setExtractError(""); }}
+                      style={{ marginTop: 10, padding: "7px 0", width: "100%", borderRadius: 10, border: `1px solid ${AX.border}`, background: "transparent", color: AX.muted, fontSize: 11, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 5, transition: "color 0.15s ease" }}
+                      onMouseEnter={e => { e.currentTarget.style.color = AX.text; }} onMouseLeave={e => { e.currentTarget.style.color = AX.muted; }}>
+                      <HiArrowPath size={12} /> Estrai da un altro URL
+                    </button>
+                  </div>
+                );
+              })()}
+
+              {/* Extracted but no duration yet — loading */}
+              {extractedAudioPath && totalDuration === 0 && (
+                <div style={{ marginTop: 14, padding: 14, borderRadius: 12, background: "rgba(255,255,255,0.03)", textAlign: "center" }}>
+                  <div style={{ width: 14, height: 14, border: "2px solid rgba(255,255,255,0.1)", borderTopColor: AX.violet, borderRadius: "50%", animation: "spin 0.8s linear infinite", margin: "0 auto 8px" }} />
+                  <span style={{ fontSize: 12, color: AX.muted }}>Caricamento audio…</span>
                 </div>
               )}
             </div>
           )}
 
           {cloneError && (
-            <div style={{ marginBottom: 12, fontSize: 12, color: AX.magenta, padding: "8px 12px", background: "rgba(255,79,163,0.08)", borderRadius: 8 }}>
-              ⚠ {cloneError}
+            <div style={{ marginBottom: 14, fontSize: 12, color: AX.magenta, padding: "10px 14px", background: "rgba(255,79,163,0.06)", borderRadius: 10, border: "1px solid rgba(255,79,163,0.15)", display: "flex", alignItems: "center", gap: 8 }}>
+              <HiExclamationTriangle size={14} /> {cloneError}
             </div>
           )}
 
-          <button
-            type="button"
-            onClick={createMode === "upload" ? handleCloneUpload : handleCloneRecording}
-            disabled={!cloneName.trim() || (createMode === "upload" ? !cloneFile : !recordedBlob) || cloning}
-            style={{ width: "100%", padding: "12px", borderRadius: 12, border: "none", background: (!cloneName.trim() || (createMode === "upload" ? !cloneFile : !recordedBlob) || cloning) ? AX.border : AX.gradPrimary, color: (!cloneName.trim() || (createMode === "upload" ? !cloneFile : !recordedBlob) || cloning) ? AX.muted : "#fff", fontWeight: 700, fontSize: 14, cursor: (!cloneName.trim() || (createMode === "upload" ? !cloneFile : !recordedBlob) || cloning) ? "not-allowed" : "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}
-          >
-            {cloning
-              ? <><div style={{ width: 14, height: 14, border: "2px solid rgba(255,255,255,0.2)", borderTopColor: "#fff", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} /> Clonazione in corso…</>
-              : <><HiSpeakerWave size={16} /> Clona questa voce</>}
-          </button>
+          {(() => {
+            const disabled = !cloneName.trim() || (createMode === "upload" ? !cloneFile : createMode === "record" ? !recordedBlob : !extractedAudioPath) || cloning;
+            const handler = createMode === "upload" ? handleCloneUpload : createMode === "record" ? handleCloneRecording : handleCloneFromWeb;
+            return (
+              <button
+                type="button"
+                onClick={handler}
+                disabled={disabled}
+                style={{ width: "100%", padding: "13px", borderRadius: 14, border: "none", background: disabled ? AX.border : AX.gradPrimary, color: disabled ? AX.muted : "#fff", fontWeight: 700, fontSize: 14, cursor: disabled ? "not-allowed" : "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, boxShadow: disabled ? "none" : "0 6px 20px rgba(41,182,255,0.2)", transition: "all 0.15s ease" }}
+              >
+                {cloning
+                  ? <><div style={{ width: 14, height: 14, border: "2px solid rgba(255,255,255,0.2)", borderTopColor: "#fff", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} /> Clonazione in corso…</>
+                  : <><HiSpeakerWave size={16} /> Clona questa voce</>}
+              </button>
+            );
+          })()}
         </Modal>
       )}
     </div>
@@ -11094,18 +11374,22 @@ function VoiceGen() {
 }
 
 // ── Modal ──
-function Modal({ title, titleIcon, children, onClose }) {
+function Modal({ title, titleIcon, children, onClose, maxWidth = 480 }) {
   return (
-    <div style={{ position: "fixed", inset: 0, background: "rgba(10,10,15,0.82)", backdropFilter: "blur(10px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 }} onClick={onClose} role="presentation">
-      <div onClick={e => e.stopPropagation()} style={{ background: AX.surface, borderRadius: 16, padding: 24, border: `1px solid ${AX.border}`, minWidth: 380, maxWidth: 520, width: "90%", boxShadow: "0 24px 64px rgba(0,0,0,0.45)" }} role="dialog" aria-modal="true">
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18, gap: 12 }}>
-          <h3 style={{ margin: 0, fontSize: 17, fontWeight: 700, color: AX.gold, display: "flex", alignItems: "center", gap: 10 }}>
-            {titleIcon || null}
+    <div style={{ position: "fixed", inset: 0, background: "rgba(10,10,15,0.85)", backdropFilter: "blur(14px)", WebkitBackdropFilter: "blur(14px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 20 }} onClick={onClose} role="presentation">
+      <div onClick={e => e.stopPropagation()} style={{ background: AX.sidebar, borderRadius: 20, border: `1px solid ${AX.border}`, maxWidth, width: "100%", boxShadow: "0 32px 80px rgba(0,0,0,0.55), 0 0 0 1px rgba(255,255,255,0.03) inset", overflow: "hidden" }} role="dialog" aria-modal="true">
+        {/* Header */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "18px 24px", borderBottom: `1px solid ${AX.border}`, background: AX.bg }}>
+          <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: AX.text, display: "flex", alignItems: "center", gap: 10, letterSpacing: "-0.01em" }}>
+            {titleIcon && <span style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 32, height: 32, borderRadius: 10, background: "rgba(123,77,255,0.12)" }}>{titleIcon}</span>}
             {title}
           </h3>
-          <button type="button" onClick={onClose} style={{ background: "none", border: "none", color: AX.muted, cursor: "pointer", fontSize: 18, padding: 4 }} aria-label="Chiudi"><HiXMark size={22} /></button>
+          <button type="button" onClick={onClose} style={{ width: 32, height: 32, borderRadius: 8, background: "rgba(255,255,255,0.04)", border: `1px solid transparent`, color: AX.muted, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.15s ease" }} aria-label="Chiudi"><HiXMark size={18} /></button>
         </div>
-        {children}
+        {/* Body */}
+        <div style={{ padding: "20px 24px 24px" }}>
+          {children}
+        </div>
       </div>
     </div>
   );
