@@ -5303,15 +5303,11 @@ export default function AIStudio() {
       setSelectedCharacterIds(new Set([c.id]));
       setSelectedCharacter(c);
       updateProject({ ...currentProject, heroCharacterId: c.id });
-      setMyImagesPickedUrl(null);
-      setProjectSourceImageUrl(null);
       setProjectVideoSourceImg(null);
     }
   };
 
   const handleMyImageCardClick = () => {
-    setSelectedCharacterIds(new Set());
-    setSelectedCharacter(null);
     setMyImagesModalOpen(true);
   };
 
@@ -7042,6 +7038,70 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
     (hasStyleChanges || hasAppearanceOrTextChanges)
   );
 
+  const isFaceSwapOnlyMode = Boolean(
+    selectedCharacter &&
+    (selectedCharacter.image || selectedCharacter.imagePath || selectedCharacter.imageUrl) &&
+    projectSourceImageUrl
+  );
+
+  const handleFaceSwapOnly = async () => {
+    setGenerating(true);
+    setGeneratedImages(p => [STUDIO_IMAGE_GENERATING, ...p.filter(x => x !== STUDIO_IMAGE_GENERATING)]);
+    setImageStatus("⏳ Face swap in corso...");
+    try {
+      const charImg = selectedCharacter?.image || selectedCharacter?.imagePath || selectedCharacter?.imageUrl || null;
+      if (!charImg) throw new Error("Nessuna foto personaggio trovata");
+
+      let sourceUrl = projectSourceImageUrl;
+      if (sourceUrl && sourceUrl.startsWith("axstudio-local://")) {
+        const b64 = await characterImageToDataUri(sourceUrl).catch(() => null);
+        if (b64) {
+          sourceUrl = await uploadBase64ToFal(b64);
+        }
+      } else if (sourceUrl && !sourceUrl.startsWith("http")) {
+        sourceUrl = await uploadBase64ToFal(sourceUrl);
+      }
+
+      const faceDataUri = await characterImageToDataUri(charImg).catch(() => null);
+      if (!faceDataUri) throw new Error("Impossibile caricare la foto del personaggio");
+
+      const swapResult = await falRequest("fal-ai/face-swap", {
+        base_image_url: sourceUrl,
+        swap_image_url: faceDataUri,
+      });
+      const imgUrl = swapResult?.image?.url || swapResult?.images?.[0]?.url || null;
+      if (!imgUrl) throw new Error("Nessun risultato dal face swap");
+
+      setGeneratedImages(p => [imgUrl, ...p.filter(x => x !== STUDIO_IMAGE_GENERATING)]);
+      setImageStatus("✅ Face swap completato!");
+      setTimeout(() => setImageStatus(""), 2000);
+
+      void (async () => {
+        try {
+          if (onSave) {
+            const dataUrl = await falImageUrlToBase64(imgUrl);
+            const entry = await onSave(dataUrl, `Face swap: ${selectedCharacter.name}`, {
+              projectImageMode: "faceswap",
+              characterId: selectedCharacter?.id || null,
+              faceSwap: true,
+              sourceImageUrl: projectSourceImageUrl,
+            });
+            if (entry?.filePath && isElectron) {
+              const nu = mediaFileUrl(entry.filePath);
+              setGeneratedImages(p => p.map(x => x === imgUrl ? nu : x));
+              if (typeof setPreviewImg === "function") setPreviewImg(prev => (prev === imgUrl ? nu : prev));
+            }
+          }
+        } catch (saveErr) { console.error("[FACE-SWAP SAVE]", saveErr); }
+      })();
+    } catch (e) {
+      console.error("[FACE-SWAP ONLY]", e);
+      setImageStatus("");
+      setGeneratedImages(p => p.filter(x => x !== STUDIO_IMAGE_GENERATING));
+    }
+    setGenerating(false);
+  };
+
   // ── Separazione prompt IT (UI) / EN (API) ──
   // preparedEnRef: ultima versione EN pronta, mai mostrata nella textarea
   // enIsStaleRef: true quando il testo IT è cambiato dopo l'ultima preparazione
@@ -8072,34 +8132,40 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
             : <><HiSparkles size={15} style={{ color: AX.gold }} />Prepara prompt</>}
         </button>
 
-        {/* Genera / Aggiorna Immagine — primario */}
-        <button
-          type="button"
-          onClick={() => { void generate(); }}
-          disabled={generating || (!prompt.trim() && !isImageUpdateMode)}
-          style={{
-            flex: "1.6 1 0",
-            padding: "13px 20px",
-            borderRadius: 12,
-            border: "none",
-            background: (generating || (!prompt.trim() && !isImageUpdateMode)) ? AX.surface : (isImageUpdateMode ? "linear-gradient(135deg, #FF8A2A 0%, #FF4FA3 100%)" : AX.gradPrimary),
-            color: (generating || (!prompt.trim() && !isImageUpdateMode)) ? AX.muted : "#fff",
-            fontWeight: 800,
-            fontSize: 14,
-            cursor: (generating || (!prompt.trim() && !isImageUpdateMode)) ? "not-allowed" : "pointer",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            gap: 7,
-            minHeight: 46,
-            boxShadow: (generating || (!prompt.trim() && !isImageUpdateMode)) ? "none" : (isImageUpdateMode ? "0 8px 28px rgba(255,138,42,0.3)" : "0 8px 28px rgba(123,77,255,0.3)"),
-            transition: "all 0.15s ease",
-          }}
-        >
-          {generating
-            ? <><div style={{ width: 14, height: 14, border: "2px solid rgba(255,255,255,0.2)", borderTopColor: "#fff", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />{imageStatus || (isStyleChangeOnlyMode ? "Cambio stile…" : isImageUpdateMode ? "Aggiornamento…" : "Generazione…")}</>
-            : isStyleChangeOnlyMode ? <>{"🎨 Cambia Stile"}</> : isImageUpdateMode ? <>{"🔄 Aggiorna Immagine"}</> : <>{"⚡ Genera Immagine"}</>}
-        </button>
+        {/* Genera / Aggiorna / Face Swap — primario */}
+        {(() => {
+          const canAct = isFaceSwapOnlyMode || prompt.trim() || isImageUpdateMode;
+          const btnDisabled = generating || !canAct;
+          const btnBg = btnDisabled ? AX.surface
+            : isFaceSwapOnlyMode ? "linear-gradient(135deg, #8b5cf6 0%, #ec4899 100%)"
+            : isImageUpdateMode ? "linear-gradient(135deg, #FF8A2A 0%, #FF4FA3 100%)"
+            : AX.gradPrimary;
+          const btnShadow = btnDisabled ? "none"
+            : isFaceSwapOnlyMode ? "0 8px 28px rgba(139,92,246,0.3)"
+            : isImageUpdateMode ? "0 8px 28px rgba(255,138,42,0.3)"
+            : "0 8px 28px rgba(123,77,255,0.3)";
+          return (
+            <button
+              type="button"
+              onClick={() => { isFaceSwapOnlyMode ? void handleFaceSwapOnly() : void generate(); }}
+              disabled={btnDisabled}
+              style={{
+                flex: "1.6 1 0", padding: "13px 20px", borderRadius: 12, border: "none",
+                background: btnBg, color: btnDisabled ? AX.muted : "#fff",
+                fontWeight: 800, fontSize: 14, cursor: btnDisabled ? "not-allowed" : "pointer",
+                display: "flex", alignItems: "center", justifyContent: "center", gap: 7,
+                minHeight: 46, boxShadow: btnShadow, transition: "all 0.15s ease",
+              }}
+            >
+              {generating
+                ? <><div style={{ width: 14, height: 14, border: "2px solid rgba(255,255,255,0.2)", borderTopColor: "#fff", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />{imageStatus || (isFaceSwapOnlyMode ? "Face swap…" : isStyleChangeOnlyMode ? "Cambio stile…" : isImageUpdateMode ? "Aggiornamento…" : "Generazione…")}</>
+                : isFaceSwapOnlyMode ? <>{"🔄 Avvia Face Swap"}</>
+                : isStyleChangeOnlyMode ? <>{"🎨 Cambia Stile"}</>
+                : isImageUpdateMode ? <>{"🔄 Aggiorna Immagine"}</>
+                : <>{"⚡ Genera Immagine"}</>}
+            </button>
+          );
+        })()}
       </div>
 
 
@@ -10586,6 +10652,37 @@ function SettingsPage({ voiceLibrary, setVoiceLibrary, elFavorites, setElFavorit
     audio.onended = () => { setElPreviewPlaying(null); elAudioRef.current = null; };
   };
 
+  const PREVIEW_SAMPLES = {
+    it: "Ciao, questa è la mia voce clonata. Spero che ti piaccia come suona, è davvero incredibile!",
+    en: "Hello, this is my cloned voice. I hope you like how it sounds, it's truly amazing!",
+    es: "Hola, esta es mi voz clonada. Espero que te guste cómo suena, es realmente increíble!",
+    fr: "Bonjour, ceci est ma voix clonée. J'espère que vous aimez comment elle sonne, c'est vraiment incroyable!",
+    de: "Hallo, das ist meine geklonte Stimme. Ich hoffe, sie gefällt dir, es ist wirklich erstaunlich!",
+  };
+
+  const playMyVoicePreview = async (voiceId, lang) => {
+    if (elPreviewPlaying === voiceId) {
+      if (elAudioRef.current) { elAudioRef.current.pause(); elAudioRef.current = null; }
+      setElPreviewPlaying(null);
+      return;
+    }
+    if (elAudioRef.current) { elAudioRef.current.pause(); }
+    setElPreviewPlaying(voiceId);
+    try {
+      const sampleText = PREVIEW_SAMPLES[lang] || PREVIEW_SAMPLES.it;
+      const langCode = { it: "it", en: "en", es: "es", fr: "fr", de: "de" }[lang] || "it";
+      const blob = await elevenLabsTTS(sampleText, voiceId, { language: langCode });
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      elAudioRef.current = audio;
+      audio.play().catch(() => {});
+      audio.onended = () => { setElPreviewPlaying(null); elAudioRef.current = null; URL.revokeObjectURL(url); };
+    } catch (e) {
+      console.error("[PREVIEW MY VOICE]", e);
+      setElPreviewPlaying(null);
+    }
+  };
+
   // ── My Voices: clone via upload ──
   const handleCloneUpload = async () => {
     if (!cloneName.trim() || !cloneFile) return;
@@ -10980,7 +11077,7 @@ function SettingsPage({ voiceLibrary, setVoiceLibrary, elFavorites, setElFavorit
                           <span style={{ fontSize: 10, padding: "3px 8px", borderRadius: 6, background: "rgba(123,77,255,0.12)", color: "#c4b5fd", fontWeight: 600 }}>Clonata</span>
                           <span style={{ fontSize: 10, padding: "3px 8px", borderRadius: 6, background: "rgba(16,185,129,0.1)", color: "#34d399", fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 3 }}><HiLanguage size={10} /> Multilingua</span>
                         </div>
-                        <button type="button" onClick={() => { const cv = elVoices.find(ev => ev.voice_id === v.voiceId); if (cv) playPreview(cv); }} style={{ marginTop: "auto", padding: "7px 0", borderRadius: 10, background: playing ? "rgba(239,68,68,0.1)" : "rgba(255,255,255,0.04)", border: `1px solid ${playing ? "rgba(239,68,68,0.25)" : AX.border}`, color: playing ? "#f87171" : AX.text2, fontSize: 11, fontWeight: 600, cursor: "pointer", transition: "all 0.15s ease", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+                        <button type="button" onClick={() => playMyVoicePreview(v.voiceId, v.language)} style={{ marginTop: "auto", padding: "7px 0", borderRadius: 10, background: playing ? "rgba(239,68,68,0.1)" : "rgba(255,255,255,0.04)", border: `1px solid ${playing ? "rgba(239,68,68,0.25)" : AX.border}`, color: playing ? "#f87171" : AX.text2, fontSize: 11, fontWeight: 600, cursor: "pointer", transition: "all 0.15s ease", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
                           {playing ? <><HiStop size={12} /> Stop</> : <><HiPlay size={12} /> Ascolta</>}
                         </button>
                       </div>
