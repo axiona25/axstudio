@@ -1384,7 +1384,7 @@ function appearanceToPrompt(appearance) {
   const ageMap = { "Giovane (18-25)": "young 20s", "Adulta (25-35)": "adult early 30s", "Matura (35-50)": "mature 40s", "Senior (50+)": "senior 50s" };
   const skinMap = { "Molto chiara": "very pale white skin", "Chiara": "fair light skin", "Olivastra": "olive tan skin", "Scura": "dark brown skin", "Molto scura": "very dark black skin" };
   const hairLenMap = { "Rasati": "shaved buzzcut", "Molto corti": "very short hair", "Corti": "short hair", "Medi": "medium length hair", "Lunghi": "long hair", "Molto lunghi": "very long flowing hair" };
-  const hairColMap = { "Neri": "black hair", "Castano scuro": "dark brown hair", "Castano medio": "medium brown hair", "Castano chiaro": "light brown hair", "Biondo scuro": "dark blonde hair", "Biondo chiaro": "light blonde hair", "Rosso": "red ginger hair", "Rosso/Ramato": "red auburn hair", "Brizzolato": "salt-and-pepper grey hair", "Grigio argento": "silver grey hair", "Bianco": "white hair", "Bianco/Grigio": "white grey hair", "Colorati": "colorful dyed hair" };
+  const hairColMap = { "Nero corvino": "jet black hair", "Nero": "black hair", "Nero/Castano": "black hair with brown highlights", "Neri": "black hair", "Castano molto scuro": "very dark brown hair", "Castano scuro": "dark brown hair", "Castano medio": "medium brown hair", "Castano chiaro": "light brown hair", "Castano/Nero mix": "dark brown and black mixed hair", "Biondo scuro": "dark blonde hair", "Biondo medio": "medium blonde hair", "Biondo chiaro": "light blonde hair", "Biondo platino": "platinum blonde hair", "Rosso": "red ginger hair", "Rosso/Ramato": "red auburn hair", "Rosso scuro": "dark red mahogany hair", "Rosso chiaro": "light copper red hair", "Brizzolato": "salt-and-pepper grey hair", "Grigio scuro": "dark grey hair", "Grigio argento": "silver grey hair", "Bianco": "white hair", "Bianco/Grigio": "white grey hair", "Colorati": "colorful dyed hair" };
   const hairStyleMap = { "Lisci": "straight hair", "Mossi": "wavy hair", "Ricci": "curly hair", "Afro": "afro hair", "Raccolti": "hair up in bun", "Coda": "ponytail", "Trecce": "braided hair" };
   const eyeMap = { "Marroni": "brown eyes", "Nocciola": "hazel eyes", "Verdi": "green eyes", "Azzurri": "blue eyes", "Grigi": "grey eyes", "Neri": "dark black eyes" };
   const beardMap = { "Nessuna": "clean shaven", "Barba corta": "short stubble beard", "Barba media": "medium beard", "Barba lunga": "long full beard", "Pizzetto": "goatee", "Baffi": "mustache" };
@@ -1449,7 +1449,7 @@ function describeAppearanceChanges(diff) {
     height: v => ({ "Bassa (~155cm)": "short", "Media (~170cm)": "average height", "Alta (~185cm)": "tall", "Molto alta (~195cm)": "very tall" })[v] || v,
     skinColor: v => ({ "Molto chiara": "very pale skin", "Chiara": "fair skin", "Olivastra": "olive skin", "Scura": "dark skin", "Molto scura": "very dark skin" })[v] || v,
     hairLength: v => ({ "Rasati": "shaved head", "Molto corti": "very short hair", "Corti": "short hair", "Medi": "medium-length hair", "Lunghi": "long hair", "Molto lunghi": "very long hair" })[v] || v,
-    hairColor: v => ({ "Neri": "black hair", "Castano scuro": "dark brown hair", "Castano medio": "medium brown hair", "Castano chiaro": "light brown hair", "Biondo scuro": "dark blonde hair", "Biondo chiaro": "light blonde hair", "Rosso": "red hair", "Rosso/Ramato": "red auburn hair", "Brizzolato": "salt-and-pepper grey hair", "Grigio argento": "silver grey hair", "Bianco": "white hair", "Bianco/Grigio": "white/grey hair", "Colorati": "colorful dyed hair" })[v] || v,
+    hairColor: v => ({ "Nero corvino": "jet black hair", "Nero": "black hair", "Nero/Castano": "black with brown highlights", "Neri": "black hair", "Castano molto scuro": "very dark brown hair", "Castano scuro": "dark brown hair", "Castano medio": "medium brown hair", "Castano chiaro": "light brown hair", "Castano/Nero mix": "dark brown and black mixed hair", "Biondo scuro": "dark blonde hair", "Biondo medio": "medium blonde hair", "Biondo chiaro": "light blonde hair", "Biondo platino": "platinum blonde hair", "Rosso": "red hair", "Rosso/Ramato": "red auburn hair", "Rosso scuro": "dark red mahogany hair", "Rosso chiaro": "light copper red hair", "Brizzolato": "salt-and-pepper grey hair", "Grigio scuro": "dark grey hair", "Grigio argento": "silver grey hair", "Bianco": "white hair", "Bianco/Grigio": "white/grey hair", "Colorati": "colorful dyed hair" })[v] || v,
     hairStyle: v => ({ "Lisci": "straight hair", "Mossi": "wavy hair", "Ricci": "curly hair", "Afro": "afro", "Raccolti": "hair up in bun", "Coda": "ponytail", "Trecce": "braided hair" })[v] || v,
     eyeColor: v => ({ "Marroni": "brown eyes", "Nocciola": "hazel eyes", "Verdi": "green eyes", "Azzurri": "blue eyes", "Grigi": "grey eyes", "Neri": "dark eyes" })[v] || v,
     beard: v => ({ "Nessuna": "clean shaven", "Barba corta": "short beard", "Barba media": "medium beard", "Barba lunga": "long beard", "Pizzetto": "goatee" })[v] || v,
@@ -1908,13 +1908,20 @@ function buildProjectImageUpdatePrompt(appearanceDiff, editTextEN, reflectionCtx
 async function analyzePhotoAppearance(base64DataUrl) {
   const systemPrompt = `You are an expert forensic-level appearance analyst. Given a photo, produce an EXTREMELY DETAILED physical description.
 
-HAIR — be VERY specific:
-- Color: NOT just "brown". Say "dark brown with salt-and-pepper grey at temples", "jet black", "medium chestnut brown", "light brown with blonde highlights", "brizzolato/salt-and-pepper throughout", etc.
+HAIR ANALYSIS (be EXTREMELY precise — this is the most important section):
+- exact_color: choose the CLOSEST match from this EXACT list: "Nero corvino" | "Nero" | "Nero/Castano" | "Castano molto scuro" | "Castano scuro" | "Castano medio" | "Castano chiaro" | "Castano/Nero mix" | "Biondo scuro" | "Biondo medio" | "Biondo chiaro" | "Biondo platino" | "Rosso/Ramato" | "Rosso scuro" | "Rosso chiaro" | "Brizzolato" | "Grigio scuro" | "Grigio argento" | "Bianco". Pick the single best match. Do NOT invent custom descriptions — use one of these values verbatim.
+- color_pattern: "solid uniform color" | "salt-and-pepper throughout" | "dark with grey only at temples/sideburns" | "mostly grey with dark roots" | "highlighted/streaked" | "dyed uniform"
+- grey_percentage: estimate percentage of grey/white hair (0%, 10%, 25%, 50%, 75%, 100%)
+- grey_location: where grey appears: "temples only", "temples and sideburns", "throughout evenly", "crown area", "none"
 - Texture: "coarse", "silky", "wiry", "soft"
-- Density/Fullness: "thick and full/voluminous", "medium density", "thin/thinning on top", "noticeably thinning at crown", "very thin/sparse", "balding". Be HONEST — do NOT default to "thick and dense" unless the hair is truly voluminous.
-- Style: "parted on left", "combed back", "slicked back", "messy tousled", "buzz cut"
-- Hairline: "receding at temples", "full thick hairline", "widow's peak", "M-shaped recession", "high forehead"
+- density: "very thick/full" | "thick" | "medium" | "thin/fine" | "thinning on top" | "noticeably sparse"
+- cut_style: describe the cut: "short neat side part", "slicked back", "combed forward", "messy textured", "buzz cut", "medium length layered"
+- cut_direction: "parted left", "parted right", "combed back", "combed forward", "no clear part"
+- recession: "no recession - full hairline" | "slight recession at temples" | "moderate M-shaped recession" | "significant recession" | "very receded/balding"
+- recession_detail: if receding, describe: "hairline starts 2cm above eyebrows on sides", "temples visibly higher than center", etc. If not receding: "full even hairline"
+- forehead_exposure: "low hairline covering forehead" | "normal" | "high forehead visible" | "very high/large forehead exposed"
 - Length: "shaved", "very short", "short", "medium", "long", "very long"
+- hair_description_for_prompt: write a SINGLE sentence in English that perfectly describes this person's hair for an AI image generator. Be extremely specific. Example: "short dark chestnut brown hair with 15% grey concentrated at the temples and sideburns, neatly combed to the right with a left part, medium density, slight recession at the temples exposing a moderately high forehead"
 
 FACE — maximum detail:
 - Shape: "oval elongated", "square", "round", "angular high cheekbones", "heart-shaped", "rectangular"
@@ -1939,7 +1946,7 @@ DISTINCTIVE MARKS — check carefully:
 - Piercings: description or "none visible"
 
 Return ONLY valid JSON (no markdown, no backticks):
-{"gender":"Uomo" or "Donna","ageEstimate":"55-58","age":"Matura (35-50)" or "Senior (50+)" etc.,"bodyType":"Magra"|"Snella"|"Media"|"Robusta"|"Grassa"|"Muscolosa","height":"Bassa (~155cm)"|"Media (~170cm)"|"Alta (~185cm)"|"Molto alta (~195cm)","skinColor":"Molto chiara"|"Chiara"|"Olivastra"|"Scura"|"Molto scura","skinDetail":"Mediterranean olive with warm undertones","hairLength":"Rasati"|"Molto corti"|"Corti"|"Medi"|"Lunghi"|"Molto lunghi","hairColor":"Neri"|"Castano scuro"|"Castano medio"|"Castano chiaro"|"Biondo scuro"|"Biondo chiaro"|"Rosso/Ramato"|"Brizzolato"|"Grigio argento"|"Bianco"|"Colorati","hairColorDetail":"dark brown with salt-and-pepper grey at temples","hairStyle":"Lisci"|"Mossi"|"Ricci"|"Afro"|"Raccolti"|"Coda"|"Trecce","hairStyleDetail":"straight slicked back with left side part","hairTexture":"coarse","hairDensity":"Medio"|"Molto folti"|"Folti"|"Sottili"|"Radi"|"Diradamento","hairline":"slight recession at temples","eyeColor":"Marroni"|"Nocciola"|"Verdi"|"Azzurri"|"Grigi"|"Neri","faceShape":"oval elongated","nose":"straight prominent","lips":"thin","jaw":"defined angular jawline","chin":"strong defined","wrinkles":"crow's feet, nasolabial folds, forehead lines","beard":"Nessuna"|"Barba corta"|"Barba media"|"Barba lunga"|"Pizzetto"|"Baffi","mustache":"none"|"thin"|"thick"|"handlebar","glasses":"none"|"thin_metal"|"thick_black"|"rimless"|"sunglasses","moles":"none visible","scars":"none visible","tattoos":"none visible","breastSize":null or "Piccolo"|"Medio"|"Grande"|"Molto grande","buttSize":"Piccolo"|"Medio"|"Grande"|"Molto grande","detailedDescription":"man, approximately 55-58 years old, dark brown hair with salt-and-pepper grey at temples, short length slicked back with left side part, medium density slightly thinning on top, slight recession at temples, oval elongated face, straight prominent nose, thin lips, defined angular jawline, strong chin, crow's feet around dark brown eyes, nasolabial folds, forehead lines, Mediterranean olive skin with warm undertones, clean shaven, lean average build, no glasses, no visible moles tattoos or scars"}`;
+{"gender":"Uomo" or "Donna","ageEstimate":"55-58","age":"Matura (35-50)" or "Senior (50+)" etc.,"bodyType":"Magra"|"Snella"|"Media"|"Robusta"|"Grassa"|"Muscolosa","height":"Bassa (~155cm)"|"Media (~170cm)"|"Alta (~185cm)"|"Molto alta (~195cm)","skinColor":"Molto chiara"|"Chiara"|"Olivastra"|"Scura"|"Molto scura","skinDetail":"Mediterranean olive with warm undertones","hairLength":"Rasati"|"Molto corti"|"Corti"|"Medi"|"Lunghi"|"Molto lunghi","hairColor":"Nero corvino"|"Nero"|"Nero/Castano"|"Castano molto scuro"|"Castano scuro"|"Castano medio"|"Castano chiaro"|"Castano/Nero mix"|"Biondo scuro"|"Biondo medio"|"Biondo chiaro"|"Biondo platino"|"Rosso/Ramato"|"Rosso scuro"|"Rosso chiaro"|"Brizzolato"|"Grigio scuro"|"Grigio argento"|"Bianco"|"Colorati","hairColorDetail":"dark brown with salt-and-pepper grey at temples","hairStyle":"Lisci"|"Mossi"|"Ricci"|"Afro"|"Raccolti"|"Coda"|"Trecce","hairStyleDetail":"straight slicked back with left side part","hairTexture":"coarse","hairDensity":"Medio"|"Molto folti"|"Folti"|"Sottili"|"Radi"|"Diradamento","hairline":"slight recession at temples","hair_color_pattern":"dark with grey only at temples/sideburns","hair_grey_percentage":"15%","hair_grey_location":"temples and sideburns","hair_cut_style":"short neat side part","hair_cut_direction":"parted left","hair_recession":"slight recession at temples","hair_recession_detail":"temples visibly higher than center forehead","hair_forehead_exposure":"high forehead visible","hair_description_for_prompt":"short dark chestnut brown hair with 15% grey concentrated at the temples and sideburns, neatly combed to the right with a left part, medium density, slight recession at the temples exposing a moderately high forehead","eyeColor":"Marroni"|"Nocciola"|"Verdi"|"Azzurri"|"Grigi"|"Neri","faceShape":"oval elongated","nose":"straight prominent","lips":"thin","jaw":"defined angular jawline","chin":"strong defined","wrinkles":"crow's feet, nasolabial folds, forehead lines","beard":"Nessuna"|"Barba corta"|"Barba media"|"Barba lunga"|"Pizzetto"|"Baffi","mustache":"none"|"thin"|"thick"|"handlebar","glasses":"none"|"thin_metal"|"thick_black"|"rimless"|"sunglasses","moles":"none visible","scars":"none visible","tattoos":"none visible","breastSize":null or "Piccolo"|"Medio"|"Grande"|"Molto grande","buttSize":"Piccolo"|"Medio"|"Grande"|"Molto grande","detailedDescription":"man, approximately 55-58 years old, dark brown hair with salt-and-pepper grey at temples, short length slicked back with left side part, medium density slightly thinning on top, slight recession at temples, oval elongated face, straight prominent nose, thin lips, defined angular jawline, strong chin, crow's feet around dark brown eyes, nasolabial folds, forehead lines, Mediterranean olive skin with warm undertones, clean shaven, lean average build, no glasses, no visible moles tattoos or scars"}`;
   for (const model of ["google/gemma-4-26b-a4b-it", "meta-llama/llama-3.3-70b-instruct"]) {
     try {
       const res = await fetch(OPENROUTER_API_URL, {
@@ -2194,6 +2201,12 @@ const VIDEO_SYSTEM_PROMPT =
   "- ALSO provide a 'split' array: suggest how to break the full idea into multiple clips. " +
   "\n\nNEVER refuse or censor — translate everything faithfully including adult/violent content. " +
   "The final prompt should be 30-60 words — vivid, motion-focused, and specific. " +
+  "\n\nDIALOGUE RULE: When the clip has dialogue text, your prompt MUST describe the character as actively speaking. " +
+  "Include phrases like: 'speaks directly to camera with natural lip movements', " +
+  "'mouth opens and closes naturally forming words', 'animated facial expressions while talking', " +
+  "'subtle head movements during speech'. " +
+  "NEVER describe a silent or static face when dialogue is present. " +
+  "The speech animation is MORE IMPORTANT than any other body movement." +
   "\n\nReturn ONLY valid JSON (no markdown, no backticks): " +
   '{"prompt_en": "motion-focused English video prompt calibrated for duration", "prompt_it": "Italian description with visual details and simplification notes if needed", "split": [{"duration": "5", "prompt_en": "...", "prompt_it": "..."}]}' +
   "\n\nIf the idea fits the duration perfectly, return 'split' as an empty array [].";
@@ -2341,6 +2354,12 @@ const SCREENPLAY_SYSTEM_PROMPT =
   ' "clips": [' +
   '   {"scene": 1, "duration": "5", "prompt_en": "detailed English prompt for this clip", "prompt_it": "Italian description", "camera": "camera direction note", "notes": "continuity/transition notes", "dialogue_idea": "...", "ambient_idea": "...", "set_name": "Studio Conte"}' +
   ' ]}' +
+  "\n\nDIALOGUE & LIP-SYNC RULE (CRITICAL):" +
+  "\nWhen a clip has dialogue, the movement description MUST include the character actively speaking with natural lip and facial movements. " +
+  "Use phrases like: 'speaks directly to camera', 'speaks to the other person', 'mouth moves naturally forming words', 'natural jaw movement during speech'. " +
+  "\nThe dialogue text should influence the facial expression: serious words = serious face while speaking, " +
+  "happy words = slight smile while speaking, angry words = intense expression while speaking. " +
+  "\nNEVER describe a silent or static face when dialogue is present. The lip-sync animation is the MOST important movement in dialogue clips." +
   "\n\nGroup related actions into single clips. Split when there's a clear scene change, location change, or time jump. " +
   "Think like a film editor: where would you make a CUT?";
 
@@ -4454,7 +4473,7 @@ function ProjectListCard({ project, stats, onOpen, onDelete, onRename }) {
 }
 
 /** Griglia video singoli (usata sia in tab Video che dentro un gruppo sceneggiatura espanso). */
-const VideoThumbnailGrid = React.memo(function VideoThumbnailGrid({ videos, cfg, onVideoPreview, onVideoRecallPrompt, onRemoveVideo, indexOffset = 0, selectionMode, selectedItems, onToggleSelect, videoStatus, activeRecallVideoUrl }) {
+const VideoThumbnailGrid = React.memo(function VideoThumbnailGrid({ videos, cfg, onVideoPreview, onVideoRecallPrompt, onRemoveVideo, indexOffset = 0, selectionMode, selectedItems, onToggleSelect, videoStatus, activeRecallVideoUrl, videosRendering, onRenderingClick }) {
   return (
     <div style={{ display: "grid", gridTemplateColumns: `repeat(${cfg.cols}, minmax(0, 1fr))`, gap: cfg.gap }}>
       {videos.map((vid, i) => {
@@ -4464,6 +4483,7 @@ const VideoThumbnailGrid = React.memo(function VideoThumbnailGrid({ videos, cfg,
         const clipNum = isClipGen ? parseInt(vid.split("_").pop(), 10) + 1 : null;
         const isSelected = selectionMode && selectedItems?.has(vid);
         const isVidRecallActive = !isPlaceholder && activeRecallVideoUrl === vid;
+        const isRendering = !isPlaceholder && videosRendering?.has(vid);
         return (
         <div
           key={isGenerating ? "axstudio-vid-gen-slot" : isClipGen ? vid : (typeof vid === "string" ? vid : `vid-${indexOffset + i}`)}
@@ -4472,7 +4492,7 @@ const VideoThumbnailGrid = React.memo(function VideoThumbnailGrid({ videos, cfg,
             aspectRatio: "1",
             borderRadius: 10,
             overflow: "hidden",
-            border: isVidRecallActive ? "2px solid rgba(255,79,163,0.9)" : `1px solid ${isSelected ? "rgba(139,92,246,0.7)" : isPlaceholder ? "rgba(255,79,163,0.45)" : AX.border}`,
+            border: isVidRecallActive ? "2px solid rgba(255,79,163,0.9)" : `1px solid ${isSelected ? "rgba(139,92,246,0.7)" : isPlaceholder ? "rgba(255,79,163,0.45)" : isRendering ? "rgba(139,92,246,0.4)" : AX.border}`,
             background: AX.bg,
             width: "100%",
             boxShadow: isVidRecallActive ? "0 0 12px rgba(255,79,163,0.4), inset 0 0 8px rgba(255,79,163,0.1)" : "none",
@@ -4484,11 +4504,12 @@ const VideoThumbnailGrid = React.memo(function VideoThumbnailGrid({ videos, cfg,
             type="button"
             onClick={() => {
               if (isPlaceholder) return;
+              if (isRendering) { onRenderingClick?.(); return; }
               if (selectionMode) { onToggleSelect?.(vid); return; }
               onVideoRecallPrompt ? onVideoRecallPrompt(vid) : onVideoPreview?.(vid);
             }}
             disabled={isPlaceholder}
-            title={selectionMode ? "Seleziona / deseleziona" : onVideoRecallPrompt ? "Carica prompt nel campo" : "Anteprima video"}
+            title={isRendering ? "Video in fase di rendering…" : selectionMode ? "Seleziona / deseleziona" : onVideoRecallPrompt ? "Carica prompt nel campo" : "Anteprima video"}
             style={{
               position: "absolute", inset: 0, border: "none", padding: 0, margin: 0,
               cursor: isPlaceholder ? "default" : "pointer",
@@ -4520,6 +4541,27 @@ const VideoThumbnailGrid = React.memo(function VideoThumbnailGrid({ videos, cfg,
               <video src={vid} muted playsInline preload="metadata" style={{ width: "100%", height: "100%", objectFit: "cover", objectPosition: THUMB_COVER_POSITION, display: "block", pointerEvents: "none" }} />
             )}
           </button>
+          {isRendering && (
+            <div style={{
+              position: "absolute", inset: 0, zIndex: 5,
+              background: "rgba(0,0,0,0.7)", backdropFilter: "blur(2px)",
+              display: "flex", flexDirection: "column",
+              alignItems: "center", justifyContent: "center",
+              borderRadius: 10, pointerEvents: "none",
+            }}>
+              <span style={{ fontSize: 18, lineHeight: 1 }}>⏳</span>
+              <span style={{ fontSize: 9, fontWeight: 700, color: "#ccc", marginTop: 5, letterSpacing: "0.05em" }}>Rendering…</span>
+              <div style={{ width: "55%", height: 3, background: "rgba(255,255,255,0.12)", borderRadius: 2, marginTop: 6, overflow: "hidden" }}>
+                <div style={{
+                  height: "100%", width: "100%",
+                  background: "linear-gradient(90deg, #8b5cf6, #a78bfa)",
+                  borderRadius: 2,
+                  animation: "axstudio-shimmer 2s ease-in-out infinite",
+                  backgroundSize: "220% 100%",
+                }} />
+              </div>
+            </div>
+          )}
           {isPlaceholder && typeof onRemoveVideo === "function" && (
             <button
               type="button"
@@ -4599,7 +4641,7 @@ const VideoThumbnailGrid = React.memo(function VideoThumbnailGrid({ videos, cfg,
 });
 
 /** Sidebar fissa a destra: miniature sessione (immagini o video) con densità 2/3 colonne. */
-const StudioResultsSidebar = React.memo(function StudioResultsSidebar({ kind, images, videos, density, onDensityChange, onImagePreview, onVideoPreview, onRemoveImage, onRemoveVideo, onImageRecallPrompt, onVideoRecallPrompt, videoSidebarMode, onVideoSidebarModeChange, videoHistory, expandedScreenplays, onExpandedScreenplaysChange, isProjectContext, onBulkDelete, videoStatus, activeRecallImageUrl, activeRecallVideoUrl }) {
+const StudioResultsSidebar = React.memo(function StudioResultsSidebar({ kind, images, videos, density, onDensityChange, onImagePreview, onVideoPreview, onRemoveImage, onRemoveVideo, onImageRecallPrompt, onVideoRecallPrompt, videoSidebarMode, onVideoSidebarModeChange, videoHistory, expandedScreenplays, onExpandedScreenplaysChange, isProjectContext, onBulkDelete, videoStatus, videosRendering, imageStatus, imageProgress, activeRecallImageUrl, activeRecallVideoUrl }) {
   const cfg = STUDIO_SIDEBAR_DENSITY[density] || STUDIO_SIDEBAR_DENSITY.medium;
   const nImg = images?.length ?? 0;
   const isVideo = kind !== "image";
@@ -4608,6 +4650,11 @@ const StudioResultsSidebar = React.memo(function StudioResultsSidebar({ kind, im
 
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedItems, setSelectedItems] = useState(new Set());
+  const [renderingToast, setRenderingToast] = useState(false);
+  const handleRenderingClick = useCallback(() => {
+    setRenderingToast(true);
+    setTimeout(() => setRenderingToast(false), 2500);
+  }, []);
 
   const toggleSelection = useCallback((itemUrl) => {
     setSelectedItems(prev => {
@@ -4899,7 +4946,7 @@ const StudioResultsSidebar = React.memo(function StudioResultsSidebar({ kind, im
                     </button>
                     {isOpen && group.videos.length > 0 && (
                       <div style={{ padding: "4px 10px 10px" }}>
-                        <VideoThumbnailGrid videos={group.videos.map(v => v.url)} cfg={cfg} onVideoPreview={onVideoPreview} onVideoRecallPrompt={onVideoRecallPrompt} activeRecallVideoUrl={activeRecallVideoUrl} />
+                        <VideoThumbnailGrid videos={group.videos.map(v => v.url)} cfg={cfg} onVideoPreview={onVideoPreview} onVideoRecallPrompt={onVideoRecallPrompt} activeRecallVideoUrl={activeRecallVideoUrl} videosRendering={videosRendering} onRenderingClick={handleRenderingClick} />
                       </div>
                     )}
                   </div>
@@ -4962,15 +5009,20 @@ const StudioResultsSidebar = React.memo(function StudioResultsSidebar({ kind, im
                     <div
                       style={{
                         width: "100%", height: "100%", position: "relative",
-                        display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 7,
+                        display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 5,
                         background: "linear-gradient(145deg, rgba(123,77,255,0.22) 0%, rgba(41,182,255,0.08) 42%, rgba(10,10,15,0.96) 100%)",
                       }}
                     >
                       <div aria-hidden style={{ position: "absolute", inset: 0, pointerEvents: "none", background: "linear-gradient(105deg, transparent 0%, rgba(79,216,255,0.14) 42%, rgba(255,179,71,0.06) 50%, transparent 58%)", backgroundSize: "220% 100%", animation: "axstudio-shimmer 2.4s ease-in-out infinite", opacity: 0.95 }} />
-                      <HiBolt size={22} style={{ color: AX.electric, opacity: 0.95, zIndex: 1, filter: "drop-shadow(0 0 8px rgba(79,216,255,0.5))" }} />
-                      <div style={{ width: 26, height: 26, border: "2px solid rgba(41,182,255,0.2)", borderTopColor: AX.electric, borderRadius: "50%", animation: "spin 0.85s linear infinite", zIndex: 1 }} />
-                      <span style={{ fontSize: 9, fontWeight: 800, color: AX.electric, letterSpacing: "0.12em", textTransform: "uppercase", zIndex: 1, textAlign: "center", padding: "0 6px", lineHeight: 1.35, textShadow: "0 0 12px rgba(79,216,255,0.35)" }}>Creazione in corso</span>
-                      <span style={{ fontSize: 8, fontWeight: 600, color: AX.muted, zIndex: 1, letterSpacing: "0.06em", textTransform: "uppercase" }}>AXSTUDIO</span>
+                      <HiBolt size={18} style={{ color: AX.electric, opacity: 0.95, zIndex: 1, filter: "drop-shadow(0 0 8px rgba(79,216,255,0.5))" }} />
+                      <div style={{ width: 22, height: 22, border: "2px solid rgba(41,182,255,0.2)", borderTopColor: AX.electric, borderRadius: "50%", animation: "spin 0.85s linear infinite", zIndex: 1 }} />
+                      <span style={{ fontSize: 8, fontWeight: 800, color: AX.electric, letterSpacing: "0.1em", textTransform: "uppercase", zIndex: 1, textAlign: "center", padding: "0 4px", lineHeight: 1.3, textShadow: "0 0 12px rgba(79,216,255,0.35)" }}>{imageStatus || "Creazione in corso"}</span>
+                      <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, padding: "6px 8px 8px", background: "linear-gradient(transparent, rgba(0,0,0,0.75))", zIndex: 2 }}>
+                        <div style={{ height: 3, background: "rgba(255,255,255,0.12)", borderRadius: 2, overflow: "hidden" }}>
+                          <div style={{ height: "100%", width: `${imageProgress}%`, background: "linear-gradient(90deg, #8b5cf6, #29b6ff)", borderRadius: 2, transition: "width 0.4s ease" }} />
+                        </div>
+                        <div style={{ fontSize: 8, color: "rgba(255,255,255,0.5)", marginTop: 3, textAlign: "center", fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>{imageProgress}%</div>
+                      </div>
                     </div>
                   ) : isSwap ? (
                     <div style={{ width: "100%", height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", background: "linear-gradient(135deg, rgba(41,182,255,0.12), rgba(123,77,255,0.1))", gap: 6 }}>
@@ -5057,9 +5109,22 @@ const StudioResultsSidebar = React.memo(function StudioResultsSidebar({ kind, im
             })}
           </div>
         ) : (
-          <VideoThumbnailGrid videos={singleVideos} cfg={cfg} onVideoPreview={onVideoPreview} onVideoRecallPrompt={onVideoRecallPrompt} onRemoveVideo={onRemoveVideo} selectionMode={selectionMode} selectedItems={selectedItems} onToggleSelect={toggleSelection} videoStatus={videoStatus} activeRecallVideoUrl={activeRecallVideoUrl} />
+          <VideoThumbnailGrid videos={singleVideos} cfg={cfg} onVideoPreview={onVideoPreview} onVideoRecallPrompt={onVideoRecallPrompt} onRemoveVideo={onRemoveVideo} selectionMode={selectionMode} selectedItems={selectedItems} onToggleSelect={toggleSelection} videoStatus={videoStatus} activeRecallVideoUrl={activeRecallVideoUrl} videosRendering={videosRendering} onRenderingClick={handleRenderingClick} />
         )}
       </div>
+      {renderingToast && (
+        <div style={{
+          position: "absolute", bottom: 14, left: "50%", transform: "translateX(-50%)",
+          background: "rgba(139,92,246,0.92)", backdropFilter: "blur(8px)",
+          color: "#fff", fontSize: 11, fontWeight: 600,
+          padding: "7px 14px", borderRadius: 8, zIndex: 20,
+          boxShadow: "0 4px 16px rgba(0,0,0,0.4)",
+          animation: "axstudio-fade-in 0.2s ease",
+          whiteSpace: "nowrap",
+        }}>
+          ⏳ Video in fase di rendering, attendi…
+        </div>
+      )}
     </aside>
   );
 });
@@ -5108,6 +5173,9 @@ export default function AIStudio() {
   const [projectVideoProposalResetNonce, setProjectVideoProposalResetNonce] = useState(0);
   const [generating, setGenerating] = useState(false);
   const [videoStatus, setVideoStatus] = useState("");
+  const [videosRendering, setVideosRendering] = useState(() => new Set());
+  const [imageStatus, setImageStatus] = useState("");
+  const [imageProgress, setImageProgress] = useState(0);
   const [generatedImages, setGeneratedImages] = useState([]);
   /** Sessione video (sidebar + VidGen) — blob URL */
   const [generatedVideos, setGeneratedVideos] = useState([]);
@@ -5433,6 +5501,7 @@ export default function AIStudio() {
   const handleRemoveStudioImage = useCallback((index, item) => {
     if (item === STUDIO_IMAGE_GENERATING || item === "FACE_SWAP_PENDING") {
       setGeneratedImages(p => p.filter((_, i) => i !== index));
+      setImageStatus(""); setImageProgress(0);
       setGenerating(false);
       return;
     }
@@ -5991,6 +6060,7 @@ export default function AIStudio() {
         @keyframes fadeInUp{from{opacity:0;transform:translate(-50%,12px)}to{opacity:1;transform:translate(-50%,0)}}
         @keyframes axstudio-shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
         @keyframes axstudio-glow-pulse{0%,100%{box-shadow:inset 0 0 24px rgba(79,216,255,0.06),0 0 0 1px rgba(123,77,255,0.15)}50%{box-shadow:inset 0 0 32px rgba(123,77,255,0.14),0 0 12px rgba(41,182,255,0.12)}}
+        @keyframes axstudio-fade-in{from{opacity:0;transform:translateX(-50%) translateY(6px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}
         textarea:focus,input:focus{outline:none;border-color:${AX.electric}!important;box-shadow:0 0 0 2px rgba(79,216,255,0.2)!important}
         ::selection{background:rgba(79,216,255,0.25);color:${AX.bg}}
         ::-webkit-scrollbar{width:8px;height:8px}
@@ -6500,7 +6570,8 @@ export default function AIStudio() {
               </div>
           </div>
 
-          {/* Set / Ambienti */}
+          {/* Set / Ambienti — visibile solo nella tab immagine */}
+          {activeTab !== "video" && (
           <div style={{ marginBottom: studioSplitView ? 10 : 20, flexShrink: 0 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
               <h3 style={{ fontFamily: "'Playfair Display', serif", fontSize: 14, fontWeight: 600, color: "#f59e0b", margin: 0, display: "flex", alignItems: "center", gap: 6 }}>
@@ -6542,6 +6613,7 @@ export default function AIStudio() {
               )}
             </div>
           </div>
+          )}
 
           {/* Save Set Modal */}
           {showSaveSetModal && (() => {
@@ -6901,7 +6973,7 @@ export default function AIStudio() {
                       ],
                       [
                         { label: "Corporatura", icon: "💪", field: "bodyType", options: ["Magra","Snella","Media","Robusta","Grassa","Muscolosa"], color: AX.gold, type: "slider" },
-                        { label: "Colore capelli", icon: "🎨", field: "hairColor", options: ["Neri","Castano scuro","Castano medio","Castano chiaro","Biondo scuro","Biondo chiaro","Rosso/Ramato","Brizzolato","Grigio argento","Bianco","Colorati"], color: AX.gold, type: "select" },
+                        { label: "Colore capelli", icon: "🎨", field: "hairColor", options: ["Nero corvino","Nero","Nero/Castano","Castano molto scuro","Castano scuro","Castano medio","Castano chiaro","Castano/Nero mix","Biondo scuro","Biondo medio","Biondo chiaro","Biondo platino","Rosso/Ramato","Rosso scuro","Rosso chiaro","Brizzolato","Grigio scuro","Grigio argento","Bianco","Colorati"], color: AX.gold, type: "select" },
                         { label: "Sedere", icon: "🍑", field: "buttSize", options: ["Piccolo","Medio","Grande","Molto grande"], color: AX.magenta, type: "slider" },
                       ],
                       [
@@ -6911,12 +6983,37 @@ export default function AIStudio() {
                       ],
                       [
                         { label: "Colore pelle", icon: "🎨", field: "skinColor", options: ["Molto chiara","Chiara","Olivastra","Scura","Molto scura"], color: AX.gold, type: "select" },
-                        { label: "Infoltimento", icon: "🧬", field: "hairDensity", options: ["Molto folti","Folti","Medio","Sottili","Radi","Diradamento"], color: AX.gold, type: "slider" },
+                        { label: "Pettinatura", icon: "💈", field: "hair_cut_style", options: ["Riga laterale corta","All'indietro","In avanti","Mossa/disordinata","Rasata corta","Media scalata","Riccia naturale","Ciuffo all'insù"], color: AX.violet, type: "select" },
                         null,
                       ],
                       [
                         { label: "Colore occhi", icon: "👁️", field: "eyeColor", options: ["Marroni","Nocciola","Verdi","Azzurri","Grigi","Neri"], color: AX.electric, type: "select" },
+                        { label: "Direzione", icon: "➡️", field: "hair_cut_direction", options: ["Riga a sinistra","Riga a destra","Pettinata indietro","Pettinata in avanti","Senza riga"], color: AX.violet, type: "select" },
                         null,
+                      ],
+                      [
+                        null,
+                        { label: "Infoltimento", icon: "🧬", field: "hairDensity", options: ["Molto folti","Folti","Medio","Sottili","Radi","Diradamento"], color: AX.gold, type: "slider" },
+                        null,
+                      ],
+                      [
+                        null,
+                        { label: "Pattern grigio", icon: "🔬", field: "hair_color_pattern", options: ["Colore uniforme","Sale e pepe uniforme","Grigio solo tempie","Quasi tutto grigio","Ciocche/riflessi","Tinta uniforme"], color: AX.gold, type: "select" },
+                        null,
+                      ],
+                      [
+                        null,
+                        { label: "% Grigio", icon: "🩶", field: "hair_grey_percentage", options: ["0%","10%","25%","50%","75%","100%"], color: AX.gold, type: "slider" },
+                        null,
+                      ],
+                      [
+                        null,
+                        { label: "Stempiatura", icon: "📐", field: "hair_recession", options: ["Nessuna","Leggera tempie","Moderata (M)","Significativa","Molto arretrata"], color: AX.gold, type: "select" },
+                        null,
+                      ],
+                      [
+                        null,
+                        { label: "Fronte", icon: "🧠", field: "hair_forehead_exposure", options: ["Coperta","Normale","Alta visibile","Molto alta"], color: AX.gold, type: "select" },
                         null,
                       ],
                     ];
@@ -7060,11 +7157,11 @@ export default function AIStudio() {
                 if (!currentProject) return;
                 const updChars = currentProject.characters.map(c => c.id === charId ? { ...c, appearance: { ...(c.appearance || {}), ...appearance } } : c);
                 updateProject({ ...currentProject, characters: updChars });
-              }, onSaveAsSet: (imgUrl) => { setSaveSetImageUrl(imgUrl); setShowSaveSetModal(true); }, selectedSet }} />
+              }, onSaveAsSet: (imgUrl) => { setSaveSetImageUrl(imgUrl); setShowSaveSetModal(true); }, selectedSet, imageStatus, setImageStatus, imageProgress, setImageProgress }} />
             </>
           )}
           {activeTab === "video" && (
-            <VidGen {...{ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, videoResolution, setVideoResolution, generating, setGenerating, selectedCharacter, vidTemplates: videoStylePresets, onSaveVideo: saveGeneratedVideo, generatedVideos, setGeneratedVideos, previewVideo: genPreviewVideo, setPreviewVideo: setGenPreviewVideo, layoutFill: false, history, diskMediaEntries, generatedImages, controlledSourceImg: projectVideoSourceImg, setControlledSourceImg: setProjectVideoSourceImg, proposalResetNonce: projectVideoProposalResetNonce, pickerImageEntries: projectGalleryEntryList, pickerSelectedEntryId: projectGallerySelectedEntryId, onPickerImageChange: handleProjectGallerySelection, selectedVideoStyles: vidSelectedStyles, setSelectedVideoStyles: setVidSelectedStyles, selectedDirectionStyles: vidSelectedDirectionStyles, setSelectedDirectionStyles: setVidSelectedDirectionStyles, vidAspect, setVidAspect, vidSteps, setVidSteps, recallVideoUrl, setRecallVideoUrl, videoStatus, setVideoStatus, directionRecommendation: vidDirectionRecommendation, setDirectionRecommendation: setVidDirectionRecommendation, directionRecLoading: vidDirectionRecLoading, setDirectionRecLoading: setVidDirectionRecLoading, imgSessionPromptMap, videoSidebarMode, setVideoSidebarMode, expandedScreenplays, setExpandedScreenplays, voiceLibrary, elFavorites, myVoices, projectSets }} />
+            <VidGen {...{ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, videoResolution, setVideoResolution, generating, setGenerating, selectedCharacter, vidTemplates: videoStylePresets, onSaveVideo: saveGeneratedVideo, generatedVideos, setGeneratedVideos, previewVideo: genPreviewVideo, setPreviewVideo: setGenPreviewVideo, layoutFill: false, history, diskMediaEntries, generatedImages, controlledSourceImg: projectVideoSourceImg, setControlledSourceImg: setProjectVideoSourceImg, proposalResetNonce: projectVideoProposalResetNonce, pickerImageEntries: projectGalleryEntryList, pickerSelectedEntryId: projectGallerySelectedEntryId, onPickerImageChange: handleProjectGallerySelection, selectedVideoStyles: vidSelectedStyles, setSelectedVideoStyles: setVidSelectedStyles, selectedDirectionStyles: vidSelectedDirectionStyles, setSelectedDirectionStyles: setVidSelectedDirectionStyles, vidAspect, setVidAspect, vidSteps, setVidSteps, recallVideoUrl, setRecallVideoUrl, videoStatus, setVideoStatus, directionRecommendation: vidDirectionRecommendation, setDirectionRecommendation: setVidDirectionRecommendation, directionRecLoading: vidDirectionRecLoading, setDirectionRecLoading: setVidDirectionRecLoading, imgSessionPromptMap, videoSidebarMode, setVideoSidebarMode, expandedScreenplays, setExpandedScreenplays, voiceLibrary, elFavorites, myVoices, projectSets, videosRendering, setVideosRendering }} />
           )}
 
           </div>
@@ -7073,14 +7170,14 @@ export default function AIStudio() {
         {/* ═══ FREE IMAGE ═══ */}
         {view === "free-image" && (
           <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflowY: "auto", overflowX: "hidden" }}>
-            <ImgGen {...{ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setResolution, generating, setGenerating, generatedImages, setGeneratedImages, selectedCharacter: null, setSelectedCharacter: null, projectCharacters: [], scenes: scenePresets, onSave: saveGeneratedImage, previewImg: genPreviewImg, setPreviewImg: setGenPreviewImg, layoutFill: true, history, recallImageUrl, setRecallImageUrl, selectedStyles: imgSelectedStyles, setSelectedStyles: setImgSelectedStyles, aspect: imgAspect, setAspect: setImgAspect, steps: imgSteps, setSteps: setImgSteps, cfg: imgCfg, setCfg: setImgCfg, adv: imgAdv, setAdv: setImgAdv, imgSessionPromptMap }} />
+            <ImgGen {...{ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setResolution, generating, setGenerating, generatedImages, setGeneratedImages, selectedCharacter: null, setSelectedCharacter: null, projectCharacters: [], scenes: scenePresets, onSave: saveGeneratedImage, previewImg: genPreviewImg, setPreviewImg: setGenPreviewImg, layoutFill: true, history, recallImageUrl, setRecallImageUrl, selectedStyles: imgSelectedStyles, setSelectedStyles: setImgSelectedStyles, aspect: imgAspect, setAspect: setImgAspect, steps: imgSteps, setSteps: setImgSteps, cfg: imgCfg, setCfg: setImgCfg, adv: imgAdv, setAdv: setImgAdv, imgSessionPromptMap, imageStatus, setImageStatus, imageProgress, setImageProgress }} />
           </div>
         )}
 
         {/* ═══ FREE VIDEO ═══ */}
         {view === "free-video" && (
           <div className="ax-hide-scrollbar" style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflowY: "auto", overflowX: "hidden" }}>
-            <VidGen {...{ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, videoResolution, setVideoResolution, generating, setGenerating, selectedCharacter: null, vidTemplates: videoStylePresets, onSaveVideo: saveGeneratedVideo, generatedVideos, setGeneratedVideos, previewVideo: genPreviewVideo, setPreviewVideo: setGenPreviewVideo, layoutFill: true, history, diskMediaEntries, generatedImages, freeSourceImg: vidFreeSourceImg, setFreeSourceImg: setVidFreeSourceImg, selectedVideoStyles: vidSelectedStyles, setSelectedVideoStyles: setVidSelectedStyles, selectedDirectionStyles: vidSelectedDirectionStyles, setSelectedDirectionStyles: setVidSelectedDirectionStyles, vidAspect, setVidAspect, vidSteps, setVidSteps, recallVideoUrl, setRecallVideoUrl, videoStatus, setVideoStatus, directionRecommendation: vidDirectionRecommendation, setDirectionRecommendation: setVidDirectionRecommendation, directionRecLoading: vidDirectionRecLoading, setDirectionRecLoading: setVidDirectionRecLoading, imgSessionPromptMap, videoSidebarMode, setVideoSidebarMode, expandedScreenplays, setExpandedScreenplays, voiceLibrary, elFavorites, myVoices }} />
+            <VidGen {...{ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, videoResolution, setVideoResolution, generating, setGenerating, selectedCharacter: null, vidTemplates: videoStylePresets, onSaveVideo: saveGeneratedVideo, generatedVideos, setGeneratedVideos, previewVideo: genPreviewVideo, setPreviewVideo: setGenPreviewVideo, layoutFill: true, history, diskMediaEntries, generatedImages, freeSourceImg: vidFreeSourceImg, setFreeSourceImg: setVidFreeSourceImg, selectedVideoStyles: vidSelectedStyles, setSelectedVideoStyles: setVidSelectedStyles, selectedDirectionStyles: vidSelectedDirectionStyles, setSelectedDirectionStyles: setVidSelectedDirectionStyles, vidAspect, setVidAspect, vidSteps, setVidSteps, recallVideoUrl, setRecallVideoUrl, videoStatus, setVideoStatus, directionRecommendation: vidDirectionRecommendation, setDirectionRecommendation: setVidDirectionRecommendation, directionRecLoading: vidDirectionRecLoading, setDirectionRecLoading: setVidDirectionRecLoading, imgSessionPromptMap, videoSidebarMode, setVideoSidebarMode, expandedScreenplays, setExpandedScreenplays, voiceLibrary, elFavorites, myVoices, videosRendering, setVideosRendering }} />
           </div>
         )}
 
@@ -7135,6 +7232,9 @@ export default function AIStudio() {
             isProjectContext={isProjectDetail}
             onBulkDelete={handleBulkDelete}
             videoStatus={videoStatus}
+            videosRendering={videosRendering}
+            imageStatus={imageStatus}
+            imageProgress={imageProgress}
           />
         ) : null}
       </main>
@@ -7570,7 +7670,7 @@ const VideoPreviewModal = React.memo(function VideoPreviewModal({ src, onClose, 
 });
 
 // ── Image Generator ──
-function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setResolution, generating, setGenerating, generatedImages, setGeneratedImages, selectedCharacter, setSelectedCharacter, projectCharacters, scenes, onSave, previewImg, setPreviewImg, layoutFill, history, recallImageUrl, setRecallImageUrl, selectedStyles, setSelectedStyles, aspect, setAspect, steps, setSteps, cfg, setCfg, adv, setAdv, projectSourceImageUrl, setProjectSourceImageUrl, currentProjectId, imgSessionPromptMap, imgPickerEntries, imgPickerSelectedId, onImgPickerChange, myImagesPickedUrl, onUpdateCharacterAppearance, onSaveAsSet, selectedSet }) {
+function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setResolution, generating, setGenerating, generatedImages, setGeneratedImages, selectedCharacter, setSelectedCharacter, projectCharacters, scenes, onSave, previewImg, setPreviewImg, layoutFill, history, recallImageUrl, setRecallImageUrl, selectedStyles, setSelectedStyles, aspect, setAspect, steps, setSteps, cfg, setCfg, adv, setAdv, projectSourceImageUrl, setProjectSourceImageUrl, currentProjectId, imgSessionPromptMap, imgPickerEntries, imgPickerSelectedId, onImgPickerChange, myImagesPickedUrl, onUpdateCharacterAppearance, onSaveAsSet, selectedSet, imageStatus, setImageStatus, imageProgress, setImageProgress }) {
   const [tmpl, setTmpl] = useState(null);
   const [imgLibraryOpen, setImgLibraryOpen] = useState(false);
   const imgFileRef = useRef(null);
@@ -7578,7 +7678,6 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
   const [proposedPrompt, setProposedPrompt] = useState(null);
   const [editableIT, setEditableIT] = useState("");
   const [translateErr, setTranslateErr] = useState("");
-  const [imageStatus, setImageStatus] = useState("");
   const [autoRefine, setAutoRefine] = useState(false);
   const [promptManuallyEdited, setPromptManuallyEdited] = useState(false);
   const [recallFeedback, setRecallFeedback] = useState(null);
@@ -7628,8 +7727,9 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
 
   const handleFaceSwapOnly = async () => {
     setGenerating(true);
+    setImageProgress(0);
     setGeneratedImages(p => [STUDIO_IMAGE_GENERATING, ...p.filter(x => x !== STUDIO_IMAGE_GENERATING)]);
-    setImageStatus("⏳ Face swap in corso...");
+    setImageStatus("Preparazione…"); setImageProgress(5);
     try {
       const charImg = selectedCharacter?.image || selectedCharacter?.imagePath || selectedCharacter?.imageUrl || null;
       if (!charImg) throw new Error("Nessuna foto personaggio trovata");
@@ -7643,13 +7743,16 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
       } else if (sourceUrl && !sourceUrl.startsWith("http")) {
         sourceUrl = await uploadBase64ToFal(sourceUrl);
       }
+      setImageProgress(15);
 
       const faceDataUri = await characterImageToDataUri(charImg).catch(() => null);
       if (!faceDataUri) throw new Error("Impossibile caricare la foto del personaggio");
       const faceUrl = await uploadBase64ToFal(faceDataUri);
+      setImageProgress(25);
 
-      setImageStatus("🧬 Applicazione identità facciale...");
+      setImageStatus("Face swap…"); setImageProgress(30);
       let imgUrl = await applyFaceIdentity(sourceUrl, faceUrl, selectedCharacter?.appearance, autoRefine);
+      setImageProgress(85);
 
       // LEGACY: doppio face swap
       // const swap1 = await falRequest("fal-ai/face-swap", { base_image_url: sourceUrl, swap_image_url: faceUrl });
@@ -7659,9 +7762,8 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
       //   if (swap2?.image?.url) imgUrl = swap2.image.url;
       // }
 
+      setImageStatus("Salvataggio…"); setImageProgress(90);
       setGeneratedImages(p => [imgUrl, ...p.filter(x => x !== STUDIO_IMAGE_GENERATING)]);
-      setImageStatus("✅ Face swap completato!");
-      setTimeout(() => setImageStatus(""), 2000);
 
       void (async () => {
         try {
@@ -7681,9 +7783,11 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
           }
         } catch (saveErr) { console.error("[FACE-SWAP SAVE]", saveErr); }
       })();
+      setImageStatus(""); setImageProgress(100);
+      setTimeout(() => { setImageProgress(0); }, 1500);
     } catch (e) {
       console.error("[FACE-SWAP ONLY]", e);
-      setImageStatus("");
+      setImageStatus(""); setImageProgress(0);
       setGeneratedImages(p => p.filter(x => x !== STUDIO_IMAGE_GENERATING));
     }
     setGenerating(false);
@@ -7853,16 +7957,27 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
       alert("Seleziona almeno uno stile prima di generare");
       return;
     }
+    const DIAGNOSTIC_LEVEL = 4; // TEMPORANEO: 1=FLUX puro, 4=FLUX+LLM+1 face swap — rimuovere dopo il test
+    const DIAGNOSTIC_PURE_FLUX = DIAGNOSTIC_LEVEL >= 1; // compatibilità con i check sotto
+
     setGenerating(true);
+    setImageProgress(0);
     setGeneratedImages(p => [STUDIO_IMAGE_GENERATING, ...p.filter(x => x !== STUDIO_IMAGE_GENERATING)]);
+    setImageStatus("Traduzione prompt…"); setImageProgress(5);
     try {
+      console.log("[APPEARANCE FULL DUMP]", JSON.stringify(selectedCharacter?.appearance, null, 2));
+
       // ── Risolvi il prompt EN da usare per FLUX ──
       // Priorità: preparedEnRef (fresco + testo sorgente coincidente) → traduzione silente → fallback IT
       let resolvedEn = null;
       // Se l'utente ha modificato il testo nella modale, usa quello (la ref è più fresca dello state)
       const currentIt = (modalEditedItRef.current ?? prompt).trim();
       modalEditedItRef.current = null; // consuma la ref
+
+      // DIAGNOSTIC: se attivo e c'è un personaggio, forza ri-traduzione senza appearance
+      const diagnosticActive = DIAGNOSTIC_PURE_FLUX && selectedCharacter;
       const canReusePrepared =
+        !diagnosticActive &&
         !enIsStaleRef.current &&
         preparedEnRef.current?.en &&
         preparedEnRef.current?.itSource === currentIt;
@@ -7878,7 +7993,31 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
             .filter(Boolean)
             .join(", ");
           const prefix = [scenePrefixForAI(), styleContext ? `Style: ${styleContext}` : ""].filter(Boolean).join(" | ");
-          const out = await translatePrompt(currentIt, prefix, charPhysicalContext);
+          let llmContext = charPhysicalContext;
+          if (diagnosticActive && selectedCharacter?.appearance) {
+            const a = selectedCharacter.appearance;
+            const parts = [];
+            if (a.hairColorDetail || a.hairColor) {
+              const hairColorItToEn = { "Nero corvino": "jet black", "Nero": "black", "Nero/Castano": "black with brown highlights", "Neri": "black", "Castano molto scuro": "very dark brown", "Castano scuro": "dark brown", "Castano medio": "medium brown", "Castano chiaro": "light brown", "Castano/Nero mix": "dark brown and black mixed", "Biondo scuro": "dark blonde", "Biondo medio": "medium blonde", "Biondo chiaro": "light blonde", "Biondo platino": "platinum blonde", "Rosso/Ramato": "red auburn", "Rosso scuro": "dark red mahogany", "Rosso chiaro": "light copper red", "Brizzolato": "salt-and-pepper grey", "Grigio scuro": "dark grey", "Grigio argento": "silver grey", "Bianco": "white", "Colorati": "colorful dyed" };
+              let hairDesc = a.hairColorDetail || (hairColorItToEn[a.hairColor] || a.hairColor);
+              if (a.hairDensity) hairDesc += `, ${a.hairDensity.toLowerCase()} density`;
+              if (a.hairLength) hairDesc += `, ${a.hairLength.toLowerCase()} length`;
+              parts.push(`hair: ${hairDesc}`);
+            }
+            if (!a.beard || a.beard === "none" || a.beard === "Nessuna") {
+              parts.push("clean shaven, NO beard, NO stubble, NO facial hair");
+            }
+            if (a.ageEstimate) parts.push(`approximately ${a.ageEstimate} years old`);
+            if (a.skinDetail) parts.push(`skin: ${a.skinDetail}`);
+            else if (a.skinColor) parts.push(`skin: ${a.skinColor}`);
+            if (!a.glasses || a.glasses === "none") parts.push("no glasses");
+            llmContext = parts.length > 0
+              ? `\n\nCHARACTER PHYSICAL DETAILS (MANDATORY):\n${parts.join(". ")}`
+              : "";
+            console.log("[DIAGNOSTIC] Concise physical context (5 fields):", parts.join(". "));
+          }
+          console.log("[PHYSICAL CONTEXT TO LLM]", llmContext);
+          const out = await translatePrompt(currentIt, prefix, llmContext);
           if (out?.prompt_en) {
             resolvedEn = out.prompt_en;
             preparedEnRef.current = { en: out.prompt_en, itSource: currentIt };
@@ -7890,6 +8029,7 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
         // Fallback estremo: se traduzione fallisce usa IT grezzo
         if (!resolvedEn) resolvedEn = currentIt;
       }
+      setImageProgress(10);
 
       // Determina aspect_ratio
       const [rw, rh] = (resolution || "1920x1080").split("x").map(Number);
@@ -7951,7 +8091,7 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
       // ── Auto-detect appearance se mancante ──
       if (selectedCharacter && charImg && (!selectedCharacter.appearance || Object.keys(selectedCharacter.appearance).filter(k => selectedCharacter.appearance[k]).length < 3)) {
         try {
-          setImageStatus("⏳ Analisi aspetto personaggio…");
+          setImageStatus("Analisi personaggio…"); setImageProgress(12);
           const photoUri = await characterImageToDataUri(charImg).catch(() => null);
           if (photoUri) {
             const detected = await analyzePhotoAppearance(photoUri);
@@ -8054,32 +8194,35 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
       const useFaceSwap = Boolean(selectedCharacter && charImg);
 
       // ── Composizione finale ──
-      // Prompt COMPLETO con tutte le clausole (identity, anchoring, style, reflection).
-      // FLUX Ultra funziona meglio con il prompt completo — il doppio face-swap corregge l'identità dopo.
-      const finalPrompt = [
-        charAnchoring.subjectLockClause,
-        subjectPrompt,
-        imgVisualSignatureClause,
-        subjectLock,
-        scenePrompt,
-        effectiveStylePrefix,
-        imgIdentityClause,
-        imgStyleClause,
-        charAnchoring.roleBindingClause,
-        charAnchoring.antiAnimalClause,
-        imgReflectionClause,
-      ].filter(Boolean).join(", ");
-      // EXPERIMENTAL: swap-first clean prompt (disattivato — prompt completo funziona meglio)
-      // if (useFaceSwap) {
-      //   finalPrompt = [scenePrompt, effectiveStylePrefix].filter(Boolean).join(", ");
-      // }
+      let finalPrompt;
+      if (DIAGNOSTIC_PURE_FLUX && selectedCharacter) {
+        // TEST DIAGNOSTICO: solo scena + stile, nessuna clausola identity/anchoring/appearance
+        finalPrompt = [scenePrompt, effectiveStylePrefix].filter(Boolean).join(", ");
+        console.log("[TEST PURE FLUX] finalPrompt:", finalPrompt);
+      } else {
+        // Prompt COMPLETO con tutte le clausole (identity, anchoring, style, reflection).
+        finalPrompt = [
+          charAnchoring.subjectLockClause,
+          subjectPrompt,
+          imgVisualSignatureClause,
+          subjectLock,
+          scenePrompt,
+          effectiveStylePrefix,
+          imgIdentityClause,
+          imgStyleClause,
+          charAnchoring.roleBindingClause,
+          charAnchoring.antiAnimalClause,
+          imgReflectionClause,
+        ].filter(Boolean).join(", ");
+      }
 
-      console.log("[PROMPT DEBUG] finalPrompt:", finalPrompt);
-      console.log("[PROMPT DEBUG] finalNegativePrompt (pre-build):", [negPrompt, styleNegative].filter(Boolean).join(", "));
+      console.log("[FINAL FLUX PROMPT]", finalPrompt);
+      console.log("[FINAL FLUX NEGATIVE]", [negPrompt, styleNegative].filter(Boolean).join(", "));
+      console.log("[PROMPT DEBUG] DIAGNOSTIC_PURE_FLUX:", DIAGNOSTIC_PURE_FLUX, "| selectedCharacter:", Boolean(selectedCharacter));
 
       // ── Negative prompt: deduplicazione di negPrompt (utente) + styleNegative (preset) + anti-animal ──
       const finalNegativePrompt = [...new Set(
-        [negPrompt, styleNegative, charAnchoring.antiAnimalNegative]
+        [negPrompt, styleNegative, (DIAGNOSTIC_PURE_FLUX && selectedCharacter) ? null : charAnchoring.antiAnimalNegative]
           .filter(Boolean)
           .join(", ")
           .split(",")
@@ -8180,7 +8323,7 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
           appearanceDiff: appearanceDiffObj,
         });
 
-        setImageStatus && setImageStatus("⏳ Aggiornamento immagine...");
+        setImageStatus("Aggiornamento immagine…"); setImageProgress(20);
 
         let sourceUrl = projectSourceImageUrl;
         if (sourceUrl.startsWith("axstudio-local://")) {
@@ -8227,7 +8370,7 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
             `Like a professional ${targetStyleLabel} capture of the exact same scene. ` +
             `Do NOT simplify, do NOT change the pose, do NOT add or remove any element.`;
           console.log("[STYLE TRANSFER] Aggressive style transfer prompt:", finalKontextPrompt.slice(0, 200));
-          setImageStatus && setImageStatus("🎨 Cambio stile in corso...");
+            setImageStatus("Cambio stile…"); setImageProgress(30);
         }
 
         const kontextResult = await falRequest("fal-ai/flux-pro/kontext/max", {
@@ -8240,6 +8383,7 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
 
         if (!kontextUrl) {
           console.error("fal.ai Kontext: no image URL in response", kontextResult);
+          setImageStatus(""); setImageProgress(0);
           setGeneratedImages(p => p.filter(x => x !== STUDIO_IMAGE_GENERATING));
           setGenerating(false);
           return;
@@ -8249,7 +8393,7 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
         // ── Identità facciale post-update: easel-ai face swap ──
         if (charImg) {
           try {
-            setImageStatus && setImageStatus("🧬 Riapplicazione volto...");
+            setImageStatus("Face swap…"); setImageProgress(60);
             const faceDataUri = await characterImageToDataUri(charImg).catch(() => null);
             if (faceDataUri) {
               const faceUrl = await uploadBase64ToFal(faceDataUri);
@@ -8272,8 +8416,7 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
 
         console.log("[PROJECT IMAGE UPDATE] result:", imgUrl?.slice(0, 80));
 
-        setImageStatus && setImageStatus("✅ Aggiornamento completato!");
-        setTimeout(() => setImageStatus && setImageStatus(""), 2000);
+        setImageStatus("Salvataggio…"); setImageProgress(90);
 
         setGeneratedImages(p => [imgUrl, ...p.filter(x => x !== STUDIO_IMAGE_GENERATING)]);
 
@@ -8318,13 +8461,15 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
           } catch (err) {
             console.error("save updated image:", err);
           } finally {
+            setImageStatus(""); setImageProgress(100);
+            setTimeout(() => { setImageProgress(0); }, 1500);
             setGenerating(false);
           }
         })();
 
       } else if (selectedSet && selectedCharacter) {
         // ═══ RAMO SET + CHARACTER: Kontext inserisce personaggio nel Set ═══
-        setImageStatus && setImageStatus("🎬 Inserimento nel set...");
+        setImageStatus("Inserimento nel set…"); setImageProgress(20);
 
         let setImgUrl = selectedSet.remoteUrl || null;
         if (!setImgUrl && selectedSet.filePath && isElectron && window.electronAPI?.loadFile) {
@@ -8366,10 +8511,11 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
         if (!insertedUrl) throw new Error("Kontext: nessuna immagine generata per l'inserimento nel Set");
 
         imgUrl = insertedUrl;
+        setImageProgress(50);
 
         if (useFaceSwap) {
           try {
-            setImageStatus && setImageStatus("🧬 Applicazione identità facciale...");
+            setImageStatus("Face swap…"); setImageProgress(55);
             const faceDataUri = await characterImageToDataUri(charImg).catch(() => null);
             if (faceDataUri) {
               const faceUrl = await uploadBase64ToFal(faceDataUri);
@@ -8388,8 +8534,7 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
           } catch (faceErr) { console.warn("[SET FACE-ID] Failed:", faceErr.message); }
         }
 
-        setImageStatus && setImageStatus("✅ Completato!");
-        setTimeout(() => setImageStatus && setImageStatus(""), 2000);
+        setImageStatus("Salvataggio…"); setImageProgress(90);
 
         setGeneratedImages(p => [imgUrl, ...p.filter(x => x !== STUDIO_IMAGE_GENERATING)]);
 
@@ -8416,11 +8561,14 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
               }
             }
           } catch (saveErr) { console.error("[SET-INSERT SAVE]", saveErr); }
+          setImageStatus(""); setImageProgress(100);
+          setTimeout(() => { setImageProgress(0); }, 1500);
+          setGenerating(false);
         })();
 
       } else {
         // ═══ RAMO CREATE: generazione immagine ═══
-        setImageStatus && setImageStatus("⏳ Generazione immagine...");
+        setImageStatus("Generazione immagine…"); setImageProgress(15);
         console.log("[BASE GEN] Generating with fal-ai/flux-pro/v1.1-ultra, style:", selectedStyles);
         const baseResult = await falRequest("fal-ai/flux-pro/v1.1-ultra", {
           prompt: finalPrompt,
@@ -8434,30 +8582,57 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
 
         if (!baseImageUrl) {
           console.error("fal.ai FLUX: no image URL in response", baseResult);
+          setImageStatus(""); setImageProgress(0);
           setGeneratedImages(p => p.filter(x => x !== STUDIO_IMAGE_GENERATING));
           setGenerating(false);
           return;
         }
 
         imgUrl = baseImageUrl;
+        setImageProgress(50);
 
         // ── Identità facciale: doppio face-swap classico + refine opzionale ──
-        if (useFaceSwap) {
+        if (DIAGNOSTIC_LEVEL >= 1 && DIAGNOSTIC_LEVEL < 4) {
+          console.log("[DIAGNOSTIC L" + DIAGNOSTIC_LEVEL + "] Face-swap SKIPPED — testing FLUX output only");
+        } else if (DIAGNOSTIC_LEVEL === 4 && useFaceSwap) {
+          // DIAGNOSTIC L4: singolo face-swap, no secondo pass, no refine
           try {
-            setImageStatus && setImageStatus("🧬 Applicazione identità facciale...");
+            setImageStatus("Face swap…"); setImageProgress(55);
+            const faceDataUri = await characterImageToDataUri(charImg).catch(() => null);
+            if (faceDataUri) {
+              const faceUrl = await uploadBase64ToFal(faceDataUri);
+              console.log("[DIAGNOSTIC L4] FLUX image:", imgUrl.slice(0, 60));
+              const swap1 = await falRequest("fal-ai/face-swap", {
+                base_image_url: imgUrl,
+                swap_image_url: faceUrl,
+              });
+              const swapResult = swap1?.image?.url || swap1?.images?.[0]?.url || null;
+              if (swapResult) {
+                imgUrl = swapResult;
+                console.log("[DIAGNOSTIC L4] Face swap applied, result:", swapResult.slice(0, 60));
+              } else {
+                console.warn("[DIAGNOSTIC L4] Face swap returned no image, using FLUX image");
+              }
+            }
+          } catch (faceErr) {
+            console.warn("[DIAGNOSTIC L4] Face swap failed:", faceErr.message);
+          }
+        } else if (useFaceSwap) {
+          try {
+            setImageStatus("Face swap…"); setImageProgress(55);
             const faceDataUri = await characterImageToDataUri(charImg).catch(() => null);
             if (faceDataUri) {
               const faceUrl = await uploadBase64ToFal(faceDataUri);
               imgUrl = await applyFaceIdentity(imgUrl, faceUrl, selectedCharacter?.appearance, autoRefine);
               console.log("[CREATE FACE-ID] Applied:", imgUrl.slice(0, 80));
             }
+            setImageProgress(80);
           } catch (faceErr) {
             console.warn("[CREATE FACE-ID] Failed, using base image:", faceErr.message);
           }
         }
 
-        setImageStatus && setImageStatus("✅ Completato!");
-        setTimeout(() => setImageStatus && setImageStatus(""), 2000);
+        setImageStatus("Salvataggio…"); setImageProgress(90);
 
         setGeneratedImages(p => [imgUrl, ...p.filter(x => x !== STUDIO_IMAGE_GENERATING)]);
 
@@ -8500,12 +8675,15 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
           } catch (err) {
             console.error("save generated image:", err);
           } finally {
+            setImageStatus(""); setImageProgress(100);
+            setTimeout(() => { setImageProgress(0); }, 1500);
             setGenerating(false);
           }
         })();
       }
     } catch (e) {
       console.error("generate error:", e);
+      setImageStatus(""); setImageProgress(0);
       setGeneratedImages(p => p.filter(x => x !== STUDIO_IMAGE_GENERATING));
       setGenerating(false);
     }
@@ -8905,7 +9083,7 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
               }}
             >
               {generating
-                ? <><div style={{ width: 14, height: 14, border: "2px solid rgba(255,255,255,0.2)", borderTopColor: "#fff", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />{imageStatus || (isFaceSwapOnlyMode ? "Face swap…" : isStyleChangeOnlyMode ? "Cambio stile…" : isImageUpdateMode ? "Aggiornamento…" : "Generazione…")}</>
+                ? <><div style={{ width: 14, height: 14, border: "2px solid rgba(255,255,255,0.2)", borderTopColor: "#fff", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />{imageStatus || (isFaceSwapOnlyMode ? "Face swap…" : isStyleChangeOnlyMode ? "Cambio stile…" : isImageUpdateMode ? "Aggiornamento…" : "Generazione…")}{imageProgress > 0 && imageProgress < 100 && <span style={{ fontSize: 11, opacity: 0.7, fontVariantNumeric: "tabular-nums" }}>{imageProgress}%</span>}</>
                 : isFaceSwapOnlyMode ? <>{"🔄 Avvia Face Swap"}</>
                 : isStyleChangeOnlyMode ? <>{"🎨 Cambia Stile"}</>
                 : isImageUpdateMode ? <>{"🔄 Aggiorna Immagine"}</>
@@ -8956,7 +9134,7 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
 }
 
 // ── Video Generator ──
-function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, videoResolution, setVideoResolution, generating, setGenerating, selectedCharacter, vidTemplates, onSaveVideo, generatedVideos: _gv, setGeneratedVideos, previewVideo, setPreviewVideo, layoutFill, history, diskMediaEntries, generatedImages, controlledSourceImg, setControlledSourceImg, freeSourceImg, setFreeSourceImg, proposalResetNonce = 0, pickerImageEntries, pickerSelectedEntryId, onPickerImageChange, selectedVideoStyles, setSelectedVideoStyles, selectedDirectionStyles, setSelectedDirectionStyles, vidAspect, setVidAspect, vidSteps, setVidSteps, recallVideoUrl, setRecallVideoUrl, videoStatus, setVideoStatus, directionRecommendation, setDirectionRecommendation, directionRecLoading, setDirectionRecLoading, imgSessionPromptMap, videoSidebarMode, setVideoSidebarMode, expandedScreenplays, setExpandedScreenplays, voiceLibrary = [], elFavorites = [], myVoices = [], projectSets = [] }) {
+function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, videoResolution, setVideoResolution, generating, setGenerating, selectedCharacter, vidTemplates, onSaveVideo, generatedVideos: _gv, setGeneratedVideos, previewVideo, setPreviewVideo, layoutFill, history, diskMediaEntries, generatedImages, controlledSourceImg, setControlledSourceImg, freeSourceImg, setFreeSourceImg, proposalResetNonce = 0, pickerImageEntries, pickerSelectedEntryId, onPickerImageChange, selectedVideoStyles, setSelectedVideoStyles, selectedDirectionStyles, setSelectedDirectionStyles, vidAspect, setVidAspect, vidSteps, setVidSteps, recallVideoUrl, setRecallVideoUrl, videoStatus, setVideoStatus, directionRecommendation, setDirectionRecommendation, directionRecLoading, setDirectionRecLoading, imgSessionPromptMap, videoSidebarMode, setVideoSidebarMode, expandedScreenplays, setExpandedScreenplays, voiceLibrary = [], elFavorites = [], myVoices = [], projectSets = [], videosRendering, setVideosRendering }) {
   const [tmpl, setTmpl] = useState(null);
   const sourceIsControlled = typeof setControlledSourceImg === "function";
   const sourceImg = sourceIsControlled ? (controlledSourceImg ?? null) : (freeSourceImg ?? null);
@@ -9903,10 +10081,30 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
       }
 
       let finalPrompt = fp;
-      // Se voce ElevenLabs: NON inserire il dialogo nel prompt Kling (verrà mixato dopo)
-      if (clipDialogue && !isElevenLabsVoice) {
-        finalPrompt += `. The character says "${clipDialogue}"`;
+
+      // ── Lip-sync directions: quando c'è un dialogo, il prompt DEVE descrivere il parlato ──
+      if (clipDialogue && clipDialogue.trim().length > 0) {
+        const dialogueSnippet = clipDialogue.slice(0, 200);
+        const lipSyncBlock = [
+          "The character is actively speaking throughout the video with natural lip movements",
+          "mouth opens and closes naturally matching speech rhythm",
+          "natural jaw movement during speech",
+          "subtle eyebrow and head micro-movements while talking",
+          "expressive facial animation consistent with the spoken words",
+          "the character is NOT silent",
+        ].join(", ");
+
+        if (isElevenLabsVoice) {
+          // ElevenLabs: il testo non va nel prompt Kling (l'audio viene mixato dopo),
+          // ma le istruzioni di lip-sync per i movimenti facciali sono OBBLIGATORIE
+          finalPrompt = `${lipSyncBlock}. ${finalPrompt}`;
+        } else {
+          // Voce Kling o nessuna voce: includi anche il testo del dialogo
+          finalPrompt = `${lipSyncBlock}. ${finalPrompt}. The character says "${dialogueSnippet}"`;
+        }
+        console.log("[LIP-SYNC] Dialogue detected, lip-sync directions injected. ElevenLabs:", isElevenLabsVoice);
       }
+
       if (clipAmbient) {
         finalPrompt += `. Ambient sounds: ${clipAmbient}`;
       }
@@ -9930,9 +10128,10 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
         klingPayload.voice_ids = [rawVoiceId];
         const voiceDef = KLING_SYSTEM_VOICES.find(v => v.id === rawVoiceId);
         if (voiceDef) klingPayload.voice_language = voiceDef.lang === "zh" ? "zh" : "en";
+        const dialogueSnippetForReplace = clipDialogue.slice(0, 200);
         klingPayload.prompt = klingPayload.prompt.replace(
-          `The character says "${clipDialogue}"`,
-          `The character <<<voice_1>>> says "${clipDialogue}"`
+          `The character says "${dialogueSnippetForReplace}"`,
+          `The character <<<voice_1>>> says "${dialogueSnippetForReplace}"`
         );
       }
 
@@ -9981,8 +10180,12 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
         throw new Error("Nessun video nella risposta fal.ai");
       }
 
-      // Scarica il video su disco PRIMA di mostrarlo (evita scatti in riproduzione)
+      // Mostra subito la miniatura con overlay "Rendering…" mentre scarica su disco
       let displayUrl = videoUrl;
+      setGeneratedVideos(p => [displayUrl, ...p.filter(x => x !== STUDIO_VIDEO_GENERATING)]);
+      setGenerating(false);
+      if (setVideosRendering) setVideosRendering(prev => new Set([...prev, displayUrl]));
+
       if (onSaveVideo) {
         try {
           setVideoStatus("Download video…");
@@ -10036,15 +10239,16 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
               }
             }
 
-            displayUrl = mediaFileUrl(entry.filePath);
+            const localUrl = mediaFileUrl(entry.filePath);
+            setGeneratedVideos(p => p.map(x => x === displayUrl ? localUrl : x));
+            displayUrl = localUrl;
           }
         } catch (err) {
           console.error("Video download/save failed, using remote URL:", err);
         }
       }
 
-      setGeneratedVideos(p => [displayUrl, ...p.filter(x => x !== STUDIO_VIDEO_GENERATING)]);
-      setGenerating(false);
+      if (setVideosRendering) setVideosRendering(prev => { const next = new Set(prev); next.delete(videoUrl); next.delete(displayUrl); return next; });
       setVideoStatus("");
       if (!vidScreenplayCtxRef.current) showToast("✅ Video generato con successo!");
 
