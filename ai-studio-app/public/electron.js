@@ -292,12 +292,23 @@ ipcMain.handle("rename-file", async (_event, oldPath, newPath) => {
 // ── Mix audio + video con ffmpeg (voce ElevenLabs sopra video Kling) ──
 ipcMain.handle("mix-audio-video", async (_event, videoPath, audioPath, outputPath) => {
   return new Promise((resolve) => {
-    // Controlla se il video ha già una traccia audio
+    const vExists = fs.existsSync(videoPath);
+    const aExists = fs.existsSync(audioPath);
+    console.log("[MIX] Input video:", videoPath, "exists:", vExists, "size:", vExists ? fs.statSync(videoPath).size : 0);
+    console.log("[MIX] Input audio:", audioPath, "exists:", aExists, "size:", aExists ? fs.statSync(audioPath).size : 0);
+
+    if (!vExists || !aExists) {
+      console.error("[MIX] Missing input file(s)");
+      resolve({ success: false, error: `Missing file: video=${vExists} audio=${aExists}` });
+      return;
+    }
+
     execFile("ffprobe", [
       "-v", "error", "-select_streams", "a", "-show_entries", "stream=codec_type",
       "-of", "csv=p=0", videoPath,
     ], { timeout: 10000 }, (probeErr, stdout) => {
       const hasExistingAudio = !probeErr && stdout.trim().length > 0;
+      console.log("[MIX] Video has existing audio track:", hasExistingAudio);
 
       const args = hasExistingAudio
         ? ["-y", "-i", videoPath, "-i", audioPath,
@@ -308,12 +319,17 @@ ipcMain.handle("mix-audio-video", async (_event, videoPath, audioPath, outputPat
            "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
            "-shortest", outputPath];
 
-      execFile("ffmpeg", args, { timeout: 120000 }, (err) => {
+      console.log("[MIX] ffmpeg args:", args.join(" "));
+
+      execFile("ffmpeg", args, { timeout: 120000 }, (err, stdout2, stderr2) => {
         if (err) {
-          console.error("[FFMPEG MIX]", err.message);
+          console.error("[FFMPEG MIX] Error:", err.message);
+          console.error("[FFMPEG MIX] stderr:", stderr2?.slice(0, 500));
           resolve({ success: false, error: err.message });
         } else {
-          console.log("[FFMPEG MIX] OK:", outputPath);
+          const outExists = fs.existsSync(outputPath);
+          const outSize = outExists ? fs.statSync(outputPath).size : 0;
+          console.log("[FFMPEG MIX] OK:", outputPath, "exists:", outExists, "size:", outSize);
           resolve({ success: true, outputPath });
         }
       });

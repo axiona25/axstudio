@@ -2267,15 +2267,15 @@ const AMBIENT_SYSTEM_PROMPT =
   '{"ambient_en": "English sound description for Kling prompt", "ambient_it": "Italian description for the user"}';
 
 const KLING_DIALOGUE_LANGS = [
-  { id: "en", label: "Inglese" },
-  { id: "zh", label: "Cinese" },
-  { id: "ja", label: "Giapponese" },
-  { id: "ko", label: "Coreano" },
-  { id: "es", label: "Spagnolo" },
   { id: "it", label: "Italiano" },
+  { id: "en", label: "Inglese" },
+  { id: "es", label: "Spagnolo" },
   { id: "fr", label: "Francese" },
   { id: "de", label: "Tedesco" },
   { id: "pt", label: "Portoghese" },
+  { id: "zh", label: "Cinese" },
+  { id: "ja", label: "Giapponese" },
+  { id: "ko", label: "Coreano" },
   { id: "ru", label: "Russo" },
 ];
 
@@ -9172,7 +9172,7 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
   const [singleAmbient, setSingleAmbient] = useState("");
   const [singleAmbientIdea, setSingleAmbientIdea] = useState("");
   const [singleVoiceId, setSingleVoiceId] = useState("");
-  const [singleDialogueLang, setSingleDialogueLang] = useState("en");
+  const [singleDialogueLang, setSingleDialogueLang] = useState("it");
   const [showSingleDialogue, setShowSingleDialogue] = useState(false);
   const [showSingleAmbient, setShowSingleAmbient] = useState(false);
   const [generatingDialogue, setGeneratingDialogue] = useState(null);
@@ -10102,6 +10102,7 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
 
       // ── ElevenLabs TTS: genera audio MP3 PRIMA del video ──
       let elevenLabsAudioPath = null;
+      let elevenLabsAudioFalUrl = null;
       if (clipDialogue && isElevenLabsVoice && rawVoiceId) {
         try {
           console.log("[TTS PARAMS]", { voice: rawVoiceId, language: clipDialogueLangResolved, text: clipDialogue.slice(0, 50) });
@@ -10109,6 +10110,19 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
           const ttsBlob = await elevenLabsTTS(clipDialogue, rawVoiceId, { language: clipDialogueLangResolved });
           elevenLabsAudioPath = await saveAudioBlobToDisk(ttsBlob, `voice_${Date.now()}.mp3`);
           console.log("[ELEVENLABS TTS] Audio saved:", elevenLabsAudioPath);
+          // Upload audio to fal storage for lip-sync endpoint
+          try {
+            const audioDataUrl = await new Promise((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onload = () => resolve(reader.result);
+              reader.onerror = reject;
+              reader.readAsDataURL(ttsBlob);
+            });
+            elevenLabsAudioFalUrl = await uploadBase64ToFal(audioDataUrl);
+            console.log("[ELEVENLABS TTS] Audio uploaded to fal:", elevenLabsAudioFalUrl?.slice(0, 80));
+          } catch (uploadErr) {
+            console.warn("[ELEVENLABS TTS] Audio fal upload failed (lip-sync will be skipped):", uploadErr.message);
+          }
         } catch (elErr) {
           console.error("[ELEVENLABS TTS] Failed:", elErr.message);
         }
@@ -10231,9 +10245,33 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
 
       console.log("[KLING RESULT]", JSON.stringify(result).slice(0, 500));
 
-      const videoUrl = result?.video?.url;
+      let videoUrl = result?.video?.url;
       if (!videoUrl) {
         throw new Error("Nessun video nella risposta fal.ai");
+      }
+
+      // ── Kling Lip-Sync: applica lip-sync con audio ElevenLabs ──
+      let lipSyncApplied = false;
+      if (elevenLabsAudioFalUrl && videoUrl) {
+        try {
+          setVideoStatus("🗣️ Lip-sync in corso…");
+          console.log("[LIP-SYNC] Starting:", { video: videoUrl.slice(0, 80), audio: elevenLabsAudioFalUrl.slice(0, 80) });
+          const lipSyncResult = await falQueueRequest(
+            "fal-ai/kling-video/lipsync/audio-to-video",
+            { video_url: videoUrl, audio_url: elevenLabsAudioFalUrl },
+            (status) => { if (status === "IN_PROGRESS") setVideoStatus("🗣️ Lip-sync in corso…"); }
+          );
+          const lipSyncVideoUrl = lipSyncResult?.video?.url;
+          if (lipSyncVideoUrl) {
+            console.log("[LIP-SYNC] Success:", lipSyncVideoUrl.slice(0, 80));
+            videoUrl = lipSyncVideoUrl;
+            lipSyncApplied = true;
+          } else {
+            console.warn("[LIP-SYNC] No video in response, falling back to ffmpeg mix");
+          }
+        } catch (lsErr) {
+          console.warn("[LIP-SYNC] Failed, falling back to ffmpeg mix:", lsErr.message);
+        }
       }
 
       // Mostra subito la miniatura con overlay "Rendering…" mentre scarica su disco
@@ -10278,21 +10316,24 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
               }
             }
 
-            // ── Mix voce ElevenLabs sopra video Kling con ffmpeg ──
-            if (elevenLabsAudioPath && window.electronAPI?.mixAudioVideo) {
+            // ── Mix voce ElevenLabs sopra video Kling con ffmpeg (solo se lip-sync non applicato) ──
+            if (elevenLabsAudioPath && window.electronAPI?.mixAudioVideo && !lipSyncApplied) {
               try {
                 setVideoStatus("🔊 Mixaggio voce ElevenLabs…");
                 const mixedPath = entry.filePath.replace(/\.mp4$/i, "_mix.mp4");
+                console.log("[ELEVENLABS MIX] Mixing:", { video: entry.filePath, audio: elevenLabsAudioPath, output: mixedPath });
                 const mixResult = await window.electronAPI.mixAudioVideo(entry.filePath, elevenLabsAudioPath, mixedPath);
                 if (mixResult?.success) {
-                  await window.electronAPI.renameFile(mixedPath, entry.filePath);
-                  console.log("[ELEVENLABS MIX] Voice mixed into video");
+                  const renameResult = await window.electronAPI.renameFile(mixedPath, entry.filePath);
+                  console.log("[ELEVENLABS MIX] Rename result:", renameResult, "Final file:", entry.filePath);
                 } else {
                   console.warn("[ELEVENLABS MIX] Failed:", mixResult?.error);
                 }
               } catch (mixErr) {
                 console.warn("[ELEVENLABS MIX] Error:", mixErr.message);
               }
+            } else if (lipSyncApplied) {
+              console.log("[ELEVENLABS MIX] Skipped — lip-sync already applied audio to video");
             }
 
             const localUrl = mediaFileUrl(entry.filePath);
