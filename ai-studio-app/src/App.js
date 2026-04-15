@@ -9679,6 +9679,7 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
       );
       const generated = result?.dialogue || result?.dialogue_en;
       if (generated) {
+        console.log("[CONFIRMED DIALOGUE SET]", { source: "genera_button", text: generated.slice(0, 50), lang: lang });
         setSingleDialogue(generated);
       }
     } catch (e) {
@@ -10132,8 +10133,17 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
         finalPrompt += `. Ambient sounds: ${clipAmbient}`;
       }
 
-      // Kling genera audio ambient; la voce arriva da ElevenLabs se selezionata
-      const hasAudioContent = isElevenLabsVoice ? !!clipAmbient : !!(clipDialogue || clipAmbient);
+      // ── Audio routing: ElevenLabs = voce esterna (ffmpeg mix dopo), Kling = voce interna ──
+      // ElevenLabs → Kling genera SOLO ambient (no speech), voce mixata dopo con ffmpeg
+      // Kling voice → Kling genera speech + ambient
+      // Solo ambient → Kling genera ambient
+      // Nessun audio → Kling silent
+      const klingGenerateAudio = isElevenLabsVoice
+        ? !!clipAmbient          // ElevenLabs: audio solo per ambient, MAI speech
+        : isKlingVoice
+          ? !!(clipDialogue || clipAmbient)  // Kling voice: speech + ambient
+          : !!clipAmbient;       // Nessuna voce: solo ambient
+      console.log("[AUDIO ROUTING]", { isElevenLabs: isElevenLabsVoice, isKling: isKlingVoice, hasDialogue: !!clipDialogue, hasAmbient: !!clipAmbient, generate_audio: klingGenerateAudio, willMixElevenLabsAfter: isElevenLabsVoice && !!clipDialogue });
 
       // ── Kling O3 Reference-to-Video: preserva identità, costume, sfondo ──
       const klingPayload = {
@@ -10143,7 +10153,7 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
         aspect_ratio,
         cfg_scale: 0.5,
         character_orientation: duration > 10 ? "video" : "image",
-        generate_audio: hasAudioContent,
+        generate_audio: klingGenerateAudio,
         ...(finalNegativeVideo ? { negative_prompt: finalNegativeVideo } : {}),
       };
 
@@ -11089,12 +11099,12 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
             <label style={{ fontSize: 11, color: "#c4b5fd" }}>🎤 Dialogo del personaggio</label>
             <textarea
               value={singleDialogueIdea}
-              onChange={(e) => setSingleDialogueIdea(e.target.value)}
-              placeholder="Scrivi l'idea del dialogo in italiano..."
+              onChange={(e) => { const v = e.target.value; setSingleDialogueIdea(v); setSingleDialogue(v); console.log("[DIALOGUE TEXTAREA]", { text: v.slice(0, 50), synced: true }); }}
+              placeholder="Scrivi o incolla il dialogo in italiano..."
               rows={2}
               style={{ width: "100%", marginTop: 4, background: "rgba(0,0,0,0.3)", color: "white", border: "1px solid rgba(139,92,246,0.3)", borderRadius: 8, padding: 8, fontSize: 12, resize: "vertical", boxSizing: "border-box" }}
             />
-            <button type="button" onClick={generateSingleDialogue} disabled={generatingDialogue === "single"} style={{
+            <button type="button" onClick={() => { console.log("[GENERA DIALOGO CLICKED]", { rawText: singleDialogueIdea?.slice(0, 50), language: singleDialogueLang, voice: singleVoiceId }); generateSingleDialogue(); }} disabled={generatingDialogue === "single"} style={{
               marginTop: 6, padding: "5px 12px", background: "linear-gradient(135deg, #8b5cf6, #ec4899)",
               border: "none", borderRadius: 8, color: "white", fontSize: 11, cursor: generatingDialogue === "single" ? "not-allowed" : "pointer", opacity: generatingDialogue === "single" ? 0.6 : 1
             }}>
@@ -11105,7 +11115,7 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
                 <label style={{ fontSize: 11, color: "#999" }}>🌐 Lingua:</label>
                 <select
                   value={singleDialogueLang}
-                  onChange={(e) => setSingleDialogueLang(e.target.value)}
+                  onChange={(e) => { console.log("[DIALOGUE LANG CHANGED]", e.target.value); setSingleDialogueLang(e.target.value); }}
                   style={{ marginLeft: 6, background: "#1a1a2e", color: "white", border: "1px solid rgba(255,255,255,0.15)", borderRadius: 6, padding: "4px 8px", fontSize: 11 }}
                 >
                   {KLING_DIALOGUE_LANGS.map(l => (
@@ -11117,7 +11127,7 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
                 <label style={{ fontSize: 11, color: "#999" }}>🗣 Voce:</label>
                 <select
                   value={singleVoiceId}
-                  onChange={(e) => setSingleVoiceId(e.target.value)}
+                  onChange={(e) => { console.log("[DIALOGUE VOICE CHANGED]", e.target.value); setSingleVoiceId(e.target.value); }}
                   style={{ marginLeft: 6, background: "#1a1a2e", color: "white", border: "1px solid rgba(255,255,255,0.15)", borderRadius: 6, padding: "4px 8px", fontSize: 11 }}
                 >
                   <option value="">Nessuna voce</option>
@@ -11147,7 +11157,7 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
                 <label style={{ fontSize: 11, color: "#10b981" }}>Dialogo confermato ({(LANG_NAMES[singleDialogueLang] || "EN").slice(0, 2).toUpperCase()}):</label>
                 <textarea
                   value={singleDialogue}
-                  onChange={(e) => setSingleDialogue(e.target.value)}
+                  onChange={(e) => { console.log("[CONFIRMED DIALOGUE SET]", { source: "textarea_edit", text: e.target.value.slice(0, 50) }); setSingleDialogue(e.target.value); }}
                   rows={2}
                   style={{ width: "100%", marginTop: 4, background: "rgba(0,0,0,0.3)", color: "#10b981", border: "1px solid rgba(16,185,129,0.3)", borderRadius: 8, padding: 8, fontSize: 12, boxSizing: "border-box" }}
                 />
