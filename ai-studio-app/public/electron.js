@@ -450,7 +450,7 @@ app.whenReady().then(() => {
     ".wav": "audio/wav", ".mp3": "audio/mpeg", ".ogg": "audio/ogg",
   };
 
-  protocol.handle("axstudio-local", (request) => {
+  protocol.handle("axstudio-local", async (request) => {
     try {
       const u = new URL(request.url);
       const raw = u.searchParams.get("p");
@@ -469,35 +469,12 @@ app.whenReady().then(() => {
         return new Response("Not a file", { status: 400 });
       }
 
-      const ext = path.extname(normalized).toLowerCase();
-      const contentType = MIME_BY_EXT[ext] || "application/octet-stream";
-
-      const rangeHeader = request.headers.get("range");
-      if (rangeHeader) {
-        const [startStr, endStr] = rangeHeader.replace("bytes=", "").split("-");
-        const start = parseInt(startStr, 10);
-        const end = endStr ? parseInt(endStr, 10) : st.size - 1;
-        const chunkSize = end - start + 1;
-        const stream = fs.createReadStream(normalized, { start, end });
-        return new Response(stream, {
-          status: 206,
-          headers: {
-            "Content-Range": `bytes ${start}-${end}/${st.size}`,
-            "Accept-Ranges": "bytes",
-            "Content-Length": String(chunkSize),
-            "Content-Type": contentType,
-          },
-        });
-      }
-
-      const body = fs.createReadStream(normalized);
-      return new Response(body, {
-        status: 200,
-        headers: {
-          "Content-Type": contentType,
-          "Content-Length": String(st.size),
-          "Accept-Ranges": "bytes",
-        },
+      // Use net.fetch with file:// URL — Electron handles Range requests,
+      // correct MIME types, and streaming natively. Passing a Node.js
+      // ReadStream to new Response() crashes silently in protocol.handle().
+      const fileUrl = pathToFileURL(normalized).href;
+      return net.fetch(fileUrl, {
+        headers: request.headers,
       });
     } catch (e) {
       console.error("axstudio-local:", e);

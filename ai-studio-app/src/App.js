@@ -10100,7 +10100,7 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
 
       console.log("[DIALOGUE STATE]", { language: clipDialogueLangResolved, voice: clipVoiceId, dialogueText: clipDialogue?.slice(0, 80), isElevenLabs: isElevenLabsVoice, isKling: isKlingVoice, rawVoiceId });
 
-      // ── ElevenLabs TTS: genera audio MP3 PRIMA del video ──
+      // ── STEP 1: ElevenLabs TTS — genera audio MP3 PRIMA del video ──
       let elevenLabsAudioPath = null;
       let elevenLabsAudioFalUrl = null;
       if (clipDialogue && isElevenLabsVoice && rawVoiceId) {
@@ -10108,23 +10108,40 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
           console.log("[TTS PARAMS]", { voice: rawVoiceId, language: clipDialogueLangResolved, text: clipDialogue.slice(0, 50) });
           setVideoStatus("🎤 Generazione voce ElevenLabs…");
           const ttsBlob = await elevenLabsTTS(clipDialogue, rawVoiceId, { language: clipDialogueLangResolved });
+          console.log("[STEP 1 ✅] ElevenLabs TTS:", ttsBlob.size, "bytes, type:", ttsBlob.type);
           elevenLabsAudioPath = await saveAudioBlobToDisk(ttsBlob, `voice_${Date.now()}.mp3`);
           console.log("[ELEVENLABS TTS] Audio saved:", elevenLabsAudioPath);
-          // Upload audio to fal storage for lip-sync endpoint
+          // Upload audio MP3 to fal storage for lip-sync endpoint
+          // MUST use direct binary upload with correct content_type — NOT uploadBase64ToFal (which hardcodes image/png)
           try {
-            const audioDataUrl = await new Promise((resolve, reject) => {
-              const reader = new FileReader();
-              reader.onload = () => resolve(reader.result);
-              reader.onerror = reject;
-              reader.readAsDataURL(ttsBlob);
+            const audioFileName = `voice_${Date.now()}.mp3`;
+            const initRes = await fetch("https://rest.alpha.fal.ai/storage/upload/initiate", {
+              method: "POST",
+              headers: {
+                "Authorization": `Key ${FAL_API_KEY}`,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({ content_type: "audio/mpeg", file_name: audioFileName }),
             });
-            elevenLabsAudioFalUrl = await uploadBase64ToFal(audioDataUrl);
-            console.log("[ELEVENLABS TTS] Audio uploaded to fal:", elevenLabsAudioFalUrl?.slice(0, 80));
+            if (!initRes.ok) throw new Error(`fal storage initiate failed: ${initRes.status}`);
+            const { file_url, upload_url } = await initRes.json();
+
+            const audioArrayBuffer = await ttsBlob.arrayBuffer();
+            const audioUint8 = new Uint8Array(audioArrayBuffer);
+            const putRes = await fetch(upload_url, {
+              method: "PUT",
+              headers: { "Content-Type": "audio/mpeg" },
+              body: audioUint8,
+            });
+            if (!putRes.ok) throw new Error(`fal storage PUT failed: ${putRes.status}`);
+
+            elevenLabsAudioFalUrl = file_url;
+            console.log("[STEP 3a ✅] Audio uploaded to fal storage:", elevenLabsAudioFalUrl);
           } catch (uploadErr) {
-            console.warn("[ELEVENLABS TTS] Audio fal upload failed (lip-sync will be skipped):", uploadErr.message);
+            console.error("[STEP 3a ❌] Audio fal upload failed:", uploadErr.message);
           }
         } catch (elErr) {
-          console.error("[ELEVENLABS TTS] Failed:", elErr.message);
+          console.error("[STEP 1 ❌] ElevenLabs TTS failed:", elErr.message);
         }
       }
 
@@ -10249,29 +10266,33 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
       if (!videoUrl) {
         throw new Error("Nessun video nella risposta fal.ai");
       }
+      console.log("[STEP 2 ✅] Kling video muto:", videoUrl.slice(0, 100), "| generate_audio:", klingGenerateAudio);
 
-      // ── Kling Lip-Sync: applica lip-sync con audio ElevenLabs ──
+      // ── STEP 3b: Kling Lip-Sync — applica lip-sync con audio ElevenLabs ──
       let lipSyncApplied = false;
       if (elevenLabsAudioFalUrl && videoUrl) {
         try {
           setVideoStatus("🗣️ Lip-sync in corso…");
-          console.log("[LIP-SYNC] Starting:", { video: videoUrl.slice(0, 80), audio: elevenLabsAudioFalUrl.slice(0, 80) });
+          console.log("[LIP-SYNC] Starting:", { video_url: videoUrl.slice(0, 100), audio_url: elevenLabsAudioFalUrl.slice(0, 100) });
           const lipSyncResult = await falQueueRequest(
             "fal-ai/kling-video/lipsync/audio-to-video",
             { video_url: videoUrl, audio_url: elevenLabsAudioFalUrl },
             (status) => { if (status === "IN_PROGRESS") setVideoStatus("🗣️ Lip-sync in corso…"); }
           );
+          console.log("[LIP-SYNC RESULT]", JSON.stringify(lipSyncResult).slice(0, 500));
           const lipSyncVideoUrl = lipSyncResult?.video?.url;
           if (lipSyncVideoUrl) {
-            console.log("[LIP-SYNC] Success:", lipSyncVideoUrl.slice(0, 80));
+            console.log("[STEP 3b ✅] Lip-sync video CON AUDIO:", lipSyncVideoUrl.slice(0, 100));
             videoUrl = lipSyncVideoUrl;
             lipSyncApplied = true;
           } else {
-            console.warn("[LIP-SYNC] No video in response, falling back to ffmpeg mix");
+            console.error("[STEP 3b ❌] No video in lip-sync response — video resterà MUTO");
           }
         } catch (lsErr) {
-          console.warn("[LIP-SYNC] Failed, falling back to ffmpeg mix:", lsErr.message);
+          console.error("[STEP 3b ❌] Lip-sync failed — video resterà MUTO:", lsErr.message);
         }
+      } else if (isElevenLabsVoice && clipDialogue) {
+        console.error("[STEP 3b ❌] Lip-sync SKIPPED — elevenLabsAudioFalUrl:", elevenLabsAudioFalUrl, "videoUrl:", videoUrl?.slice(0, 80));
       }
 
       // Mostra subito la miniatura con overlay "Rendering…" mentre scarica su disco
