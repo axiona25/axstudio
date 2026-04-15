@@ -4549,7 +4549,7 @@ const VideoThumbnailGrid = React.memo(function VideoThumbnailGrid({ videos, cfg,
               alignItems: "center", justifyContent: "center",
               borderRadius: 10, pointerEvents: "none",
             }}>
-              <span style={{ fontSize: 18, lineHeight: 1 }}>⏳</span>
+              <HiArrowPath size={20} style={{ color: AX.violet, opacity: 0.95, filter: "drop-shadow(0 0 6px rgba(139,92,246,0.5))", animation: "spin 1.2s linear infinite" }} />
               <span style={{ fontSize: 9, fontWeight: 700, color: "#ccc", marginTop: 5, letterSpacing: "0.05em" }}>Rendering…</span>
               <div style={{ width: "55%", height: 3, background: "rgba(255,255,255,0.12)", borderRadius: 2, marginTop: 6, overflow: "hidden" }}>
                 <div style={{
@@ -9203,6 +9203,7 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
   const vidDialogueOverrideRef = useRef(null);
   const vidAmbientOverrideRef = useRef(null);
   const vidVoiceIdOverrideRef = useRef(null);
+  const vidDialogueLangOverrideRef = useRef(null);
   const proposalResetSeenRef = useRef(0);
   const dirRecAbortRef = useRef(0);
   const dirRecLastInputRef = useRef("");
@@ -9713,6 +9714,21 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
     }
     setGeneratedVideos(p => [STUDIO_VIDEO_GENERATING, ...p.filter(x => x !== STUDIO_VIDEO_GENERATING)]);
     try {
+      // ── Log TUTTI i valori scelti dall'utente (principio: ogni campo è LEGGE) ──
+      console.log("[USER INPUTS]", {
+        format: vidAspect,
+        resolution: videoResolution,
+        duration: vidDurationOverrideRef.current ?? videoDuration,
+        promptText: currentVideoIT?.slice(0, 80),
+        dialogueText: (vidDialogueOverrideRef.current || singleDialogue || "").slice(0, 80) || "(vuoto)",
+        dialogueLanguage: vidDialogueLangOverrideRef.current || singleDialogueLang || "en",
+        dialogueVoice: vidVoiceIdOverrideRef.current || singleVoiceId || "(nessuna)",
+        ambientText: (vidAmbientOverrideRef.current || singleAmbient || "").slice(0, 80) || "(vuoto)",
+        visualStyles: selectedVideoStyles,
+        directionStyles: selectedDirectionStyles,
+        sourceImage: sourceImg ? "sì" : selectedCharacter?.image ? "personaggio" : "nessuna",
+      });
+
       // ── Stili video a due livelli: Aspetto (visual) + Regia (direction) ──
       const resolvedVisualStyles = selectedVideoStyles
         .map(sid => VIDEO_VISUAL_STYLE_PRESETS.find(s => s.id === sid))
@@ -10052,25 +10068,27 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
           .filter(Boolean)
       )].join(", ");
 
-      // ── Audio: dialogue, ambient, voice ──
+      // ── Audio: dialogue, ambient, voice, lang ──
       const clipDialogue = vidDialogueOverrideRef.current;
       const clipAmbient = vidAmbientOverrideRef.current;
       const clipVoiceId = vidVoiceIdOverrideRef.current;
+      const clipDialogueLangResolved = vidDialogueLangOverrideRef.current || singleDialogueLang || "en";
       vidDialogueOverrideRef.current = null;
       vidAmbientOverrideRef.current = null;
       vidVoiceIdOverrideRef.current = null;
+      vidDialogueLangOverrideRef.current = null;
 
       const isElevenLabsVoice = clipVoiceId?.startsWith("el:");
       const isKlingVoice = clipVoiceId?.startsWith("kl:");
       const rawVoiceId = clipVoiceId ? clipVoiceId.replace(/^(el:|kl:)/, "") : "";
-      const clipDialogueLangResolved = vidScreenplayCtxRef.current
-        ? (editableClips[vidScreenplayCtxRef.current?.clipIndex]?.dialogueLang || singleDialogueLang || "en")
-        : (singleDialogueLang || "en");
+
+      console.log("[DIALOGUE STATE]", { language: clipDialogueLangResolved, voice: clipVoiceId, dialogueText: clipDialogue?.slice(0, 80), isElevenLabs: isElevenLabsVoice, isKling: isKlingVoice, rawVoiceId });
 
       // ── ElevenLabs TTS: genera audio MP3 PRIMA del video ──
       let elevenLabsAudioPath = null;
       if (clipDialogue && isElevenLabsVoice && rawVoiceId) {
         try {
+          console.log("[TTS PARAMS]", { voice: rawVoiceId, language: clipDialogueLangResolved, text: clipDialogue.slice(0, 50) });
           setVideoStatus("🎤 Generazione voce ElevenLabs…");
           const ttsBlob = await elevenLabsTTS(clipDialogue, rawVoiceId, { language: clipDialogueLangResolved });
           elevenLabsAudioPath = await saveAudioBlobToDisk(ttsBlob, `voice_${Date.now()}.mp3`);
@@ -10127,7 +10145,14 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
       if (isKlingVoice && rawVoiceId && clipDialogue) {
         klingPayload.voice_ids = [rawVoiceId];
         const voiceDef = KLING_SYSTEM_VOICES.find(v => v.id === rawVoiceId);
-        if (voiceDef) klingPayload.voice_language = voiceDef.lang === "zh" ? "zh" : "en";
+        const libVoiceDef = voiceLibrary.find(v => v.id === rawVoiceId);
+        if (voiceDef) {
+          klingPayload.voice_language = voiceDef.lang === "zh" ? "zh" : "en";
+        } else if (libVoiceDef?.language) {
+          klingPayload.voice_language = libVoiceDef.language.toLowerCase().startsWith("zh") || libVoiceDef.language.toLowerCase().startsWith("chin") ? "zh" : "en";
+        } else {
+          klingPayload.voice_language = clipDialogueLangResolved === "zh" ? "zh" : "en";
+        }
         const dialogueSnippetForReplace = clipDialogue.slice(0, 200);
         klingPayload.prompt = klingPayload.prompt.replace(
           `The character says "${dialogueSnippetForReplace}"`,
@@ -10163,8 +10188,13 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
         elements: klingPayload.elements?.length || 0,
         prompt: klingPayload.prompt?.slice(0, 100),
         duration: klingPayload.duration,
+        aspect_ratio: klingPayload.aspect_ratio,
         cfg_scale: klingPayload.cfg_scale,
         character_orientation: klingPayload.character_orientation,
+        generate_audio: klingPayload.generate_audio,
+        voice_ids: klingPayload.voice_ids || null,
+        voice_language: klingPayload.voice_language || null,
+        negative_prompt: klingPayload.negative_prompt?.slice(0, 60) || null,
       });
 
       const result = await falQueueRequest(
@@ -10202,7 +10232,7 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
           });
           const spCtx = vidScreenplayCtxRef.current;
           const resolvedVideoPromptIT = videoPromptManuallyEdited ? editableVideoIT : (proposedVideoPrompt?.prompt_it || currentVideoIT);
-          const entry = await onSaveVideo(base64, fp, { resolution: videoResolution, duration, seed: result.seed || 0, userIdea: currentVideoIT, promptEN: fp, promptIT: resolvedVideoPromptIT, selectedStyles: selectedVideoStyles, selectedDirectionStyles: selectedDirectionStyles, aspect: vidAspect, dialogue: clipDialogue || singleDialogue || "", dialogueIdea: singleDialogueIdea || "", dialogueLang: singleDialogueLang || "en", ambient: clipAmbient || singleAmbient || "", ambientIdea: singleAmbientIdea || "", voiceId: clipVoiceId || singleVoiceId || "", sourceImageUrl: sourceImg || null, ...(spCtx ? { screenplayId: spCtx.screenplayId, screenplayName: spCtx.screenplayName, screenplaySummary: spCtx.screenplaySummary || "", clipIndex: spCtx.clipIndex, clipTotal: spCtx.clipTotal } : {}) });
+          const entry = await onSaveVideo(base64, fp, { resolution: videoResolution, duration, seed: result.seed || 0, userIdea: currentVideoIT, promptEN: fp, promptIT: resolvedVideoPromptIT, selectedStyles: selectedVideoStyles, selectedDirectionStyles: selectedDirectionStyles, aspect: vidAspect, dialogue: clipDialogue || singleDialogue || "", dialogueIdea: singleDialogueIdea || "", dialogueLang: clipDialogueLangResolved, ambient: clipAmbient || singleAmbient || "", ambientIdea: singleAmbientIdea || "", voiceId: clipVoiceId || singleVoiceId || "", sourceImageUrl: sourceImg || null, ...(spCtx ? { screenplayId: spCtx.screenplayId, screenplayName: spCtx.screenplayName, screenplaySummary: spCtx.screenplaySummary || "", clipIndex: spCtx.clipIndex, clipTotal: spCtx.clipTotal } : {}) });
           if (entry?.filePath && isElectron) {
             // Trim primo clip / video singolo: taglia ~1s di frame statico iniziale
             const isFirstClipOrSingle = !spCtx || spCtx.clipIndex === 0;
@@ -10334,10 +10364,11 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
       vidPreparedEnRef.current = { en: proposedVideoPrompt.prompt_en, itSource: (vidModalEditedItRef.current ?? videoPrompt).trim() };
       vidEnIsStaleRef.current = false;
     }
-    // Single clip: pass dialogue/ambient/voice to generateVideo via refs
+    // Single clip: pass dialogue/ambient/voice/lang to generateVideo via refs
     vidDialogueOverrideRef.current = singleDialogue || null;
     vidAmbientOverrideRef.current = singleAmbient || null;
     vidVoiceIdOverrideRef.current = singleVoiceId || null;
+    vidDialogueLangOverrideRef.current = singleDialogueLang || "en";
     setProposedVideoPrompt(null);
     setEditableVideoIT("");
     setTranslateVideoErr("");
@@ -10532,6 +10563,7 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
       vidDialogueOverrideRef.current = clip.dialogue || null;
       vidAmbientOverrideRef.current = clip.ambient || null;
       vidVoiceIdOverrideRef.current = clip.voiceId || null;
+      vidDialogueLangOverrideRef.current = clip.dialogueLang || singleDialogueLang || "en";
 
       // ── Set-based start frame: se il clip ha un Set, genera frame con Kontext ──
       if ((clip.setId || clip.setName) && !vidStartImageOverrideRef.current) {
@@ -11339,7 +11371,7 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
               return (
                 <button
                   type="button"
-                  onClick={() => { vidDialogueOverrideRef.current = singleDialogue || null; vidAmbientOverrideRef.current = singleAmbient || null; vidVoiceIdOverrideRef.current = singleVoiceId || null; void generateVideo(); }}
+                  onClick={() => { vidDialogueOverrideRef.current = singleDialogue || null; vidAmbientOverrideRef.current = singleAmbient || null; vidVoiceIdOverrideRef.current = singleVoiceId || null; vidDialogueLangOverrideRef.current = singleDialogueLang || "en"; void generateVideo(); }}
                   disabled={btnDisabled}
                   title={btnTitle}
                   style={{ flex: "1.6 1 0", padding: "13px 20px", borderRadius: 12, border: "none", background: btnDisabled ? AX.surface : "linear-gradient(135deg, #FF4FA3 0%, #7B4DFF 100%)", color: btnDisabled ? AX.muted : "#fff", fontWeight: 800, fontSize: 14, cursor: btnDisabled ? "not-allowed" : "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 7, minHeight: 46, boxShadow: btnDisabled ? "none" : "0 8px 28px rgba(255,79,163,0.3)", transition: "all 0.15s ease" }}
