@@ -2588,23 +2588,35 @@ function normalizeVideoActionPrompt(textEn, guidance) {
  * @param {{ subjectLock: string, scenePromptEn: string, guidance: object, visualStylePrompt: string, visualMotionPrompt: string, directionStylePrompt: string, directionMotionPrompt: string }} p
  * @returns {{ finalPrompt: string, framePrompt: string, negativeAddition: string }}
  */
-function composeVideoPrompt({ subjectLock, characterSignatureClause, characterVisualSignatureClause, scenePromptEn, guidance, visualStylePrompt, visualMotionPrompt, directionStylePrompt, directionMotionPrompt, videoIdentityClause, videoStyleClause, videoReflectionClause }) {
-  const finalPrompt = [
-    subjectLock,
-    characterSignatureClause,
-    characterVisualSignatureClause,
-    scenePromptEn,
-    guidance.cameraHint,
-    guidance.placementHint,
-    visualStylePrompt,
-    directionStylePrompt,
-    videoIdentityClause,
-    videoStyleClause,
-    videoReflectionClause,
-    visualMotionPrompt,
-    directionMotionPrompt,
-    guidance.motionHint,
-  ].filter(Boolean).join(", ");
+function composeVideoPrompt({ subjectLock, characterSignatureClause, characterVisualSignatureClause, scenePromptEn, guidance, visualStylePrompt, visualMotionPrompt, directionStylePrompt, directionMotionPrompt, videoIdentityClause, videoStyleClause, videoReflectionClause, compact = false }) {
+  // compact=true → Kling reference-to-video: identità e appearance sono già nel frame,
+  // il prompt deve contenere SOLO scena + movimento + stile. Max ~800 chars utili.
+  const finalPrompt = compact
+    ? [
+        scenePromptEn,
+        guidance.cameraHint,
+        visualStylePrompt,
+        directionStylePrompt,
+        visualMotionPrompt,
+        directionMotionPrompt,
+        guidance.motionHint,
+      ].filter(Boolean).join(", ")
+    : [
+        subjectLock,
+        characterSignatureClause,
+        characterVisualSignatureClause,
+        scenePromptEn,
+        guidance.cameraHint,
+        guidance.placementHint,
+        visualStylePrompt,
+        directionStylePrompt,
+        videoIdentityClause,
+        videoStyleClause,
+        videoReflectionClause,
+        visualMotionPrompt,
+        directionMotionPrompt,
+        guidance.motionHint,
+      ].filter(Boolean).join(", ");
 
   const framePrompt = [
     subjectLock,
@@ -9847,6 +9859,8 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
       const characterSignatureClause = buildCharacterSignatureClause(selectedCharacter);
       const characterVisualSignatureClause = buildCharacterVisualSignatureClause(selectedCharacter);
 
+      // compact=true → stripping identity/appearance clauses when start image carries identity
+      const useCompactPrompt = hasReferenceImage || Boolean(vidStartImageOverrideRef.current);
       const { finalPrompt: fpRaw, framePrompt: composedFramePrompt, negativeAddition } = composeVideoPrompt({
         subjectLock,
         characterSignatureClause,
@@ -9860,6 +9874,7 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
         videoIdentityClause,
         videoStyleClause,
         videoReflectionClause,
+        compact: useCompactPrompt,
       });
 
       // ── Inject scene plan action emphasis into video prompt ──
@@ -10100,27 +10115,17 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
 
       let finalPrompt = fp;
 
-      // ── Lip-sync directions: quando c'è un dialogo, il prompt DEVE descrivere il parlato ──
+      // ── Lip-sync directions (conciso: Kling ha limite 2500 chars) ──
       if (clipDialogue && clipDialogue.trim().length > 0) {
-        const dialogueSnippet = clipDialogue.slice(0, 200);
-        const lipSyncBlock = [
-          "The character is actively speaking throughout the video with natural lip movements",
-          "mouth opens and closes naturally matching speech rhythm",
-          "natural jaw movement during speech",
-          "subtle eyebrow and head micro-movements while talking",
-          "expressive facial animation consistent with the spoken words",
-          "the character is NOT silent",
-        ].join(", ");
+        const lipSyncBlock = "Character actively speaks with natural lip movements, jaw motion, subtle head and eyebrow micro-movements while talking";
 
         if (isElevenLabsVoice) {
-          // ElevenLabs: il testo non va nel prompt Kling (l'audio viene mixato dopo),
-          // ma le istruzioni di lip-sync per i movimenti facciali sono OBBLIGATORIE
           finalPrompt = `${lipSyncBlock}. ${finalPrompt}`;
         } else {
-          // Voce Kling o nessuna voce: includi anche il testo del dialogo
+          const dialogueSnippet = clipDialogue.slice(0, 120);
           finalPrompt = `${lipSyncBlock}. ${finalPrompt}. The character says "${dialogueSnippet}"`;
         }
-        console.log("[LIP-SYNC] Dialogue detected, lip-sync directions injected. ElevenLabs:", isElevenLabsVoice);
+        console.log("[LIP-SYNC] Dialogue detected, lip-sync injected. ElevenLabs:", isElevenLabsVoice);
       }
 
       if (clipAmbient) {
@@ -10182,11 +10187,22 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
         }
       }
 
+      // ── Safety: tronca prompt a max 2400 chars (Kling limite API: 2500) ──
+      if (klingPayload.prompt.length > 2400) {
+        console.warn(`[KLING] Prompt too long (${klingPayload.prompt.length} chars), truncating to 2400`);
+        klingPayload.prompt = klingPayload.prompt.slice(0, 2397) + "...";
+      }
+      if (klingPayload.negative_prompt && klingPayload.negative_prompt.length > 2400) {
+        klingPayload.negative_prompt = klingPayload.negative_prompt.slice(0, 2397) + "...";
+      }
+
       console.log("[KLING PAYLOAD]", {
         endpoint: "fal-ai/kling-video/o3/pro/reference-to-video",
+        promptLength: klingPayload.prompt.length,
+        compact: useCompactPrompt,
         start_image_url: imageUrl?.slice(0, 80),
         elements: klingPayload.elements?.length || 0,
-        prompt: klingPayload.prompt?.slice(0, 100),
+        prompt: klingPayload.prompt?.slice(0, 200),
         duration: klingPayload.duration,
         aspect_ratio: klingPayload.aspect_ratio,
         cfg_scale: klingPayload.cfg_scale,
