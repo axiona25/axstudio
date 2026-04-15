@@ -23,6 +23,9 @@ import {
   getCharactersNeedingMaster,
   characterRoleLabelIt,
   CHARACTER_ROLE,
+  buildNarrativeHeaderDescription,
+  resolveItalianPlanLogline,
+  resolveItalianSceneSummaryForDisplay,
 } from "../services/scenografiePlanner.js";
 import {
   loadScenografiaProjectById,
@@ -88,25 +91,11 @@ function mergePreservedMastersByName(plan, byName) {
   return out;
 }
 
-/** Riassunto breve per testata (max ~2 righe equivalenti). */
-function deriveShortDescription(plan, prompt) {
-  const sum = plan?.summary_it != null && String(plan.summary_it).trim();
-  if (sum) {
-    const t = String(plan.summary_it).trim().replace(/\s+/g, " ");
-    return t.length > 220 ? `${t.slice(0, 217)}…` : t;
-  }
-  const raw = typeof prompt === "string" ? prompt.trim() : "";
-  if (!raw) return "";
-  const flat = raw.replace(/\s+/g, " ");
-  const first = flat.split(/(?<=[.!?])\s+/)[0] || flat;
-  return first.length > 200 ? `${first.slice(0, 197)}…` : first;
-}
-
 /** Suggerimento placeholder nome progetto se l’utente non ne ha impostato uno. */
 function fallbackProjectTitlePlaceholder(plan, prompt) {
-  const sum = plan?.summary_it && String(plan.summary_it).trim();
-  if (sum) {
-    const t = String(plan.summary_it).trim().replace(/\s+/g, " ");
+  const logIt = resolveItalianPlanLogline(plan);
+  if (logIt) {
+    const t = logIt.replace(/\s+/g, " ");
     return t.length > 52 ? `${t.slice(0, 50)}…` : t;
   }
   const t0 = plan?.scenes?.[0]?.title_it;
@@ -203,6 +192,8 @@ export function ScenografieProjectEditor({
   const [modifyDraftPrompt, setModifyDraftPrompt] = useState("");
   const [sceneEditBusyId, setSceneEditBusyId] = useState(null);
   const [hoveredSceneId, setHoveredSceneId] = useState(null);
+  /** Anteprima ingrandita (solo doppio click su immagine / miniatura). */
+  const [sceneImageLightbox, setSceneImageLightbox] = useState(null);
   const abortRef = useRef(false);
   /** Se true, al prossimo `handleExecute` si riusano i master esistenti (niente createMaster salvo mancanze). */
   const reuseMastersRef = useRef(false);
@@ -227,6 +218,15 @@ export function ScenografieProjectEditor({
   useLayoutEffect(() => {
     syncPromptTextareaHeight();
   }, [prompt, syncPromptTextareaHeight]);
+
+  useEffect(() => {
+    if (!sceneImageLightbox) return undefined;
+    const onKey = (e) => {
+      if (e.key === "Escape") setSceneImageLightbox(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [sceneImageLightbox]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1520,7 +1520,11 @@ export function ScenografieProjectEditor({
     }));
   };
 
-  const shortDescription = useMemo(() => deriveShortDescription(plan, prompt), [plan, prompt]);
+  const shortDescription = useMemo(
+    () => buildNarrativeHeaderDescription(plan, deletedSceneIds),
+    [plan, deletedSceneIds]
+  );
+  const planLoglineIt = useMemo(() => resolveItalianPlanLogline(plan), [plan]);
   const titlePlaceholder = useMemo(() => fallbackProjectTitlePlaceholder(plan, prompt), [plan, prompt]);
   const scenesInPlanHeader = useMemo(() => {
     if (!plan?.scenes?.length) return 0;
@@ -1620,6 +1624,7 @@ export function ScenografieProjectEditor({
               fontSize: 12,
               color: shortDescription ? AX.text2 : AX.muted,
               lineHeight: 1.45,
+              whiteSpace: "pre-line",
               display: "-webkit-box",
               WebkitLineClamp: 2,
               WebkitBoxOrient: "vertical",
@@ -2091,8 +2096,8 @@ export function ScenografieProjectEditor({
             )}
           </div>
 
-          {plan.summary_it && (
-            <p style={{ fontSize: 13, color: AX.text2, marginBottom: 14, lineHeight: 1.5 }}>{plan.summary_it}</p>
+          {planLoglineIt && (
+            <p style={{ fontSize: 13, color: AX.text2, marginBottom: 14, lineHeight: 1.5 }}>{planLoglineIt}</p>
           )}
 
           {/* Characters */}
@@ -2120,7 +2125,9 @@ export function ScenografieProjectEditor({
                       </span>
                     )}
                   </div>
-                  <div style={{ color: AX.text2, fontSize: 11 }}>{char.appearance_prompt?.slice(0, 80) || "—"}…</div>
+                  <div style={{ color: AX.text2, fontSize: 11 }}>
+                    Aspetto nel master (prompt visivo tecnico in inglese, non mostrato qui).
+                  </div>
                 </div>
               );
               })}
@@ -2152,8 +2159,9 @@ export function ScenografieProjectEditor({
                     {i + 1}. {scene.title_it}
                   </span>
                 </div>
-                <div style={{ color: AX.text2, fontSize: 11 }}>{scene.description?.slice(0, 120)}…</div>
-                {scene.lighting && <div style={{ color: AX.muted, fontSize: 10, marginTop: 2 }}>Luce: {scene.lighting}</div>}
+                <div style={{ color: AX.text2, fontSize: 11 }}>
+                  {resolveItalianSceneSummaryForDisplay(scene, plan, { maxLen: 160 })}
+                </div>
               </div>
             ))}
           </div>
@@ -2233,10 +2241,7 @@ export function ScenografieProjectEditor({
         getCharactersNeedingMaster(plan).length > 0 && (
           <div style={{ marginBottom: 20, padding: 16, borderRadius: 14, background: AX.card, border: `1px solid ${AX.border}` }}>
             <div style={{ fontSize: 10, fontWeight: 800, color: AX.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>Sezione character</div>
-            <h3 style={{ fontSize: 15, fontWeight: 700, color: AX.text, margin: "0 0 6px" }}>Master personaggio (protagonisti e ricorrenti)</h3>
-            <p style={{ fontSize: 12, color: AX.text2, marginBottom: 16, lineHeight: 1.45 }}>
-              Un master per ogni personaggio narrativo principale o ricorrente. Su ogni card usa «Genera personaggio» se manca il volto, poi «Approva personaggio»; con master già presente usa «Rigenera personaggio» per una nuova versione (l’approvazione torna in sospeso).
-            </p>
+            <h3 style={{ fontSize: 15, fontWeight: 700, color: AX.text, margin: "0 0 16px" }}>Personaggi Protagonisti</h3>
             <div
               style={{
                 display: "grid",
@@ -2437,9 +2442,9 @@ export function ScenografieProjectEditor({
 
       {/* ── Scene results gallery ── */}
       {sceneResults.length > 0 && (
-        <div style={{ flex: 1, minHeight: 0 }}>
+        <div style={{ flex: 1, minHeight: 0, paddingBottom: 36 }}>
           <div style={{ fontSize: 10, fontWeight: 800, color: AX.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 4 }}>Sezione scene</div>
-          <h4 style={{ fontSize: 12, fontWeight: 700, color: AX.muted, textTransform: "uppercase", letterSpacing: 1, marginBottom: 8 }}>
+          <h4 style={{ fontSize: 12, fontWeight: 700, color: AX.muted, textTransform: "uppercase", letterSpacing: 1, marginBottom: 10 }}>
             Scene generate ({sceneResults.length})
           </h4>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 12 }}>
@@ -2479,7 +2484,18 @@ export function ScenografieProjectEditor({
                   onMouseLeave={() => setHoveredSceneId((h) => (h === r.sceneId ? null : h))}
                   onClick={() => setSceneCardFocusId(r.sceneId)}
                 >
-                  <div style={{ position: "relative", width: "100%" }}>
+                  <div
+                    style={{ position: "relative", width: "100%" }}
+                    onDoubleClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      if (!r.imageUrl) return;
+                      const u = String(r.imageUrl);
+                      const video =
+                        u.startsWith("data:video") || /\.(mp4|webm|ogg|mov|m4v)(\?|$)/i.test(u);
+                      setSceneImageLightbox({ url: u, title: r.title || "Scena", kind: video ? "video" : "image" });
+                    }}
+                  >
                     <img src={r.imageUrl} alt={r.title} style={{ width: "100%", aspectRatio: "16/9", objectFit: "cover", display: "block" }} />
                     {r.approved && (
                       <div
@@ -2680,13 +2696,37 @@ export function ScenografieProjectEditor({
         </div>
       )}
 
+      {sceneResults.length > 0 && approvedScenesForClips.length > 0 && (
+        <div
+          aria-hidden
+          style={{
+            marginTop: 8,
+            marginBottom: 20,
+            height: 1,
+            background: AX.border,
+            opacity: 0.65,
+            borderRadius: 1,
+            flexShrink: 0,
+          }}
+        />
+      )}
+
       {/* ── Fase 3: clip video per scena (motore generazione da integrare) ── */}
       {approvedScenesForClips.length > 0 && (
-        <div style={{ marginBottom: 22, padding: 16, borderRadius: 14, background: AX.card, border: `1px solid ${AX.border}` }}>
-          <div style={{ fontSize: 10, fontWeight: 800, color: AX.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>
+        <div
+          style={{
+            marginTop: sceneResults.length > 0 ? 4 : 20,
+            marginBottom: 22,
+            padding: "30px 20px 20px",
+            borderRadius: 14,
+            background: AX.card,
+            border: `1px solid ${AX.border}`,
+          }}
+        >
+          <div style={{ fontSize: 10, fontWeight: 800, color: AX.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 10 }}>
             Fase 3 · Video clip approval
           </div>
-          <h3 style={{ fontSize: 15, fontWeight: 700, color: AX.text, margin: "0 0 8px" }}>Clip video collegati alle scene</h3>
+          <h3 style={{ fontSize: 15, fontWeight: 700, color: AX.text, margin: "2px 0 12px" }}>Clip video collegati alle scene</h3>
           <p style={{ fontSize: 12, color: AX.text2, marginBottom: 16, lineHeight: 1.5 }}>
             Ogni scena approvata può avere uno o più clip. Stati: bozza, approvato, da rivedere, eliminato, finale. La modifica con prompt integrativo preserva stile, personaggi e scena sorgente (istruzioni registrate; rendering da collegare al motore).
           </p>
@@ -2996,6 +3036,15 @@ export function ScenografieProjectEditor({
                       background: AX.bg,
                       border: `1px solid ${AX.border}`,
                     }}
+                    onDoubleClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      if (!thumb) return;
+                      const u = String(thumb);
+                      const video =
+                        u.startsWith("data:video") || /\.(mp4|webm|ogg|mov|m4v)(\?|$)/i.test(u);
+                      setSceneImageLightbox({ url: u, title: String(title), kind: video ? "video" : "image" });
+                    }}
                   >
                     {thumb ? (
                       <img src={thumb} alt="Anteprima timeline" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
@@ -3137,6 +3186,89 @@ export function ScenografieProjectEditor({
                 </span>
               </>
             )}
+          </div>
+        </div>
+      )}
+
+      {sceneImageLightbox && (
+        <div
+          role="presentation"
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 100001,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 20,
+            background: "rgba(6,6,12,0.88)",
+            backdropFilter: "blur(10px)",
+          }}
+          onClick={() => setSceneImageLightbox(null)}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label={sceneImageLightbox.title}
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              position: "relative",
+              maxWidth: "min(96vw, 1600px)",
+              maxHeight: "92vh",
+              width: "100%",
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              gap: 14,
+            }}
+          >
+            <button
+              type="button"
+              onClick={() => setSceneImageLightbox(null)}
+              style={{
+                position: "absolute",
+                top: -4,
+                right: -4,
+                zIndex: 2,
+                padding: "8px 14px",
+                borderRadius: 10,
+                border: `1px solid ${AX.border}`,
+                background: AX.card,
+                color: AX.text,
+                fontWeight: 700,
+                fontSize: 12,
+                cursor: "pointer",
+                boxShadow: "0 4px 20px rgba(0,0,0,0.35)",
+              }}
+            >
+              Chiudi
+            </button>
+            {sceneImageLightbox.kind === "video" ? (
+              <video
+                src={sceneImageLightbox.url}
+                controls
+                playsInline
+                style={{ maxWidth: "100%", maxHeight: "86vh", borderRadius: 12, background: "#000" }}
+              />
+            ) : (
+              <img
+                src={sceneImageLightbox.url}
+                alt={sceneImageLightbox.title}
+                style={{
+                  maxWidth: "100%",
+                  maxHeight: "86vh",
+                  width: "auto",
+                  height: "auto",
+                  objectFit: "contain",
+                  borderRadius: 12,
+                  display: "block",
+                  boxShadow: "0 12px 48px rgba(0,0,0,0.55)",
+                }}
+              />
+            )}
+            <div style={{ fontSize: 14, fontWeight: 700, color: "#f0f2f8", textAlign: "center", lineHeight: 1.35 }}>
+              {sceneImageLightbox.title}
+            </div>
           </div>
         </div>
       )}

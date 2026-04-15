@@ -13,7 +13,7 @@ import {
   timelineNarrativeApproved,
   normalizeTimelinePlan,
 } from "./scenografieVideoWorkflow.js";
-import { getCharactersNeedingMaster } from "./scenografiePlanner.js";
+import { getCharactersNeedingMaster, resolveItalianPlanLogline } from "./scenografiePlanner.js";
 
 const LS_KEY_LEGACY = "ai-studio-scenografia-project-v1";
 const LS_KEY_INDEX = "ai-studio-scenografia-projects-index-v1";
@@ -126,12 +126,11 @@ export function summarizeScenografiaProjectForIndex(data) {
   let displayTitle = "Senza titolo";
   if (customTitle) {
     displayTitle = customTitle.slice(0, 80);
-  } else if (plan?.summary_it && String(plan.summary_it).trim()) {
-    displayTitle = String(plan.summary_it).trim().slice(0, 80);
-  } else if (plan?.scenes?.[0]?.title_it) {
-    displayTitle = String(plan.scenes[0].title_it).trim();
-  } else if (typeof data.prompt === "string" && data.prompt.trim()) {
-    displayTitle = data.prompt.trim().slice(0, 72);
+  } else {
+    const logIt = resolveItalianPlanLogline(plan);
+    if (logIt) displayTitle = logIt.slice(0, 80);
+    else if (plan?.scenes?.[0]?.title_it) displayTitle = String(plan.scenes[0].title_it).trim();
+    else if (typeof data.prompt === "string" && data.prompt.trim()) displayTitle = data.prompt.trim().slice(0, 72);
   }
   const clips = Array.isArray(data.sceneVideoClips) ? data.sceneVideoClips : [];
   const clipsCount = clips.filter((c) => c && c.status !== "deleted").length;

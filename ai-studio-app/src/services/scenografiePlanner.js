@@ -29,6 +29,74 @@ export const CHARACTER_ROLE = {
 
 const VALID_CHARACTER_ROLES = new Set(Object.values(CHARACTER_ROLE));
 
+/** Frasi meta-produzione da non usare nella riga narrativa UI. */
+const META_IT_RE =
+  /(creazione di|sequenza narrativa|progetto\s+scenografic|progetto\s+animato|basat[oa]\s+su|per\s+bambini\s*\(|animata\s+per\s+bambini|visual\s+studio|ai\s+studio)/i;
+
+/** Parole tipiche narrativa inglese (euristica UI). */
+const EN_UI_NARRATIVE_RE =
+  /\b(the|and|or|his|her|their|she|he|they|was|were|sits|sitting|looks|looking|worried|sighs|sighed|hands?|head\s+in|rests?|table)\b/gi;
+
+const IT_HINT_RE =
+  /\b(il|la|lo|gli|le|un|una|uno|con|per|che|non|dalla|delle|degli|nello|questo|quella|così|come|anche|più|molto|tutto|tutta|suo|sua|sono|è\b|ha\b|hanno|si\b|nel\b|nella|sugli|una\s+scena|nella\s+scena)\b/gi;
+
+/**
+ * Euristica: testo che sembra narrativa inglese (non adatto alla UI italiana).
+ * @param {string} s
+ * @returns {boolean}
+ */
+export function looksLikeEnglishNarrative(s) {
+  if (s == null || typeof s !== "string") return false;
+  const t = s.trim();
+  if (t.length < 10) return false;
+  const enHits = (t.match(EN_UI_NARRATIVE_RE) || []).length;
+  const itHits = (t.match(IT_HINT_RE) || []).length;
+  if (itHits >= 2) return false;
+  return enHits >= 2;
+}
+
+/**
+ * Logline / sintesi progetto solo in italiano (per UI e indice).
+ * @param {object|null} plan
+ * @returns {string}
+ */
+export function resolveItalianPlanLogline(plan) {
+  if (!plan) return "";
+  const top = String(plan.summary_it || "").trim();
+  if (top && !META_IT_RE.test(top) && !looksLikeEnglishNarrative(top)) return top.replace(/\s+/g, " ");
+  for (const sc of plan.scenes || []) {
+    const si = String(sc?.summary_it || "").trim();
+    if (si && !META_IT_RE.test(si) && !looksLikeEnglishNarrative(si)) return si.replace(/\s+/g, " ");
+  }
+  const titles = (plan.scenes || [])
+    .map((sc, idx) => String(sc?.title_it || "").trim() || `Scena ${idx + 1}`)
+    .filter(Boolean)
+    .slice(0, 2);
+  if (titles.length) return titles.join(" · ");
+  return "";
+}
+
+/**
+ * Sintesi scena per UI (italiano; mai descrizione FLUX in inglese).
+ * @param {object} scene
+ * @param {object|null} plan
+ * @param {{ maxLen?: number }} [opts]
+ * @returns {string}
+ */
+export function resolveItalianSceneSummaryForDisplay(scene, plan, opts = {}) {
+  const maxLen = opts.maxLen ?? 220;
+  if (!scene) return "";
+  const charById = new Map((plan?.characters || []).map((c) => [c.id, c]));
+  const names = (scene.characters_present || []).map((id) => charById.get(id)?.name).filter(Boolean);
+  const tit = String(scene.title_it || "").trim() || "Scena";
+  let s = String(scene.summary_it || "").trim().replace(/\s+/g, " ");
+  if (s && !META_IT_RE.test(s) && !looksLikeEnglishNarrative(s)) {
+    return s.length > maxLen ? `${s.slice(0, maxLen - 1)}…` : s;
+  }
+  const fallback = names.length ? `${names.join(" e ")} in «${tit}».` : `Eventi in «${tit}».`;
+  return fallback.length > maxLen ? `${fallback.slice(0, maxLen - 1)}…` : fallback;
+}
+
 const PLANNER_SYSTEM_PROMPT = `You are a production planner for an AI visual studio.
 The user describes a scene, story or visual idea in Italian.
 
@@ -44,11 +112,14 @@ RULES:
 7. The main protagonist should be listed first.
 8. For each scene, specify which characters appear (characters_present must list every character visible in that shot).
 9. For each character set "character_role": "protagonist" for the main lead(s), "recurring" for named characters who appear in multiple scenes or are story-important and need a consistent face, "background" for extras/crowd with no dedicated master.
-10. All descriptions in English. Keep the Italian summary in "summary_it".
+10. All scene/character FLUX fields in English EXCEPT: top-level "summary_it", each scene's "summary_it", and each clip's "action_it" MUST be in Italian (user-facing copy).
+11. Top-level "summary_it": one short Italian logline of the whole story (concrete; NO meta phrases like "creazione di", "sequenza narrativa", "progetto scenografico", "basata su", "per bambini", "animata per").
+12. EVERY scene MUST include "summary_it": exactly ONE Italian sentence stating WHO does WHAT in THAT shot (pure story). Same forbidden meta phrases as above. Never describe the production process.
+13. EVERY clip MUST include "action_it": one short Italian sentence (who does what in that beat). Include "action_en": concise English for video/model prompts only (never shown as primary UI text).
 
 Return ONLY valid JSON (no markdown, no backticks):
 {
-  "summary_it": "Italian summary of what will be produced",
+  "summary_it": "Italian logline: concrete story, no production meta",
   "visual_style": "overall art style description",
   "is_animated": false,
   "characters": [
@@ -73,6 +144,7 @@ Return ONLY valid JSON (no markdown, no backticks):
     {
       "id": "scene_1",
       "title_it": "Scene title in Italian",
+      "summary_it": "Una sola frase in italiano: cosa succede in questa scena, con nomi propri se noti (no meta-produzione).",
       "description": "Full English scene description for FLUX",
       "environment": "environment details",
       "lighting": "lighting description",
@@ -86,7 +158,8 @@ Return ONLY valid JSON (no markdown, no backticks):
     {
       "id": "clip_1",
       "scene_id": "scene_1",
-      "action": "What happens in this clip",
+      "action_it": "Una frase in italiano: cosa succede in questo clip (chi fa cosa).",
+      "action_en": "Concise English beat for video/technical prompts only",
       "duration_suggestion": 5
     }
   ]
@@ -260,6 +333,45 @@ export async function planScenografia(userPromptIT) {
 }
 
 /**
+ * Mini-header narrativo (2 righe) dalla prima scena attiva del piano.
+ * @param {object|null} plan
+ * @param {string[]|undefined} deletedSceneIds
+ * @returns {string}
+ */
+export function buildNarrativeHeaderDescription(plan, deletedSceneIds) {
+  const del = new Set(deletedSceneIds || []);
+  if (!plan?.scenes?.length) return "";
+  const first = plan.scenes.find((s) => s && !del.has(s.id));
+  if (!first) return "";
+  const sceneNum = plan.scenes.indexOf(first) + 1;
+  const byId = new Map((plan.characters || []).map((c) => [c.id, c.name]));
+  const names = (first.characters_present || []).map((id) => byId.get(id)).filter(Boolean);
+  const titleIt = String(first.title_it || "").trim() || `Scena ${sceneNum}`;
+  const line1 = names.length ? `Scena ${sceneNum} — ${names.slice(0, 5).join(" e ")}` : `Scena ${sceneNum} — ${titleIt}`;
+
+  let line2 = String(first.summary_it || "").trim().replace(/\s+/g, " ");
+  if (!line2 || META_IT_RE.test(line2) || looksLikeEnglishNarrative(line2)) {
+    const clips = Array.isArray(plan.clips) ? plan.clips : [];
+    const c0 = clips.find((c) => c && (c.scene_id === first.id || c.sceneId === first.id));
+    const actIt =
+      c0 && typeof c0.action_it === "string"
+        ? String(c0.action_it).trim()
+        : "";
+    if (actIt && !META_IT_RE.test(actIt) && !looksLikeEnglishNarrative(actIt)) {
+      line2 = actIt.replace(/\s+/g, " ");
+      if (line2.length > 200) line2 = `${line2.slice(0, 197)}…`;
+    } else {
+      line2 = names.length ? `${titleIt}: ${names.join(" e ")}.` : `${titleIt}.`;
+    }
+  }
+  if (META_IT_RE.test(line2) || looksLikeEnglishNarrative(line2)) {
+    line2 = names.length ? `${titleIt}: ${names.join(" e ")}.` : `${titleIt}.`;
+  }
+  if (line2.length > 200) line2 = `${line2.slice(0, 197)}…`;
+  return `${line1}\n${line2}`.trim();
+}
+
+/**
  * Estende il piano esistente (nuove scene / sviluppi) senza ricominciare da zero.
  *
  * @param {object} existingPlan - Piano già validato
@@ -275,7 +387,9 @@ Rules:
 - Preserve character "id" when it is the same person; use new ids only for genuinely new characters.
 - Preserve existing scene "id" and fields when unchanged.
 - Add NEW scenes with NEW unique ids for beats the user describes (do not reuse ids for different content).
-- Update summary_it in Italian for the full story.
+- Update top-level summary_it in Italian (concrete logline, no production meta).
+- Every new or touched scene MUST have summary_it (Italian, one narrative sentence as in the schema).
+- Every clip MUST have action_it in Italian and action_en in English for model prompts.
 - Keep one global visual_style aligned with the existing plan unless the user explicitly asks to change the look.
 
 EXISTING_PLAN_JSON:
@@ -333,6 +447,7 @@ export function validatePlan(plan) {
     plan.characters[0].is_protagonist = true;
   }
 
+  const charById = new Map(plan.characters.map((c) => [c.id, c]));
   // Normalize scenes
   for (let i = 0; i < plan.scenes.length; i++) {
     const scene = plan.scenes[i];
@@ -346,6 +461,14 @@ export function validatePlan(plan) {
       const protag = plan.characters.find((c) => c.is_protagonist) || plan.characters[0];
       scene.characters_present = [protag.id];
     }
+    const names = (scene.characters_present || []).map((id) => charById.get(id)?.name).filter(Boolean);
+    const tit = String(scene.title_it || "").trim() || `Scena ${i + 1}`;
+    let sum = String(scene.summary_it || "").trim().replace(/\s+/g, " ");
+    if (!sum || META_IT_RE.test(sum) || looksLikeEnglishNarrative(sum)) {
+      scene.summary_it = names.length ? `${names.join(" e ")} in «${tit}».` : `Eventi in «${tit}».`;
+    } else {
+      scene.summary_it = sum;
+    }
   }
 
   // Normalize top-level fields — stile globale unico (testo per UI / matching preset)
@@ -356,6 +479,65 @@ export function validatePlan(plan) {
       : "Cinematic photorealistic film still, natural skin texture, dramatic lighting, cohesive color grade for the entire project";
   }
   if (!Array.isArray(plan.clips)) plan.clips = [];
+
+  // Logline progetto (sempre italiano in UI)
+  {
+    const planSum = String(plan.summary_it || "").trim().replace(/\s+/g, " ");
+    if (!planSum || META_IT_RE.test(planSum) || looksLikeEnglishNarrative(planSum)) {
+      const firstGood = plan.scenes.find((sc) => {
+        const si = String(sc.summary_it || "").trim();
+        return si && !META_IT_RE.test(si) && !looksLikeEnglishNarrative(si);
+      });
+      if (firstGood) {
+        plan.summary_it = String(firstGood.summary_it).trim().replace(/\s+/g, " ");
+      } else {
+        plan.summary_it =
+          plan.scenes
+            .map((sc, idx) => String(sc.title_it || "").trim() || `Scena ${idx + 1}`)
+            .filter(Boolean)
+            .slice(0, 3)
+            .join(" · ") || "Progetto scenografico";
+      }
+    } else {
+      plan.summary_it = planSum;
+    }
+  }
+
+  const sceneById = new Map(plan.scenes.map((s) => [s.id, s]));
+  for (const clip of plan.clips) {
+    if (!clip || typeof clip !== "object") continue;
+    const sid = clip.scene_id || clip.sceneId;
+    const scene = sid ? sceneById.get(sid) : null;
+    const tit = String(scene?.title_it || "Scena").trim() || "Scena";
+    const cnames = (scene?.characters_present || []).map((id) => charById.get(id)?.name).filter(Boolean);
+    let sceneSummary = String(scene?.summary_it || "").trim();
+    if (!sceneSummary || META_IT_RE.test(sceneSummary) || looksLikeEnglishNarrative(sceneSummary)) {
+      sceneSummary = cnames.length ? `${cnames.join(" e ")} in «${tit}».` : `Eventi in «${tit}».`;
+    }
+
+    let actionIt = String(clip.action_it ?? "").trim();
+    let actionEn = String(clip.action_en ?? "").trim();
+    const legacyAction = String(clip.action ?? "").trim();
+
+    if (!actionIt && legacyAction) {
+      if (looksLikeEnglishNarrative(legacyAction)) {
+        if (!actionEn) actionEn = legacyAction;
+        actionIt = sceneSummary;
+      } else {
+        actionIt = legacyAction;
+      }
+    }
+    if (!actionIt) actionIt = sceneSummary;
+
+    clip.action_it = actionIt.replace(/\s+/g, " ");
+    if (actionEn) clip.action_en = actionEn.replace(/\s+/g, " ");
+    else if (legacyAction && looksLikeEnglishNarrative(legacyAction)) {
+      clip.action_en = legacyAction.replace(/\s+/g, " ");
+    }
+    // Retrocompat: `action` solo se esiste testo tecnico inglese per i motori
+    delete clip.action;
+    if (clip.action_en) clip.action = clip.action_en;
+  }
 
   // Nessuno stile per-scena: solo stile progetto (evita mix futuri dal planner)
   for (const scene of plan.scenes) {
