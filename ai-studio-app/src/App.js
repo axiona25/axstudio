@@ -53,6 +53,7 @@ import {
   HiLink,
 } from "react-icons/hi2";
 import VideoEditor from "./editor/VideoEditor";
+import ScenografieSection from "./components/ScenografieSection.js";
 
 // ── ElevenLabs Config (voci/dialoghi TTS) ──
 const ELEVENLABS_API_KEY = process.env.REACT_APP_ELEVENLABS_API_KEY || "";
@@ -458,6 +459,85 @@ const STYLE_CATEGORIES = [
 /** Mappa rapida id → preset per lookup O(1). */
 const STYLE_PRESETS_MAP = Object.fromEntries(STYLE_PRESETS.map(s => [s.id, s]));
 
+// ── Compatibilità stili immagine (gruppi mutuamente esclusivi) ──
+const IMAGE_STYLE_GROUP_PHOTOREAL = new Set([
+  "realistic", "portrait", "cinematic", "noir", "vintage", "fashion", "horror", "fantasy", "cyberpunk",
+  "painting", "watercolor", "pencil", "popart",
+]);
+const IMAGE_STYLE_GROUP_ANIMATED = new Set([
+  "disney", "cartoon", "anime", "manga", "chibi", "ghibli", "clay", "pixel", "comic",
+]);
+const IMAGE_STYLE_GROUP_RENDERED3D = new Set(["3d", "isometric"]);
+
+/** @returns {"photorealistic"|"animated"|"rendered3d"|null} */
+function getImageStyleCompatibilityGroup(styleId) {
+  if (IMAGE_STYLE_GROUP_PHOTOREAL.has(styleId)) return "photorealistic";
+  if (IMAGE_STYLE_GROUP_ANIMATED.has(styleId)) return "animated";
+  if (IMAGE_STYLE_GROUP_RENDERED3D.has(styleId)) return "rendered3d";
+  return null;
+}
+
+/** Stili animati — allineato a IMAGE_STYLE_GROUP_ANIMATED (negative prompt / fallback). */
+const ANIMATED_STYLE_IDS = IMAGE_STYLE_GROUP_ANIMATED;
+
+const PHOTOREALISTIC_NEGATIVE_TERMS = new Set([
+  "cartoon", "anime", "3d render", "cgi", "painting", "illustration",
+  "comic", "manga", "drawn", "concept art", "poster art", "stylized",
+  "vector art", "digital painting",
+]);
+
+function filterConflictingNegatives(negativeTerms, selectedStyleIds) {
+  if (!selectedStyleIds || selectedStyleIds.length === 0) return negativeTerms;
+  const hasAnimated = selectedStyleIds.some(id => ANIMATED_STYLE_IDS.has(id));
+  if (!hasAnimated) return negativeTerms;
+  return negativeTerms.filter(term => !PHOTOREALISTIC_NEGATIVE_TERMS.has(term.toLowerCase()));
+}
+
+/** Rimuove stili di gruppi diversi dal primo gruppo definito (recall / progetti / difesa). */
+function sanitizeImageStyleSelection(styleIds) {
+  if (!styleIds || styleIds.length === 0) return [];
+  const anchor = styleIds.find(id => getImageStyleCompatibilityGroup(id) !== null);
+  if (!anchor) return [...styleIds];
+  const g0 = getImageStyleCompatibilityGroup(anchor);
+  return styleIds.filter(id => getImageStyleCompatibilityGroup(id) === g0);
+}
+
+/**
+ * Aggiunge o rimuove uno stile rispettando i gruppi di compatibilità.
+ * @returns {{ ok: boolean, next: string[], message?: string }}
+ */
+function tryAppendImageStyle(currentIds, newId) {
+  const cur = currentIds || [];
+  if (cur.includes(newId)) {
+    return { ok: true, next: cur.filter(x => x !== newId) };
+  }
+  const gNew = getImageStyleCompatibilityGroup(newId);
+  const next = [...cur, newId];
+  if (gNew === null) {
+    return { ok: true, next };
+  }
+  for (const id of cur) {
+    const gOld = getImageStyleCompatibilityGroup(id);
+    if (gOld !== null && gOld !== gNew) {
+      const labNew = STYLE_PRESETS_MAP[newId]?.label || newId;
+      const labOld = STYLE_PRESETS_MAP[id]?.label || id;
+      return {
+        ok: false,
+        next: cur,
+        message: `Stili incompatibili: «${labNew}» (${labelImageStyleGroup(gNew)}) non si combina con «${labOld}» (${labelImageStyleGroup(gOld)}). Usa solo stili dello stesso gruppo, oppure rimuovi gli attivi.`,
+      };
+    }
+  }
+  return { ok: true, next };
+}
+
+function labelImageStyleGroup(g) {
+  if (g === "photorealistic") return "fotorealismo / pittura";
+  if (g === "animated") return "animato";
+  if (g === "rendered3d") return "3D / render";
+  return "sconosciuto";
+}
+
 /**
  * Costruisce prompt + negativePrompt combinando la scena con gli stili selezionati.
  * Se nessuno stile è fornito, usa "cinema" come default fotorealistico.
@@ -467,7 +547,8 @@ const STYLE_PRESETS_MAP = Object.fromEntries(STYLE_PRESETS.map(s => [s.id, s]));
  * @returns {{ prompt: string, negativePrompt: string }}
  */
 function buildStyledPrompt(scenePrompt, style = "cinematic") {
-  const ids = Array.isArray(style) ? style : [style];
+  const idsRaw = Array.isArray(style) ? style : [style];
+  const ids = sanitizeImageStyleSelection(idsRaw);
   const resolvedPresets = ids
     .map(id => STYLE_PRESETS_MAP[id])
     .filter(Boolean);
@@ -481,9 +562,10 @@ function buildStyledPrompt(scenePrompt, style = "cinematic") {
   const negatives = resolvedPresets.map(p => p.negative_prompt).filter(Boolean);
 
   const prompt = [scenePrompt, ...positives].filter(Boolean).join(", ");
-  const negativePrompt = [...new Set(
+  const rawNegTerms = [...new Set(
     negatives.join(", ").split(",").map(s => s.trim()).filter(Boolean)
-  )].join(", ");
+  )];
+  const negativePrompt = filterConflictingNegatives(rawNegTerms, ids).join(", ");
 
   return { prompt, negativePrompt };
 }
@@ -1130,150 +1212,6 @@ function inferGenderFromAppearance(appearance) {
   if (/\b(man|male|uomo|ragazzo|signore)\b/.test(desc)) return "male";
   return "male";
 }
-
-/**
- * Pipeline IMMAGINI: doppio face-swap classico + refine opzionale.
- * FLUX Ultra genera con prompt completo → doppio fal-ai/face-swap → Kontext refine opzionale.
- *
- * @param {string} imageUrl - URL immagine base generata da FLUX
- * @param {string} faceUrl - URL immagine volto del personaggio
- * @param {object} appearance - Oggetto appearance del personaggio
- * @param {boolean} autoRefine - Se true, applica refine con Kontext
- */
-async function applyFaceIdentity(imageUrl, faceUrl, appearance, autoRefine) {
-  console.log("[FACE IDENTITY] Start — doppio face-swap classico, autoRefine:", autoRefine);
-
-  let finalUrl = imageUrl;
-
-  // ── STEP 1: primo face swap ──
-  try {
-    console.log("[FACE-SWAP 1/2] Applying first pass...");
-    const swap1 = await falRequest("fal-ai/face-swap", {
-      base_image_url: imageUrl,
-      swap_image_url: faceUrl,
-    });
-    const url1 = swap1?.image?.url || swap1?.images?.[0]?.url || null;
-    if (url1) {
-      finalUrl = url1;
-      console.log("[FACE-SWAP 1/2] OK:", url1.slice(0, 80));
-
-      // ── STEP 2: secondo face swap (rinforza identità) ──
-      try {
-        console.log("[FACE-SWAP 2/2] Applying second pass...");
-        const swap2 = await falRequest("fal-ai/face-swap", {
-          base_image_url: finalUrl,
-          swap_image_url: faceUrl,
-        });
-        const url2 = swap2?.image?.url || swap2?.images?.[0]?.url || null;
-        if (url2) {
-          finalUrl = url2;
-          console.log("[FACE-SWAP 2/2] OK:", url2.slice(0, 80));
-        } else {
-          console.warn("[FACE-SWAP 2/2] No image in response, using first swap result");
-        }
-      } catch (err2) {
-        console.warn("[FACE-SWAP 2/2] Failed, using first swap result:", err2?.message || err2);
-      }
-    } else {
-      console.warn("[FACE-SWAP 1/2] No image in response, using base image");
-    }
-  } catch (err1) {
-    console.warn("[FACE-SWAP 1/2] Failed, using base image:", err1?.message || err1);
-  }
-
-  // ── STEP 3: refine opzionale con Kontext ──
-  if (autoRefine && appearance && finalUrl !== imageUrl) {
-    finalUrl = await refineWithKontext(finalUrl, appearance);
-  }
-
-  return finalUrl;
-}
-
-// EXPERIMENTAL: pipeline easel-ai/advanced-face-swap + flux-pulid (disattivata — doppio face-swap classico funziona meglio)
-// async function applyFaceIdentity_experimental(imageUrl, faceUrl, appearance, autoRefine, finalPrompt, sceneHint, style = "cinematic", identityMode = "swap-first") {
-//   console.log("[FACE IDENTITY EXPERIMENTAL] Start —", { identityMode, hasBaseImage: Boolean(imageUrl), autoRefine, style });
-//   let baseUrl = imageUrl;
-//   if (!baseUrl && finalPrompt) {
-//     const { prompt: styledPrompt, negativePrompt: styledNegative } = buildStyledPrompt(finalPrompt, style);
-//     const baseResult = await falRequest("fal-ai/flux-pro/v1.1-ultra", { prompt: styledPrompt, ...(styledNegative ? { negative_prompt: styledNegative } : {}), aspect_ratio: "3:4", num_images: 1, enable_safety_checker: false, safety_tolerance: "6" });
-//     baseUrl = baseResult?.images?.[0]?.url || baseResult?.image?.url || null;
-//     if (!baseUrl) return imageUrl;
-//   }
-//   if (identityMode === "pulid-experimental") {
-//     const physDesc = appearance?.detailedDescription || "";
-//     const { prompt: pulidStyledPrompt, negativePrompt: pulidNegative } = buildStyledPrompt([physDesc, sceneHint || finalPrompt || ""].filter(Boolean).join(", ").slice(0, 500), style);
-//     try {
-//       const pulIdResult = await falQueueRequest("fal-ai/flux-pulid", { prompt: pulidStyledPrompt, reference_image_url: faceUrl, negative_prompt: [pulidNegative, "bad quality, worst quality, distorted face, asymmetrical eyes, extra fingers, watermark, text, oversmoothed skin, gray hair, white hair"].filter(Boolean).join(", "), image_size: "portrait_4_3", num_inference_steps: 28, guidance_scale: 4, id_weight: 1.1, enable_safety_checker: true, max_sequence_length: "128" });
-//       let resultUrl = pulIdResult?.images?.[0]?.url;
-//       if (resultUrl) { if (autoRefine && appearance) resultUrl = await refineWithKontextLight(resultUrl, appearance); return resultUrl; }
-//     } catch (err) { console.warn("[FLUX-PULID EXPERIMENTAL] Failed:", err?.message || err); }
-//   }
-//   try {
-//     const gender = inferGenderFromAppearance(appearance);
-//     const swap = await falQueueRequest("easel-ai/advanced-face-swap", { face_image_0: faceUrl, gender_0: gender, target_image: baseUrl, workflow_type: "user_hair", upscale: true, detailer: true });
-//     const swappedUrl = swap?.image?.url || null;
-//     if (swappedUrl) { if (autoRefine && appearance) return await refineWithKontextLight(swappedUrl, appearance); return swappedUrl; }
-//   } catch (err) { console.warn("[ADVANCED FACE SWAP] Failed:", err?.message || err); }
-//   try {
-//     const swap = await falRequest("fal-ai/face-swap", { base_image_url: baseUrl, swap_image_url: faceUrl });
-//     return swap?.image?.url || baseUrl || imageUrl;
-//   } catch (err) { return baseUrl || imageUrl; }
-// }
-
-/** Refine opzionale con Kontext — preserva identità, corregge artefatti minori. */
-async function refineWithKontext(imageUrl, appearance) {
-  const refinePrompt = [
-    "Refine the image while preserving the same identity, face structure, and expression.",
-    "Only fix minor artifacts and improve realism.",
-    "Keep dark brown hair, natural skin texture, realistic nose shape, realistic jawline.",
-    "Do not change pose, framing, outfit, or facial identity.",
-    appearance?.detailedDescription
-      ? `Identity details to preserve: ${appearance.detailedDescription}.`
-      : null,
-  ].filter(Boolean).join(" ");
-
-  console.log("[KONTEXT REFINE] Refining...");
-  try {
-    const result = await falQueueRequest("fal-ai/flux-pro/kontext/max", {
-      image_url: imageUrl,
-      prompt: refinePrompt,
-      guidance_scale: 3.5,
-      num_images: 1,
-      output_format: "jpeg",
-      safety_tolerance: "2",
-      enhance_prompt: false,
-    });
-    const refinedUrl = result?.images?.[0]?.url || null;
-    if (refinedUrl) {
-      console.log("[KONTEXT REFINE] OK:", refinedUrl.slice(0, 80));
-      return refinedUrl;
-    }
-    console.warn("[KONTEXT REFINE] No image returned, using original");
-    return imageUrl;
-  } catch (err) {
-    console.warn("[KONTEXT REFINE] Failed:", err?.message || err);
-    return imageUrl;
-  }
-}
-
-// EXPERIMENTAL: refineWithKontextLight (ultra-conservativo — disattivato)
-// async function refineWithKontextLight(imageUrl, appearance) {
-//   const refinePrompt = [
-//     "Preserve exact same identity, exact same face structure, exact same nose, exact same jawline,",
-//     "exact same eyes, exact same hairline, exact same expression, exact same age.",
-//     "Only remove minor visual artifacts and compression noise.",
-//     "Keep photorealistic look.",
-//     "Do not stylize. Do not repaint. Do not beautify.",
-//     "Do not change hair color. Do not change facial proportions.",
-//     "Do not change skin tone. Do not change lighting style.",
-//     "Do not add or remove any accessories, wrinkles, moles, or scars.",
-//     appearance?.detailedDescription ? `Critical identity to preserve exactly: ${appearance.detailedDescription}.` : null,
-//   ].filter(Boolean).join(" ");
-//   try {
-//     const result = await falQueueRequest("fal-ai/flux-pro/kontext/max", { image_url: imageUrl, prompt: refinePrompt, num_images: 1, output_format: "jpeg", safety_tolerance: "2", enhance_prompt: false });
-//     return result?.images?.[0]?.url || imageUrl;
-//   } catch (err) { return imageUrl; }
-// }
 
 /** Scarica un URL immagine fal.ai e ritorna una data URL base64 (per salvataggio su disco). */
 async function falImageUrlToBase64(url) {
@@ -5039,7 +4977,7 @@ const StudioResultsSidebar = React.memo(function StudioResultsSidebar({ kind, im
                   ) : isSwap ? (
                     <div style={{ width: "100%", height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", background: "linear-gradient(135deg, rgba(41,182,255,0.12), rgba(123,77,255,0.1))", gap: 6 }}>
                       <div style={{ width: 22, height: 22, border: "2px solid rgba(41,182,255,0.25)", borderTopColor: AX.electric, borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
-                      <span style={{ fontSize: 9, fontWeight: 600, color: AX.electric, padding: "0 4px", textAlign: "center" }}>Face swap…</span>
+                      <span style={{ fontSize: 9, fontWeight: 600, color: AX.electric, padding: "0 4px", textAlign: "center" }}>Identity lock…</span>
                     </div>
                   ) : (
                     <img alt="" src={img} style={{ width: "100%", height: "100%", objectFit: "cover", objectPosition: THUMB_COVER_POSITION, display: "block" }} />
@@ -5177,6 +5115,10 @@ const storage = {
 // ── Main App ──
 export default function AIStudio() {
   const [view, setView] = useState("home");
+  /** Scenografie: pulsante header «←» torna alla griglia progetti se l'editor è aperto. */
+  const scenografieNavRef = useRef({ tryBackToHub: () => false });
+  /** Su griglia Scenografie il back di sistema è nascosto; visibile solo con un progetto aperto. */
+  const [scenografieEditorOpen, setScenografieEditorOpen] = useState(false);
   const [projects, setProjects] = useState([]);
   const [currentProject, setCurrentProject] = useState(null);
   const [showNewProject, setShowNewProject] = useState(false);
@@ -5448,6 +5390,10 @@ export default function AIStudio() {
       setProjectVideoSourceImg(null);
       setProjectGallerySelectedEntryId(null);
     }
+  }, [view]);
+
+  useEffect(() => {
+    if (view !== "scenografie") setScenografieEditorOpen(false);
   }, [view]);
 
   useEffect(() => {
@@ -5793,7 +5739,7 @@ export default function AIStudio() {
         if (c) setSelectedCharacter(c);
       }
       const savedStyles = record?.params?.selectedStyles;
-      if (savedStyles?.length > 0) setImgSelectedStyles(savedStyles);
+      if (savedStyles?.length > 0) setImgSelectedStyles(sanitizeImageStyleSelection(savedStyles));
     }
   }, [history, currentProject, setImgSelectedStyles, setSelectedCharacter]);
 
@@ -5997,11 +5943,12 @@ export default function AIStudio() {
   const headerTitle = view === "home" ? "Benvenuto"
     : view === "free-image" ? "Immagine libera"
       : view === "free-video" ? "Video libero"
-        : view === "video-editor" ? "Video Editor"
-          : view === "settings" ? "Impostazioni"
-            : view === "projects" ? "Progetti"
-              : view === "project" && currentProject ? currentProject.name
-                : "AXSTUDIO";
+        : view === "scenografie" ? "Scenografie"
+          : view === "video-editor" ? "Video Editor"
+            : view === "settings" ? "Impostazioni"
+              : view === "projects" ? "Progetti"
+                : view === "project" && currentProject ? currentProject.name
+                  : "AXSTUDIO";
   const headerSubtitle = view === "home"
     ? "Cosa vuoi creare oggi?"
     : view === "free-image" ? "Genera un’immagine da prompt"
@@ -6046,7 +5993,43 @@ export default function AIStudio() {
     </a>
   );
 
-  const BackBtn = () => (view !== "home" && view !== "projects" && view !== "free-image" && view !== "free-video" && view !== "video-editor" && view !== "settings") ? <button type="button" onClick={() => { if (view === "project") { setView("projects"); } else { setView("home"); setCurrentProject(null); } }} style={{ background: AX.surface, border: `1px solid ${AX.border}`, color: AX.text2, cursor: "pointer", padding: "8px 12px", fontSize: 16, borderRadius: 10 }}>←</button> : null;
+  const backHiddenOnScenografieHub = view === "scenografie" && !scenografieEditorOpen;
+
+  const BackBtn = () =>
+    view !== "home" &&
+    view !== "projects" &&
+    view !== "free-image" &&
+    view !== "free-video" &&
+    view !== "video-editor" &&
+    view !== "settings" &&
+    !backHiddenOnScenografieHub ? (
+      <button
+        type="button"
+        onClick={() => {
+          if (view === "project") {
+            setView("projects");
+            return;
+          }
+          if (view === "scenografie") {
+            const wentToHub = scenografieNavRef.current?.tryBackToHub?.() === true;
+            if (wentToHub) return;
+          }
+          setView("home");
+          setCurrentProject(null);
+        }}
+        style={{
+          background: AX.surface,
+          border: `1px solid ${AX.border}`,
+          color: AX.text2,
+          cursor: "pointer",
+          padding: "8px 12px",
+          fontSize: 16,
+          borderRadius: 10,
+        }}
+      >
+        ←
+      </button>
+    ) : null;
 
   const NavBtn = ({ icon, label, active, onClick }) => (
     <button type="button" onClick={onClick} style={{
@@ -6100,6 +6083,7 @@ export default function AIStudio() {
           <NavBtn icon={<HiHome size={20} />} label="Home" active={view === "home"} onClick={() => { setView("home"); setCurrentProject(null); }} />
           <NavBtn icon={<HiPhoto size={20} />} label="Immagine libera" active={view === "free-image"} onClick={() => { setView("free-image"); setCurrentProject(null); }} />
           <NavBtn icon={<HiFilm size={20} />} label="Video libero" active={view === "free-video"} onClick={() => { setView("free-video"); setCurrentProject(null); }} />
+          <NavBtn icon={<HiRectangleGroup size={20} />} label="Scenografie" active={view === "scenografie"} onClick={() => { setView("scenografie"); setCurrentProject(null); }} />
           <NavBtn icon={<HiFolder size={20} />} label="Progetti" active={view === "projects" || view === "project"} onClick={() => { setView("projects"); setCurrentProject(null); }} />
           <NavBtn icon={<HiVideoCamera size={20} />} label="Video Editor" active={view === "video-editor"} onClick={() => { setView("video-editor"); setCurrentProject(null); }} />
           <div style={{ flex: 1 }} />
@@ -6436,9 +6420,9 @@ export default function AIStudio() {
         {/* ═══ PROJECT ═══ */}
         {view === "project" && currentProject && (
           <div style={{ width: "100%", display: "flex", flexDirection: "column", flexShrink: 0, paddingBottom: 8 }}>
-          {/* Characters */}
-          <div style={{ marginBottom: studioSplitView ? 12 : 28, flexShrink: 0, display: "flex", gap: 10, flexWrap: "nowrap", alignItems: "flex-start" }}>
-            {/* Left group: Scegli Attori */}
+          {/* Characters — DISABILITATO: i character master vivono solo in Scenografie */}
+          <div style={{ marginBottom: studioSplitView ? 12 : 28, flexShrink: 0, display: "none", gap: 10, flexWrap: "nowrap", alignItems: "flex-start" }}>
+            {/* Left group: Scegli Attori — hidden, characters only in Scenografie */}
             <div style={{ flexShrink: 0, display: "flex", flexDirection: "column" }}>
               <h2 style={{ fontFamily: "'Playfair Display', serif", fontSize: studioSplitView ? 22 : 26, fontWeight: 600, color: AX.text, margin: 0, marginBottom: studioSplitView ? 10 : 14 }}>Scegli Attori</h2>
               <div style={{ display: "flex", gap: 10, flexWrap: "nowrap" }}>
@@ -7165,15 +7149,11 @@ export default function AIStudio() {
 
           {activeTab === "image" && (
             <>
-              <ImgGen {...{ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setResolution, generating, setGenerating, generatedImages, setGeneratedImages, selectedCharacter, setSelectedCharacter, projectCharacters: currentProject?.characters || [], scenes: scenePresets, onSave: saveGeneratedImage, previewImg: genPreviewImg, setPreviewImg: setGenPreviewImg, layoutFill: false, history, recallImageUrl, setRecallImageUrl, selectedStyles: imgSelectedStyles, setSelectedStyles: setImgSelectedStyles, aspect: imgAspect, setAspect: setImgAspect, steps: imgSteps, setSteps: setImgSteps, cfg: imgCfg, setCfg: setImgCfg, adv: imgAdv, setAdv: setImgAdv, projectSourceImageUrl, setProjectSourceImageUrl, currentProjectId: currentProject?.id, imgSessionPromptMap, imgPickerEntries: projectGalleryEntryList, imgPickerSelectedId: imgGallerySelectedEntryId, onImgPickerChange: handleImgGalleryPick, myImagesPickedUrl, onUpdateCharacterAppearance: (charId, appearance) => {
-                if (!currentProject) return;
-                const updChars = currentProject.characters.map(c => c.id === charId ? { ...c, appearance: { ...(c.appearance || {}), ...appearance } } : c);
-                updateProject({ ...currentProject, characters: updChars });
-              }, onSaveAsSet: (imgUrl) => { setSaveSetImageUrl(imgUrl); setShowSaveSetModal(true); }, selectedSet, imageStatus, setImageStatus, imageProgress, setImageProgress }} />
+              <ImgGen {...{ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setResolution, generating, setGenerating, generatedImages, setGeneratedImages, selectedCharacter: null, setSelectedCharacter: null, projectCharacters: [], scenes: scenePresets, onSave: saveGeneratedImage, previewImg: genPreviewImg, setPreviewImg: setGenPreviewImg, layoutFill: false, history, recallImageUrl, setRecallImageUrl, selectedStyles: imgSelectedStyles, setSelectedStyles: setImgSelectedStyles, aspect: imgAspect, setAspect: setImgAspect, steps: imgSteps, setSteps: setImgSteps, cfg: imgCfg, setCfg: setImgCfg, adv: imgAdv, setAdv: setImgAdv, projectSourceImageUrl, setProjectSourceImageUrl, currentProjectId: currentProject?.id, imgSessionPromptMap, imgPickerEntries: projectGalleryEntryList, imgPickerSelectedId: imgGallerySelectedEntryId, onImgPickerChange: handleImgGalleryPick, myImagesPickedUrl, onSaveAsSet: (imgUrl) => { setSaveSetImageUrl(imgUrl); setShowSaveSetModal(true); }, selectedSet, imageStatus, setImageStatus, imageProgress, setImageProgress }} />
             </>
           )}
           {activeTab === "video" && (
-            <VidGen {...{ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, videoResolution, setVideoResolution, generating, setGenerating, selectedCharacter, vidTemplates: videoStylePresets, onSaveVideo: saveGeneratedVideo, generatedVideos, setGeneratedVideos, previewVideo: genPreviewVideo, setPreviewVideo: setGenPreviewVideo, layoutFill: false, history, diskMediaEntries, generatedImages, controlledSourceImg: projectVideoSourceImg, setControlledSourceImg: setProjectVideoSourceImg, proposalResetNonce: projectVideoProposalResetNonce, pickerImageEntries: projectGalleryEntryList, pickerSelectedEntryId: projectGallerySelectedEntryId, onPickerImageChange: handleProjectGallerySelection, selectedVideoStyles: vidSelectedStyles, setSelectedVideoStyles: setVidSelectedStyles, selectedDirectionStyles: vidSelectedDirectionStyles, setSelectedDirectionStyles: setVidSelectedDirectionStyles, vidAspect, setVidAspect, vidSteps, setVidSteps, recallVideoUrl, setRecallVideoUrl, videoStatus, setVideoStatus, directionRecommendation: vidDirectionRecommendation, setDirectionRecommendation: setVidDirectionRecommendation, directionRecLoading: vidDirectionRecLoading, setDirectionRecLoading: setVidDirectionRecLoading, imgSessionPromptMap, videoSidebarMode, setVideoSidebarMode, expandedScreenplays, setExpandedScreenplays, voiceLibrary, elFavorites, myVoices, projectSets, videosRendering, setVideosRendering }} />
+            <VidGen {...{ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, videoResolution, setVideoResolution, generating, setGenerating, selectedCharacter: null, vidTemplates: videoStylePresets, onSaveVideo: saveGeneratedVideo, generatedVideos, setGeneratedVideos, previewVideo: genPreviewVideo, setPreviewVideo: setGenPreviewVideo, layoutFill: false, history, diskMediaEntries, generatedImages, controlledSourceImg: projectVideoSourceImg, setControlledSourceImg: setProjectVideoSourceImg, proposalResetNonce: projectVideoProposalResetNonce, pickerImageEntries: projectGalleryEntryList, pickerSelectedEntryId: projectGallerySelectedEntryId, onPickerImageChange: handleProjectGallerySelection, selectedVideoStyles: vidSelectedStyles, setSelectedVideoStyles: setVidSelectedStyles, selectedDirectionStyles: vidSelectedDirectionStyles, setSelectedDirectionStyles: setVidSelectedDirectionStyles, vidAspect, setVidAspect, vidSteps, setVidSteps, recallVideoUrl, setRecallVideoUrl, videoStatus, setVideoStatus, directionRecommendation: vidDirectionRecommendation, setDirectionRecommendation: setVidDirectionRecommendation, directionRecLoading: vidDirectionRecLoading, setDirectionRecLoading: setVidDirectionRecLoading, imgSessionPromptMap, videoSidebarMode, setVideoSidebarMode, expandedScreenplays, setExpandedScreenplays, voiceLibrary, elFavorites, myVoices, projectSets, videosRendering, setVideosRendering }} />
           )}
 
           </div>
@@ -7190,6 +7170,32 @@ export default function AIStudio() {
         {view === "free-video" && (
           <div className="ax-hide-scrollbar" style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflowY: "auto", overflowX: "hidden" }}>
             <VidGen {...{ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, videoResolution, setVideoResolution, generating, setGenerating, selectedCharacter: null, vidTemplates: videoStylePresets, onSaveVideo: saveGeneratedVideo, generatedVideos, setGeneratedVideos, previewVideo: genPreviewVideo, setPreviewVideo: setGenPreviewVideo, layoutFill: true, history, diskMediaEntries, generatedImages, freeSourceImg: vidFreeSourceImg, setFreeSourceImg: setVidFreeSourceImg, selectedVideoStyles: vidSelectedStyles, setSelectedVideoStyles: setVidSelectedStyles, selectedDirectionStyles: vidSelectedDirectionStyles, setSelectedDirectionStyles: setVidSelectedDirectionStyles, vidAspect, setVidAspect, vidSteps, setVidSteps, recallVideoUrl, setRecallVideoUrl, videoStatus, setVideoStatus, directionRecommendation: vidDirectionRecommendation, setDirectionRecommendation: setVidDirectionRecommendation, directionRecLoading: vidDirectionRecLoading, setDirectionRecLoading: setVidDirectionRecLoading, imgSessionPromptMap, videoSidebarMode, setVideoSidebarMode, expandedScreenplays, setExpandedScreenplays, voiceLibrary, elFavorites, myVoices, videosRendering, setVideosRendering }} />
+          </div>
+        )}
+
+        {/* ═══ SCENOGRAFIE ═══ */}
+        {view === "scenografie" && (
+          <div className="ax-hide-scrollbar" style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflowY: "auto", overflowX: "hidden" }}>
+            <ScenografieSection
+              scenografieNavRef={scenografieNavRef}
+              onEditorOpenChange={setScenografieEditorOpen}
+              onSave={saveGeneratedImage}
+              onGoToVideoProduction={() => {
+                setView("free-video");
+              }}
+              generatedImages={generatedImages}
+              setGeneratedImages={setGeneratedImages}
+              imageStatus={imageStatus}
+              setImageStatus={setImageStatus}
+              imageProgress={imageProgress}
+              setImageProgress={setImageProgress}
+              imageStylePresets={STYLE_PRESETS.map((s) => ({
+                id: s.id,
+                label: s.label,
+                prompt: s.prompt,
+                negative_prompt: s.negative_prompt || "",
+              }))}
+            />
           </div>
         )}
 
@@ -7690,20 +7696,10 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
   const [proposedPrompt, setProposedPrompt] = useState(null);
   const [editableIT, setEditableIT] = useState("");
   const [translateErr, setTranslateErr] = useState("");
-  const [autoRefine, setAutoRefine] = useState(false);
   const [promptManuallyEdited, setPromptManuallyEdited] = useState(false);
   const [recallFeedback, setRecallFeedback] = useState(null);
+  const [styleCompatFeedback, setStyleCompatFeedback] = useState(null);
   const recallActiveRef = useRef(false);
-
-  // EXPERIMENTAL: bypass swap-first rimosso — il LLM riceve SEMPRE l'appearance completa
-  // perché FLUX Ultra + doppio face-swap funziona meglio con prompt completo.
-  // const isSwapFirstMode = Boolean(selectedCharacter && charHasImage);
-
-  const charPhysicalContext = useMemo(() => {
-    const desc = appearanceToPrompt(selectedCharacter?.appearance);
-    if (!desc) return "";
-    return `\n\nCHARACTER APPEARANCE (MANDATORY — DO NOT CHANGE OR CONTRADICT THESE PHYSICAL TRAITS):\n${desc}\nYou MUST use these exact physical characteristics in the prompt. Do NOT invent different hair color, age, body type, skin color, or any other physical trait. These traits are SACRED and override any creative enrichment.`;
-  }, [selectedCharacter?.appearance]);
 
   // ── Project image update mode ──
   const appearanceSnapshotRef = useRef(null);
@@ -7714,15 +7710,12 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
   // (sarà confrontato con l'appearance attuale per determinare update mode)
   const hasStyleChanges = (() => {
     if (!sourceImageStylesRef.current) return false;
-    const src = [...sourceImageStylesRef.current].sort().join(",");
-    const cur = [...selectedStyles].sort().join(",");
+    const src = [...sanitizeImageStyleSelection(sourceImageStylesRef.current || [])].sort().join(",");
+    const cur = [...sanitizeImageStyleSelection(selectedStyles || [])].sort().join(",");
     return src !== cur;
   })();
   const hasAppearanceOrTextChanges = Boolean(
-    selectedCharacter && (
-      Object.keys(diffAppearance(appearanceSnapshotRef.current, selectedCharacter?.appearance)).length > 0 ||
-      (prompt.trim() && prompt.trim() !== (sourceImagePromptItRef.current || ""))
-    )
+    prompt.trim() && prompt.trim() !== (sourceImagePromptItRef.current || "")
   );
   const isStyleChangeOnlyMode = Boolean(projectSourceImageUrl && currentProjectId && hasStyleChanges && !hasAppearanceOrTextChanges);
   const isImageUpdateMode = Boolean(
@@ -7730,80 +7723,6 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
     currentProjectId &&
     (hasStyleChanges || hasAppearanceOrTextChanges)
   );
-
-  const isFaceSwapOnlyMode = Boolean(
-    selectedCharacter &&
-    (selectedCharacter.image || selectedCharacter.imagePath || selectedCharacter.imageUrl) &&
-    myImagesPickedUrl
-  );
-
-  const handleFaceSwapOnly = async () => {
-    setGenerating(true);
-    setImageProgress(0);
-    setGeneratedImages(p => [STUDIO_IMAGE_GENERATING, ...p.filter(x => x !== STUDIO_IMAGE_GENERATING)]);
-    setImageStatus("Preparazione…"); setImageProgress(5);
-    try {
-      const charImg = selectedCharacter?.image || selectedCharacter?.imagePath || selectedCharacter?.imageUrl || null;
-      if (!charImg) throw new Error("Nessuna foto personaggio trovata");
-
-      let sourceUrl = myImagesPickedUrl || projectSourceImageUrl;
-      if (sourceUrl && sourceUrl.startsWith("axstudio-local://")) {
-        const b64 = await characterImageToDataUri(sourceUrl).catch(() => null);
-        if (b64) {
-          sourceUrl = await uploadBase64ToFal(b64);
-        }
-      } else if (sourceUrl && !sourceUrl.startsWith("http")) {
-        sourceUrl = await uploadBase64ToFal(sourceUrl);
-      }
-      setImageProgress(15);
-
-      const faceDataUri = await characterImageToDataUri(charImg).catch(() => null);
-      if (!faceDataUri) throw new Error("Impossibile caricare la foto del personaggio");
-      const faceUrl = await uploadBase64ToFal(faceDataUri);
-      setImageProgress(25);
-
-      setImageStatus("Face swap…"); setImageProgress(30);
-      let imgUrl = await applyFaceIdentity(sourceUrl, faceUrl, selectedCharacter?.appearance, autoRefine);
-      setImageProgress(85);
-
-      // LEGACY: doppio face swap
-      // const swap1 = await falRequest("fal-ai/face-swap", { base_image_url: sourceUrl, swap_image_url: faceUrl });
-      // let imgUrl = swap1?.image?.url || swap1?.images?.[0]?.url || null;
-      // if (imgUrl) {
-      //   const swap2 = await falRequest("fal-ai/face-swap", { base_image_url: imgUrl, swap_image_url: faceUrl });
-      //   if (swap2?.image?.url) imgUrl = swap2.image.url;
-      // }
-
-      setImageStatus("Salvataggio…"); setImageProgress(90);
-      setGeneratedImages(p => [imgUrl, ...p.filter(x => x !== STUDIO_IMAGE_GENERATING)]);
-
-      void (async () => {
-        try {
-          if (onSave) {
-            const dataUrl = await falImageUrlToBase64(imgUrl);
-            const entry = await onSave(dataUrl, `Face swap: ${selectedCharacter.name}`, {
-              projectImageMode: "faceswap",
-              characterId: selectedCharacter?.id || null,
-              faceSwap: true,
-              sourceImageUrl: projectSourceImageUrl,
-            });
-            if (entry?.filePath && isElectron) {
-              const nu = mediaFileUrl(entry.filePath);
-              setGeneratedImages(p => p.map(x => x === imgUrl ? nu : x));
-              if (typeof setPreviewImg === "function") setPreviewImg(prev => (prev === imgUrl ? nu : prev));
-            }
-          }
-        } catch (saveErr) { console.error("[FACE-SWAP SAVE]", saveErr); }
-      })();
-      setImageStatus(""); setImageProgress(100);
-      setTimeout(() => { setImageProgress(0); }, 1500);
-    } catch (e) {
-      console.error("[FACE-SWAP ONLY]", e);
-      setImageStatus(""); setImageProgress(0);
-      setGeneratedImages(p => p.filter(x => x !== STUDIO_IMAGE_GENERATING));
-    }
-    setGenerating(false);
-  };
 
   // ── Separazione prompt IT (UI) / EN (API) ──
   // preparedEnRef: ultima versione EN pronta, mai mostrata nella textarea
@@ -7859,7 +7778,14 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
       setProposedPrompt(null);
       setEditableIT("");
       setRecallFeedback(null);
-      if (savedStyles?.length > 0) setSelectedStyles(savedStyles);
+      if (savedStyles?.length > 0) {
+        const co = sanitizeImageStyleSelection(savedStyles);
+        setSelectedStyles(co);
+        if (co.length !== savedStyles.length) {
+          setRecallFeedback("Stili incompatibili nel salvataggio: restano solo quelli coerenti con il primo gruppo (fotorealismo, animato o 3D).");
+          setTimeout(() => setRecallFeedback(null), 5500);
+        }
+      }
       if (metaCharId && projectCharacters?.length > 0 && typeof setSelectedCharacter === "function") {
         const recalledChar = projectCharacters.find(c => c.id === metaCharId);
         if (recalledChar) setSelectedCharacter(recalledChar);
@@ -7868,7 +7794,7 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
         setProjectSourceImageUrl(recallImageUrl);
         appearanceSnapshotRef.current = snap || { ...(selectedCharacter?.appearance || {}) };
         sourceImagePromptItRef.current = textForField || "";
-        sourceImageStylesRef.current = savedStyles || [];
+        sourceImageStylesRef.current = sanitizeImageStyleSelection(savedStyles || []);
       }
       return;
     }
@@ -7911,7 +7837,14 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
     }
     setProposedPrompt(null);
     setEditableIT("");
-    if (savedStyles.length > 0) setSelectedStyles(savedStyles);
+    if (savedStyles.length > 0) {
+      const co = sanitizeImageStyleSelection(savedStyles);
+      setSelectedStyles(co);
+      if (co.length !== savedStyles.length) {
+        setRecallFeedback("Stili incompatibili nel salvataggio: restano solo quelli coerenti con il primo gruppo (fotorealismo, animato o 3D).");
+        setTimeout(() => setRecallFeedback(null), 5500);
+      }
+    }
     const recCharId = record.params?.characterId;
     if (recCharId && projectCharacters?.length > 0 && typeof setSelectedCharacter === "function") {
       const recalledChar = projectCharacters.find(c => c.id === recCharId);
@@ -7921,7 +7854,7 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
       setProjectSourceImageUrl(recallImageUrl);
       appearanceSnapshotRef.current = record.params?.appearanceSnapshot || { ...(selectedCharacter?.appearance || {}) };
       sourceImagePromptItRef.current = textForField || "";
-      sourceImageStylesRef.current = savedStyles || [];
+      sourceImageStylesRef.current = sanitizeImageStyleSelection(savedStyles || []);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [recallImageUrl]);
@@ -7969,27 +7902,22 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
       alert("Seleziona almeno uno stile prima di generare");
       return;
     }
-    const DIAGNOSTIC_LEVEL = 4; // TEMPORANEO: 1=FLUX puro, 4=FLUX+LLM+1 face swap — rimuovere dopo il test
-    const DIAGNOSTIC_PURE_FLUX = DIAGNOSTIC_LEVEL >= 1; // compatibilità con i check sotto
-
     setGenerating(true);
     setImageProgress(0);
     setGeneratedImages(p => [STUDIO_IMAGE_GENERATING, ...p.filter(x => x !== STUDIO_IMAGE_GENERATING)]);
     setImageStatus("Traduzione prompt…"); setImageProgress(5);
     try {
-      console.log("[APPEARANCE FULL DUMP]", JSON.stringify(selectedCharacter?.appearance, null, 2));
+      const styleIdsForPrompt = sanitizeImageStyleSelection(selectedStyles);
+      if (styleIdsForPrompt.length !== selectedStyles.length) {
+        console.warn("[STYLE COMPAT] Ignorati stili incompatibili per il prompt:", selectedStyles, "→", styleIdsForPrompt);
+      }
 
       // ── Risolvi il prompt EN da usare per FLUX ──
-      // Priorità: preparedEnRef (fresco + testo sorgente coincidente) → traduzione silente → fallback IT
       let resolvedEn = null;
-      // Se l'utente ha modificato il testo nella modale, usa quello (la ref è più fresca dello state)
       const currentIt = (modalEditedItRef.current ?? prompt).trim();
-      modalEditedItRef.current = null; // consuma la ref
+      modalEditedItRef.current = null;
 
-      // DIAGNOSTIC: se attivo e c'è un personaggio, forza ri-traduzione senza appearance
-      const diagnosticActive = DIAGNOSTIC_PURE_FLUX && selectedCharacter;
       const canReusePrepared =
-        !diagnosticActive &&
         !enIsStaleRef.current &&
         preparedEnRef.current?.en &&
         preparedEnRef.current?.itSource === currentIt;
@@ -8000,36 +7928,12 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
       } else {
         // EN mancante o stale: traduzione silente senza mostrare modale
         try {
-          const styleContext = selectedStyles
+          const styleContext = styleIdsForPrompt
             .map(sid => STYLE_PRESETS.find(s => s.id === sid)?.label)
             .filter(Boolean)
             .join(", ");
           const prefix = [scenePrefixForAI(), styleContext ? `Style: ${styleContext}` : ""].filter(Boolean).join(" | ");
-          let llmContext = charPhysicalContext;
-          if (diagnosticActive && selectedCharacter?.appearance) {
-            const a = selectedCharacter.appearance;
-            const parts = [];
-            if (a.hairColorDetail || a.hairColor) {
-              const hairColorItToEn = { "Nero corvino": "jet black", "Nero": "black", "Nero/Castano": "black with brown highlights", "Neri": "black", "Castano molto scuro": "very dark brown", "Castano scuro": "dark brown", "Castano medio": "medium brown", "Castano chiaro": "light brown", "Castano/Nero mix": "dark brown and black mixed", "Biondo scuro": "dark blonde", "Biondo medio": "medium blonde", "Biondo chiaro": "light blonde", "Biondo platino": "platinum blonde", "Rosso/Ramato": "red auburn", "Rosso scuro": "dark red mahogany", "Rosso chiaro": "light copper red", "Brizzolato": "salt-and-pepper grey", "Grigio scuro": "dark grey", "Grigio argento": "silver grey", "Bianco": "white", "Colorati": "colorful dyed" };
-              let hairDesc = a.hairColorDetail || (hairColorItToEn[a.hairColor] || a.hairColor);
-              if (a.hairDensity) hairDesc += `, ${a.hairDensity.toLowerCase()} density`;
-              if (a.hairLength) hairDesc += `, ${a.hairLength.toLowerCase()} length`;
-              parts.push(`hair: ${hairDesc}`);
-            }
-            if (!a.beard || a.beard === "none" || a.beard === "Nessuna") {
-              parts.push("clean shaven, NO beard, NO stubble, NO facial hair");
-            }
-            if (a.ageEstimate) parts.push(`approximately ${a.ageEstimate} years old`);
-            if (a.skinDetail) parts.push(`skin: ${a.skinDetail}`);
-            else if (a.skinColor) parts.push(`skin: ${a.skinColor}`);
-            if (!a.glasses || a.glasses === "none") parts.push("no glasses");
-            llmContext = parts.length > 0
-              ? `\n\nCHARACTER PHYSICAL DETAILS (MANDATORY):\n${parts.join(". ")}`
-              : "";
-            console.log("[DIAGNOSTIC] Concise physical context (5 fields):", parts.join(". "));
-          }
-          console.log("[PHYSICAL CONTEXT TO LLM]", llmContext);
-          const out = await translatePrompt(currentIt, prefix, llmContext);
+          const out = await translatePrompt(currentIt, prefix, "");
           if (out?.prompt_en) {
             resolvedEn = out.prompt_en;
             preparedEnRef.current = { en: out.prompt_en, itSource: currentIt };
@@ -8047,97 +7951,21 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
       const [rw, rh] = (resolution || "1920x1080").split("x").map(Number);
       const aspect_ratio = rw === rh ? "1:1" : rw > rh ? "16:9" : "9:16";
 
-      // ── Stili selezionati ──
-      const stylePrefix = selectedStyles
+      // ── Stili selezionati (solo gruppo compatibile) ──
+      const stylePrefix = styleIdsForPrompt
         .map(sid => STYLE_PRESETS.find(s => s.id === sid)?.prompt)
         .filter(Boolean)
         .join(", ");
 
-      const styleNegative = selectedStyles
+      const styleNegative = styleIdsForPrompt
         .map(sid => STYLE_PRESETS.find(s => s.id === sid)?.negative_prompt)
         .filter(Boolean)
         .join(", ");
-
-      // ── Sanitizzazione: rimuovi tratti fisici inventati dal LLM che contraddicono l'appearance ──
-      if (selectedCharacter?.appearance) {
-        const ap = selectedCharacter.appearance;
-        const contradictions = [];
-        if (ap.hairColor) {
-          const correctHair = appearanceToPrompt({ hairColor: ap.hairColor }).toLowerCase();
-          const wrongHairPatterns = ["grey-haired", "gray-haired", "grey hair", "gray hair", "silver hair", "white hair", "blonde hair", "blond hair", "red hair", "ginger hair", "auburn hair", "black hair", "brown hair", "dark hair", "light hair", "platinum hair"];
-          const correctKeywords = correctHair.split(/\s+/);
-          for (const pat of wrongHairPatterns) {
-            if (resolvedEn.toLowerCase().includes(pat) && !correctKeywords.some(kw => pat.includes(kw))) {
-              contradictions.push(pat);
-            }
-          }
-        }
-        if (ap.age) {
-          const wrongAgePatterns = ["elderly", "old man", "old woman", "aging", "aged", "youthful", "teenage", "young man", "young woman"];
-          const ageDesc = appearanceToPrompt({ age: ap.age }).toLowerCase();
-          for (const pat of wrongAgePatterns) {
-            if (resolvedEn.toLowerCase().includes(pat) && !ageDesc.includes(pat.split(" ")[0])) {
-              contradictions.push(pat);
-            }
-          }
-        }
-        if (contradictions.length > 0) {
-          let sanitized = resolvedEn;
-          for (const c of contradictions) {
-            sanitized = sanitized.replace(new RegExp(c, "gi"), "");
-          }
-          sanitized = sanitized.replace(/,\s*,/g, ",").replace(/\s{2,}/g, " ").trim();
-          console.log("[PROMPT SANITIZE] Removed contradicting traits:", contradictions, "from LLM output");
-          resolvedEn = sanitized;
-        }
-      }
 
       // ── Prompt scena: sempre dall'EN preparato ──
       let scenePrompt = resolvedEn;
       const t = scenes.find(s => s.id === tmpl);
       if (t) scenePrompt = t.prefix + scenePrompt;
-
-      // ── Foto personaggio (definita qui perché serve anche per auto-detect) ──
-      const charImg = selectedCharacter?.image || selectedCharacter?.imagePath || selectedCharacter?.imageUrl || null;
-
-      // ── Auto-detect appearance se mancante ──
-      if (selectedCharacter && charImg && (!selectedCharacter.appearance || Object.keys(selectedCharacter.appearance).filter(k => selectedCharacter.appearance[k]).length < 3)) {
-        try {
-          setImageStatus("Analisi personaggio…"); setImageProgress(12);
-          const photoUri = await characterImageToDataUri(charImg).catch(() => null);
-          if (photoUri) {
-            const detected = await analyzePhotoAppearance(photoUri);
-            if (detected && detected.gender) {
-              console.log("[AUTO-DETECT] Appearance populated:", detected);
-              const mergedAppearance = { ...(selectedCharacter.appearance || {}), ...detected };
-              selectedCharacter.appearance = mergedAppearance;
-              if (typeof setSelectedCharacter === "function") setSelectedCharacter({ ...selectedCharacter });
-              if (typeof onUpdateCharacterAppearance === "function") onUpdateCharacterAppearance(selectedCharacter.id, mergedAppearance);
-            }
-          }
-        } catch (e) { console.warn("[AUTO-DETECT] Failed:", e.message); }
-      }
-
-      // ── Descrizione fisica dal Character Creator ──
-      const physicalDesc = appearanceToPrompt(selectedCharacter?.appearance);
-      let subjectPrompt = "";
-      if (physicalDesc) {
-        const hasGenericSubject = /\b(a person|a man|a woman|someone|a figure)\b/i.test(scenePrompt);
-        if (hasGenericSubject) {
-          scenePrompt = scenePrompt.replace(
-            /\b(a person|a man|a woman|someone|a figure)\b/i,
-            `a ${physicalDesc}`
-          );
-        } else {
-          subjectPrompt = physicalDesc;
-        }
-      }
-      // EXPERIMENTAL: swap-first minimal subject (disattivato — il prompt completo funziona meglio)
-      // if (willUseFaceSwap) {
-      //   const genderLabel = inferGenderFromAppearance(selectedCharacter?.appearance);
-      //   const minimalSubject = genderLabel === "female" ? "a woman" : "a man";
-      //   subjectPrompt = minimalSubject;
-      // }
 
       // ── Human subject lock ──
       // Usa il testo IT per rilevare soggetto/animale; il testo EN è in resolvedEn
@@ -8153,16 +7981,20 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
       }
 
       // ── Fallback stile default se nessuno selezionato ──
-      // Per animali antropomorfi, non usare il fallback "natural skin texture" (ottimizzato per umani)
-      const effectiveStylePrefix = stylePrefix || (anthropoAnimal
-        ? "photorealistic digital art, detailed fur texture, highly detailed, 8K"
-        : "RAW photograph, natural skin texture, photorealistic, highly detailed, 8K");
+      const isAnimated = styleIdsForPrompt.some(id => ANIMATED_STYLE_IDS.has(id));
+      const effectiveStylePrefix = stylePrefix || (
+        anthropoAnimal
+          ? "photorealistic digital art, detailed fur texture, highly detailed, 8K"
+          : isAnimated
+            ? "stylized illustration, appealing character design, polished finish, highly detailed"
+            : "RAW photograph, natural skin texture, photorealistic, highly detailed, 8K"
+      );
 
-      // ── Identity preservation layer (image create) ──
+      // ── Identity preservation layer ──
       const imgReflectionCtx = detectReflectionContext({ sourcePromptIT: prompt, sourcePromptEN: resolvedEn });
-      const imgRiskyInfo = detectRiskyStyles(selectedStyles);
+      const imgRiskyInfo = detectRiskyStyles(styleIdsForPrompt);
       const imgIdentityCtx = detectIdentitySensitiveContext({
-        selectedCharacter,
+        selectedCharacter: null,
         humanType,
         promptTextEN: resolvedEn,
         promptTextIT: prompt,
@@ -8175,72 +8007,29 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
       const imgStyleClause = imgRiskyInfo.hasRiskyStyle ? buildStylePreservationClause(imgRiskyInfo.riskyIds) : null;
       const imgReflectionClause = imgReflectionCtx.hasReflectionContext ? "Apply any change consistently to the subject and any visible mirror reflection. The reflection must match the subject exactly." : null;
 
-      // ── Character subject anchoring (anti-substitution) ──
-      const charAnchoring = buildCharacterAnchoringClauses(
-        selectedCharacter, humanType, prompt, resolvedEn, imgRiskyInfo.riskyIds,
-      );
-      const imgVisualSignatureClause = buildCharacterVisualSignatureClause(selectedCharacter);
-
-      // ── Log debug prompt ──
-      console.log("[PROMPT DEBUG]", {
-        "prompt (IT visible)": prompt,
-        "resolvedEn (API)": resolvedEn,
-        scenePrompt,
-        subjectPrompt,
-        subjectLock,
-        stylePrefix,
-        effectiveStylePrefix,
-        anthropoAnimal,
-        selectedCharacterId: selectedCharacter?.id || null,
-        characterSubjectLockUsed: charAnchoring.subjectLockClause || null,
-        characterVisualSignatureClauseUsed: imgVisualSignatureClause || null,
-        roleBindingClauseUsed: charAnchoring.roleBindingClause || null,
-        antiAnimalOverrideUsed: charAnchoring.antiAnimalClause || null,
-        identitySensitiveContext: imgIdentityCtx,
-        riskyStyleContext: imgRiskyInfo,
-        identityClauseUsed: imgIdentityClause || null,
-        stylePreservationClauseUsed: imgStyleClause || null,
-        reflectionClauseUsed: imgReflectionClause || null,
-      });
-
-      const useFaceSwap = Boolean(selectedCharacter && charImg);
-
       // ── Composizione finale ──
-      let finalPrompt;
-      if (DIAGNOSTIC_PURE_FLUX && selectedCharacter) {
-        // TEST DIAGNOSTICO: solo scena + stile, nessuna clausola identity/anchoring/appearance
-        finalPrompt = [scenePrompt, effectiveStylePrefix].filter(Boolean).join(", ");
-        console.log("[TEST PURE FLUX] finalPrompt:", finalPrompt);
-      } else {
-        // Prompt COMPLETO con tutte le clausole (identity, anchoring, style, reflection).
-        finalPrompt = [
-          charAnchoring.subjectLockClause,
-          subjectPrompt,
-          imgVisualSignatureClause,
-          subjectLock,
-          scenePrompt,
-          effectiveStylePrefix,
-          imgIdentityClause,
-          imgStyleClause,
-          charAnchoring.roleBindingClause,
-          charAnchoring.antiAnimalClause,
-          imgReflectionClause,
-        ].filter(Boolean).join(", ");
-      }
+      const finalPrompt = [
+        subjectLock,
+        scenePrompt,
+        effectiveStylePrefix,
+        imgIdentityClause,
+        imgStyleClause,
+        imgReflectionClause,
+      ].filter(Boolean).join(", ");
 
       console.log("[FINAL FLUX PROMPT]", finalPrompt);
       console.log("[FINAL FLUX NEGATIVE]", [negPrompt, styleNegative].filter(Boolean).join(", "));
-      console.log("[PROMPT DEBUG] DIAGNOSTIC_PURE_FLUX:", DIAGNOSTIC_PURE_FLUX, "| selectedCharacter:", Boolean(selectedCharacter));
 
-      // ── Negative prompt: deduplicazione di negPrompt (utente) + styleNegative (preset) + anti-animal ──
-      const finalNegativePrompt = [...new Set(
-        [negPrompt, styleNegative, (DIAGNOSTIC_PURE_FLUX && selectedCharacter) ? null : charAnchoring.antiAnimalNegative]
+      // ── Negative prompt: deduplicazione + rimozione conflitti animated/photo ──
+      const rawNegTerms = [...new Set(
+        [negPrompt, styleNegative]
           .filter(Boolean)
           .join(", ")
           .split(",")
           .map(s => s.trim())
           .filter(Boolean)
-      )].join(", ");
+      )];
+      const finalNegativePrompt = filterConflictingNegatives(rawNegTerms, styleIdsForPrompt).join(", ");
 
       // ── Rileva modalità update vs create ──
       const appearanceDiffObj = diffAppearance(appearanceSnapshotRef.current, selectedCharacter?.appearance);
@@ -8249,8 +8038,8 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
 
       const styleChangedInGenerate = (() => {
         if (!sourceImageStylesRef.current) return false;
-        const src = [...sourceImageStylesRef.current].sort().join(",");
-        const cur = [...selectedStyles].sort().join(",");
+        const src = [...sanitizeImageStyleSelection(sourceImageStylesRef.current || [])].sort().join(",");
+        const cur = [...styleIdsForPrompt].sort().join(",");
         return src !== cur;
       })();
       const isStyleChangeOnly = styleChangedInGenerate && !hasAppearanceChanges && !hasEditTextChanges;
@@ -8264,7 +8053,7 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
         styleChangedInGenerate,
         isStyleChangeOnly,
         sourceStyles: sourceImageStylesRef.current,
-        currentStyles: selectedStyles,
+        currentStyles: styleIdsForPrompt,
         appearanceDiff: appearanceDiffObj,
       });
 
@@ -8289,9 +8078,9 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
           editTextEN: editTextEN,
         });
 
-        const riskyStyleInfo = detectRiskyStyles(selectedStyles);
+        const riskyStyleInfo = detectRiskyStyles(styleIdsForPrompt);
         const updateIdentityCtx = detectIdentitySensitiveContext({
-          selectedCharacter,
+          selectedCharacter: null,
           humanType: detectHumanSubject(prompt + " " + editTextEN),
           promptTextEN: editTextEN,
           promptTextIT: prompt.trim(),
@@ -8300,38 +8089,18 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
           riskyStyleIds: riskyStyleInfo.riskyIds,
           appearanceDiff: appearanceDiffObj,
         });
-        const updateHumanType = detectHumanSubject(prompt + " " + editTextEN);
-        const updateCharAnchoring = buildCharacterAnchoringClauses(
-          selectedCharacter, updateHumanType, prompt.trim(), editTextEN, riskyStyleInfo.riskyIds,
-        );
-        const updateVisualSigClause = buildCharacterVisualSignatureClause(selectedCharacter);
-        const updatePromptEN = buildProjectImageUpdatePrompt(appearanceDiffObj, editTextEN, reflectionCtx, selectedStyles, updateIdentityCtx, updateCharAnchoring, updateVisualSigClause, prompt.trim());
-
-        const updateIdClause = buildIdentityPreservationClause(updateIdentityCtx);
-        const updateStyleClause = riskyStyleInfo.hasRiskyStyle ? buildStylePreservationClause(riskyStyleInfo.riskyIds) : null;
+        const updatePromptEN = buildProjectImageUpdatePrompt(appearanceDiffObj, editTextEN, reflectionCtx, styleIdsForPrompt, updateIdentityCtx, null, null, prompt.trim());
 
         console.log("[PROJECT IMAGE UPDATE]", {
           projectImageMode: "update",
           isStyleChangeOnly,
           sourceStyles: sourceImageStylesRef.current,
-          targetStyles: selectedStyles,
+          targetStyles: styleIdsForPrompt,
           updatePromptEn: updatePromptEN,
           payloadModel: "fal-ai/flux-pro/kontext/max",
-          hasFaceSwap: Boolean(charImg),
           sourceImageUrl: projectSourceImageUrl?.slice(0, 80),
-          selectedCharacterId: selectedCharacter?.id || null,
-          characterSubjectLockUsed: updateCharAnchoring.subjectLockClause || null,
-          characterVisualSignatureClauseUsed: updateVisualSigClause || null,
-          roleBindingClauseUsed: updateCharAnchoring.roleBindingClause || null,
-          antiAnimalOverrideUsed: updateCharAnchoring.antiAnimalClause || null,
           hasReflectionContext: reflectionCtx.hasReflectionContext,
-          reflectionType: reflectionCtx.reflectionType,
-          reflectionClauseUsed: reflectionCtx.hasReflectionContext ? buildReflectionConsistencyClause(appearanceDiffObj, editTextEN) : null,
-          identitySensitiveContext: updateIdentityCtx,
-          identityClauseUsed: updateIdClause || null,
-          stylePreservationClauseUsed: updateStyleClause || null,
           hasRiskyStyle: riskyStyleInfo.hasRiskyStyle,
-          riskyIds: riskyStyleInfo.riskyIds,
           appearanceDiff: appearanceDiffObj,
         });
 
@@ -8356,30 +8125,33 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
         // ── Style transfer puro: prompt aggressivo per rigenerazione completa nello stile target ──
         let finalKontextPrompt = updatePromptEN;
         if (isStyleChangeOnly) {
-          const targetStyleDesc = selectedStyles
+          const targetAnimated = styleIdsForPrompt.some(id => ANIMATED_STYLE_IDS.has(id));
+          const targetStyleDesc = styleIdsForPrompt
             .map(sid => STYLE_PRESETS.find(s => s.id === sid))
             .filter(Boolean)
             .map(s => s.prompt)
-            .join(", ") || "photorealistic RAW photograph";
-          const targetStyleLabel = selectedStyles
+            .join(", ") || (targetAnimated ? "stylized illustration" : "photorealistic RAW photograph");
+          const targetStyleLabel = styleIdsForPrompt
             .map(sid => STYLE_PRESETS.find(s => s.id === sid)?.label)
             .filter(Boolean)
             .join(" / ") || "Realistico";
           const sourceEN = preparedEnRef.current?.en || resolvedEn || "";
           const sceneDesc = sourceEN ? ` The scene depicts: ${sourceEN}.` : "";
 
+          const materialDesc = targetAnimated
+            ? `stylized textures, appealing character design, polished ${targetStyleLabel} rendering, ` +
+              `consistent art direction, clean visual language.`
+            : `real fabric with wrinkles and texture, real human skin with pores, ` +
+              `real metal, real sky with real clouds, real concrete, real lighting with natural shadows.`;
+
           finalKontextPrompt =
             `Completely regenerate this image as a ${targetStyleDesc}. ` +
             `This is NOT a filter or overlay — create a brand new ${targetStyleLabel} image from scratch.${sceneDesc} ` +
             `The new image MUST reproduce the EXACT same scene: ` +
             `same character pose, same body position, same arm and leg placement, ` +
-            `same costume design with all details (colors, logos, patterns, cape, belt, boots, accessories), ` +
-            `same background elements (buildings, sky, street, environment), ` +
-            `same camera angle, same framing and composition. ` +
-            `But everything must look 100% ${targetStyleLabel}: ` +
-            `real fabric with wrinkles and texture, real human skin with pores, ` +
-            `real metal, real sky with real clouds, real concrete, real lighting with natural shadows. ` +
-            `Like a professional ${targetStyleLabel} capture of the exact same scene. ` +
+            `same costume design with all details (colors, logos, patterns, accessories), ` +
+            `same background elements, same camera angle, same framing and composition. ` +
+            `But everything must look 100% ${targetStyleLabel}: ${materialDesc} ` +
             `Do NOT simplify, do NOT change the pose, do NOT add or remove any element.`;
           console.log("[STYLE TRANSFER] Aggressive style transfer prompt:", finalKontextPrompt.slice(0, 200));
             setImageStatus("Cambio stile…"); setImageProgress(30);
@@ -8389,7 +8161,7 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
           prompt: finalKontextPrompt,
           image_url: sourceUrlForKontext,
           num_images: 1,
-          safety_tolerance: "6",
+          safety_tolerance: "2",
         });
         const kontextUrl = kontextResult?.images?.[0]?.url || kontextResult?.image?.url || null;
 
@@ -8402,30 +8174,6 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
         }
         imgUrl = kontextUrl;
 
-        // ── Identità facciale post-update: easel-ai face swap ──
-        if (charImg) {
-          try {
-            setImageStatus("Face swap…"); setImageProgress(60);
-            const faceDataUri = await characterImageToDataUri(charImg).catch(() => null);
-            if (faceDataUri) {
-              const faceUrl = await uploadBase64ToFal(faceDataUri);
-              imgUrl = await applyFaceIdentity(imgUrl, faceUrl, selectedCharacter?.appearance, autoRefine);
-              console.log("[UPDATE FACE-ID] Applied:", imgUrl.slice(0, 80));
-
-              // LEGACY: doppio face swap
-              // const swap1 = await falRequest("fal-ai/face-swap", { base_image_url: imgUrl, swap_image_url: faceUrl });
-              // let swappedUrl = swap1?.image?.url || swap1?.images?.[0]?.url || null;
-              // if (swappedUrl) {
-              //   const swap2 = await falRequest("fal-ai/face-swap", { base_image_url: swappedUrl, swap_image_url: faceUrl });
-              //   if (swap2?.image?.url) swappedUrl = swap2.image.url;
-              //   imgUrl = swappedUrl;
-              // }
-            }
-          } catch (faceErr) {
-            console.warn("[UPDATE FACE-ID] Failed, using Kontext image:", faceErr.message);
-          }
-        }
-
         console.log("[PROJECT IMAGE UPDATE] result:", imgUrl?.slice(0, 80));
 
         setImageStatus("Salvataggio…"); setImageProgress(90);
@@ -8437,9 +8185,7 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
           userIdea: currentIt,
           promptEN: updatePromptEN,
           promptIT: resolvedPromptIT,
-          savedStyles: selectedStyles,
-          appearanceSnapshot: { ...(selectedCharacter?.appearance || {}) },
-          characterId: selectedCharacter?.id || null,
+          savedStyles: styleIdsForPrompt,
           sourceImageUrl: projectSourceImageUrl,
           projectImageMode: "update",
         };
@@ -8450,12 +8196,10 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
             if (onSave) {
               const dataUrl = await falImageUrlToBase64(imgUrl);
               const entry = await onSave(dataUrl, updatePromptEN, {
-                resolution, steps, cfg, seed: 0, template: tmpl, faceSwap: Boolean(charImg),
-                userIdea: currentIt, promptEN: updatePromptEN, promptIT: resolvedPromptIT, selectedStyles,
-                appearanceSnapshot: { ...(selectedCharacter?.appearance || {}) },
+                resolution, steps, cfg, seed: 0, template: tmpl,
+                userIdea: currentIt, promptEN: updatePromptEN, promptIT: resolvedPromptIT, selectedStyles: styleIdsForPrompt,
                 sourceImageUrl: projectSourceImageUrl,
                 projectImageMode: "update",
-                characterId: selectedCharacter?.id || null,
               });
               if (entry?.filePath && isElectron) {
                 const nu = mediaFileUrl(entry.filePath);
@@ -8464,9 +8208,9 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
                 if (typeof setPreviewImg === "function") setPreviewImg(prev => (prev === imgUrl ? nu : prev));
                 if (typeof setProjectSourceImageUrl === "function") {
                   setProjectSourceImageUrl(nu);
-                  appearanceSnapshotRef.current = { ...(selectedCharacter?.appearance || {}) };
+                  appearanceSnapshotRef.current = {};
                   sourceImagePromptItRef.current = currentIt;
-                  sourceImageStylesRef.current = [...selectedStyles];
+                  sourceImageStylesRef.current = [...styleIdsForPrompt];
                 }
               }
             }
@@ -8479,121 +8223,22 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
           }
         })();
 
-      } else if (selectedSet && selectedCharacter) {
-        // ═══ RAMO SET + CHARACTER: Kontext inserisce personaggio nel Set ═══
-        setImageStatus("Inserimento nel set…"); setImageProgress(20);
-
-        let setImgUrl = selectedSet.remoteUrl || null;
-        if (!setImgUrl && selectedSet.filePath && isElectron && window.electronAPI?.loadFile) {
-          try {
-            const lr = await window.electronAPI.loadFile(selectedSet.filePath);
-            if (lr?.data) setImgUrl = await uploadBase64ToFal(`data:image/png;base64,${lr.data}`).catch(() => null);
-          } catch { /* noop */ }
-        }
-        if (!setImgUrl && selectedSet.imageUrl) {
-          if (selectedSet.imageUrl.startsWith("http")) setImgUrl = selectedSet.imageUrl;
-          else if (selectedSet.imageUrl.startsWith("data:")) setImgUrl = await uploadBase64ToFal(selectedSet.imageUrl).catch(() => null);
-          else if (selectedSet.imageUrl.startsWith("axstudio-local://")) {
-            const fp = filePathFromAxstudioMediaUrl(selectedSet.imageUrl);
-            if (fp && isElectron && window.electronAPI?.loadFile) {
-              const lr = await window.electronAPI.loadFile(fp);
-              if (lr?.data) setImgUrl = await uploadBase64ToFal(`data:image/png;base64,${lr.data}`).catch(() => null);
-            }
-          }
-        }
-        if (!setImgUrl) throw new Error("Impossibile caricare l'immagine del Set");
-
-        const physDesc = appearanceToPrompt(selectedCharacter.appearance);
-        const insertPrompt = [
-          `Insert ${physDesc || "the character"} into this exact scene.`,
-          scenePrompt,
-          "Keep the background, furniture, lighting, and all environment details exactly the same.",
-          "Only add the character performing the described action. The environment must remain identical.",
-        ].filter(Boolean).join(" ");
-
-        console.log("[SET INSERT] prompt:", insertPrompt.slice(0, 200));
-
-        const insertResult = await falRequest("fal-ai/flux-pro/kontext/max", {
-          image_url: setImgUrl,
-          prompt: insertPrompt,
-          num_images: 1,
-          safety_tolerance: "6",
-        });
-        const insertedUrl = insertResult?.images?.[0]?.url || insertResult?.image?.url || null;
-        if (!insertedUrl) throw new Error("Kontext: nessuna immagine generata per l'inserimento nel Set");
-
-        imgUrl = insertedUrl;
-        setImageProgress(50);
-
-        if (useFaceSwap) {
-          try {
-            setImageStatus("Face swap…"); setImageProgress(55);
-            const faceDataUri = await characterImageToDataUri(charImg).catch(() => null);
-            if (faceDataUri) {
-              const faceUrl = await uploadBase64ToFal(faceDataUri);
-              imgUrl = await applyFaceIdentity(imgUrl, faceUrl, selectedCharacter?.appearance, autoRefine);
-              console.log("[SET FACE-ID] Applied:", imgUrl.slice(0, 80));
-
-              // LEGACY: doppio face swap
-              // const swap1 = await falRequest("fal-ai/face-swap", { base_image_url: imgUrl, swap_image_url: faceUrl });
-              // let swappedUrl = swap1?.image?.url || swap1?.images?.[0]?.url || null;
-              // if (swappedUrl) {
-              //   const swap2 = await falRequest("fal-ai/face-swap", { base_image_url: swappedUrl, swap_image_url: faceUrl });
-              //   if (swap2?.image?.url) swappedUrl = swap2.image.url;
-              //   imgUrl = swappedUrl;
-              // }
-            }
-          } catch (faceErr) { console.warn("[SET FACE-ID] Failed:", faceErr.message); }
-        }
-
-        setImageStatus("Salvataggio…"); setImageProgress(90);
-
-        setGeneratedImages(p => [imgUrl, ...p.filter(x => x !== STUDIO_IMAGE_GENERATING)]);
-
-        const resolvedPromptIT = promptManuallyEdited ? editableIT : (proposedPrompt?.prompt_it || currentIt);
-        sessionPromptMap.current.set(imgUrl, {
-          userIdea: currentIt, promptEN: resolvedEn, promptIT: resolvedPromptIT,
-          savedStyles: selectedStyles, appearanceSnapshot: { ...(selectedCharacter?.appearance || {}) },
-          characterId: selectedCharacter?.id || null, setId: selectedSet.id, projectImageMode: "set-insert",
-        });
-
-        void (async () => {
-          try {
-            if (onSave) {
-              const dataUrl = await falImageUrlToBase64(imgUrl);
-              const entry = await onSave(dataUrl, resolvedPromptIT, {
-                prompt_en: resolvedEn, prompt_it: resolvedPromptIT, selectedStyles, projectImageMode: "set-insert",
-                characterId: selectedCharacter?.id || null, setId: selectedSet.id,
-              });
-              if (entry?.filePath && isElectron) {
-                const nu = mediaFileUrl(entry.filePath);
-                setGeneratedImages(p => p.map(x => x === imgUrl ? nu : x));
-                if (typeof setPreviewImg === "function") setPreviewImg(prev => (prev === imgUrl ? nu : prev));
-                sessionPromptMap.current.set(nu, sessionPromptMap.current.get(imgUrl));
-              }
-            }
-          } catch (saveErr) { console.error("[SET-INSERT SAVE]", saveErr); }
-          setImageStatus(""); setImageProgress(100);
-          setTimeout(() => { setImageProgress(0); }, 1500);
-          setGenerating(false);
-        })();
-
       } else {
-        // ═══ RAMO CREATE: generazione immagine ═══
+        // ═══ RAMO CREATE: generazione immagine con FLUX 2 Pro ═══
         setImageStatus("Generazione immagine…"); setImageProgress(15);
-        console.log("[BASE GEN] Generating with fal-ai/flux-pro/v1.1-ultra, style:", selectedStyles);
-        const baseResult = await falRequest("fal-ai/flux-pro/v1.1-ultra", {
+        console.log("[BASE GEN] Generating with fal-ai/flux-2-pro, style:", styleIdsForPrompt);
+        const baseResult = await falRequest("fal-ai/flux-2-pro", {
           prompt: finalPrompt,
           ...(finalNegativePrompt ? { negative_prompt: finalNegativePrompt } : {}),
           aspect_ratio,
           num_images: 1,
           enable_safety_checker: false,
-          safety_tolerance: "6",
+          safety_tolerance: "2",
         });
         const baseImageUrl = baseResult?.images?.[0]?.url || baseResult?.image?.url || null;
 
         if (!baseImageUrl) {
-          console.error("fal.ai FLUX: no image URL in response", baseResult);
+          console.error("fal.ai FLUX 2 Pro: no image URL in response", baseResult);
           setImageStatus(""); setImageProgress(0);
           setGeneratedImages(p => p.filter(x => x !== STUDIO_IMAGE_GENERATING));
           setGenerating(false);
@@ -8602,47 +8247,6 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
 
         imgUrl = baseImageUrl;
         setImageProgress(50);
-
-        // ── Identità facciale: doppio face-swap classico + refine opzionale ──
-        if (DIAGNOSTIC_LEVEL >= 1 && DIAGNOSTIC_LEVEL < 4) {
-          console.log("[DIAGNOSTIC L" + DIAGNOSTIC_LEVEL + "] Face-swap SKIPPED — testing FLUX output only");
-        } else if (DIAGNOSTIC_LEVEL === 4 && useFaceSwap) {
-          // DIAGNOSTIC L4: singolo face-swap, no secondo pass, no refine
-          try {
-            setImageStatus("Face swap…"); setImageProgress(55);
-            const faceDataUri = await characterImageToDataUri(charImg).catch(() => null);
-            if (faceDataUri) {
-              const faceUrl = await uploadBase64ToFal(faceDataUri);
-              console.log("[DIAGNOSTIC L4] FLUX image:", imgUrl.slice(0, 60));
-              const swap1 = await falRequest("fal-ai/face-swap", {
-                base_image_url: imgUrl,
-                swap_image_url: faceUrl,
-              });
-              const swapResult = swap1?.image?.url || swap1?.images?.[0]?.url || null;
-              if (swapResult) {
-                imgUrl = swapResult;
-                console.log("[DIAGNOSTIC L4] Face swap applied, result:", swapResult.slice(0, 60));
-              } else {
-                console.warn("[DIAGNOSTIC L4] Face swap returned no image, using FLUX image");
-              }
-            }
-          } catch (faceErr) {
-            console.warn("[DIAGNOSTIC L4] Face swap failed:", faceErr.message);
-          }
-        } else if (useFaceSwap) {
-          try {
-            setImageStatus("Face swap…"); setImageProgress(55);
-            const faceDataUri = await characterImageToDataUri(charImg).catch(() => null);
-            if (faceDataUri) {
-              const faceUrl = await uploadBase64ToFal(faceDataUri);
-              imgUrl = await applyFaceIdentity(imgUrl, faceUrl, selectedCharacter?.appearance, autoRefine);
-              console.log("[CREATE FACE-ID] Applied:", imgUrl.slice(0, 80));
-            }
-            setImageProgress(80);
-          } catch (faceErr) {
-            console.warn("[CREATE FACE-ID] Failed, using base image:", faceErr.message);
-          }
-        }
 
         setImageStatus("Salvataggio…"); setImageProgress(90);
 
@@ -8653,9 +8257,7 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
           userIdea: currentIt,
           promptEN: resolvedEn,
           promptIT: resolvedPromptIT,
-          savedStyles: selectedStyles,
-          appearanceSnapshot: { ...(selectedCharacter?.appearance || {}) },
-          characterId: selectedCharacter?.id || null,
+          savedStyles: styleIdsForPrompt,
           projectImageMode: "create",
         };
         sessionPromptMap.current.set(imgUrl, sessionMeta);
@@ -8665,11 +8267,9 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
             if (onSave) {
               const dataUrl = await falImageUrlToBase64(imgUrl);
               const entry = await onSave(dataUrl, finalPrompt, {
-                resolution, steps, cfg, seed: 0, template: tmpl, faceSwap: useFaceSwap,
-                userIdea: currentIt, promptEN: resolvedEn, promptIT: resolvedPromptIT, selectedStyles,
-                appearanceSnapshot: { ...(selectedCharacter?.appearance || {}) },
+                resolution, steps, cfg, seed: 0, template: tmpl,
+                userIdea: currentIt, promptEN: resolvedEn, promptIT: resolvedPromptIT, selectedStyles: styleIdsForPrompt,
                 projectImageMode: "create",
-                characterId: selectedCharacter?.id || null,
               });
               if (entry?.filePath && isElectron) {
                 const nu = mediaFileUrl(entry.filePath);
@@ -8678,9 +8278,9 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
                 if (typeof setPreviewImg === "function") setPreviewImg(prev => (prev === imgUrl ? nu : prev));
                 if (currentProjectId && typeof setProjectSourceImageUrl === "function") {
                   setProjectSourceImageUrl(nu);
-                  appearanceSnapshotRef.current = { ...(selectedCharacter?.appearance || {}) };
+                  appearanceSnapshotRef.current = {};
                   sourceImagePromptItRef.current = currentIt;
-                  sourceImageStylesRef.current = [...selectedStyles];
+                  sourceImageStylesRef.current = [...styleIdsForPrompt];
                 }
               }
             }
@@ -8706,12 +8306,12 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
     setTranslateErr("");
     setTranslating(true);
     try {
-      const styleContext = selectedStyles
+      const styleContext = sanitizeImageStyleSelection(selectedStyles)
         .map(sid => STYLE_PRESETS.find(s => s.id === sid)?.label)
         .filter(Boolean)
         .join(", ");
       const prefix = [scenePrefixForAI(), styleContext ? `Style: ${styleContext}` : ""].filter(Boolean).join(" | ");
-      const out = await translatePrompt(prompt.trim(), prefix, charPhysicalContext);
+      const out = await translatePrompt(prompt.trim(), prefix, "");
       if (out) {
         // Salva EN internamente — la textarea IT NON viene toccata
         preparedEnRef.current = { en: out.prompt_en, itSource: prompt.trim() };
@@ -8736,7 +8336,7 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
     setTranslateErr("");
     setTranslating(true);
     try {
-      const out = await translatePrompt(editableIT.trim(), scenePrefixForAI(), charPhysicalContext);
+      const out = await translatePrompt(editableIT.trim(), scenePrefixForAI(), "");
       if (out) {
         preparedEnRef.current = { en: out.prompt_en, itSource: editableIT.trim() };
         enIsStaleRef.current = false;
@@ -8820,10 +8420,18 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
           <span style={{ fontSize: 11, color: AX.muted, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em" }}>Stile</span>
           {selectedStyles.length > 0 && (
-            <button type="button" onClick={() => setSelectedStyles([])} style={{ fontSize: 10, color: AX.muted, background: "none", border: "none", cursor: "pointer", padding: 0 }}>
+            <button type="button" onClick={() => { setStyleCompatFeedback(null); setSelectedStyles([]); }} style={{ fontSize: 10, color: AX.muted, background: "none", border: "none", cursor: "pointer", padding: 0 }}>
               Rimuovi tutti
             </button>
           )}
+        </div>
+        {styleCompatFeedback && (
+          <div style={{ fontSize: 11, color: AX.orange, marginBottom: 10, lineHeight: 1.4 }}>
+            ⚠️ {styleCompatFeedback}
+          </div>
+        )}
+        <div style={{ fontSize: 10, color: AX.muted, marginBottom: 10, lineHeight: 1.35 }}>
+          Puoi combinare più stili dello stesso gruppo (es. Realistico + Cinematografico). Non mescolare fotorealismo, animazione 2D/3D stilizzata e render 3D tecnico tra loro.
         </div>
         {/* Grid multi-riga — tutte le card, vanno a capo automaticamente */}
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(110px, 1fr))", gap: 10 }}>
@@ -8835,9 +8443,18 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
                 key={s.id}
                 type="button"
                 title={s.label}
-                onClick={() => setSelectedStyles(prev =>
-                  prev.includes(s.id) ? [] : [s.id]
-                )}
+                onClick={() => {
+                  setSelectedStyles(prev => {
+                    const r = tryAppendImageStyle(prev, s.id);
+                    if (!r.ok) {
+                      setStyleCompatFeedback(r.message);
+                      setTimeout(() => setStyleCompatFeedback(null), 5500);
+                      return prev;
+                    }
+                    setStyleCompatFeedback(null);
+                    return r.next;
+                  });
+                }}
                 style={{
                   width: "100%",
                   aspectRatio: "1 / 1",
@@ -9069,22 +8686,20 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
             : <><HiSparkles size={15} style={{ color: AX.gold }} />Prepara prompt</>}
         </button>
 
-        {/* Genera / Aggiorna / Face Swap — primario */}
+        {/* Genera / Aggiorna — primario */}
         {(() => {
-          const canAct = isFaceSwapOnlyMode || prompt.trim() || isImageUpdateMode;
+          const canAct = prompt.trim() || isImageUpdateMode;
           const btnDisabled = generating || !canAct;
           const btnBg = btnDisabled ? AX.surface
-            : isFaceSwapOnlyMode ? "linear-gradient(135deg, #8b5cf6 0%, #ec4899 100%)"
             : isImageUpdateMode ? "linear-gradient(135deg, #FF8A2A 0%, #FF4FA3 100%)"
             : AX.gradPrimary;
           const btnShadow = btnDisabled ? "none"
-            : isFaceSwapOnlyMode ? "0 8px 28px rgba(139,92,246,0.3)"
             : isImageUpdateMode ? "0 8px 28px rgba(255,138,42,0.3)"
             : "0 8px 28px rgba(123,77,255,0.3)";
           return (
             <button
               type="button"
-              onClick={() => { isFaceSwapOnlyMode ? void handleFaceSwapOnly() : void generate(); }}
+              onClick={() => { void generate(); }}
               disabled={btnDisabled}
               style={{
                 flex: "1.6 1 0", padding: "13px 20px", borderRadius: 12, border: "none",
@@ -9095,8 +8710,7 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
               }}
             >
               {generating
-                ? <><div style={{ width: 14, height: 14, border: "2px solid rgba(255,255,255,0.2)", borderTopColor: "#fff", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />{imageStatus || (isFaceSwapOnlyMode ? "Face swap…" : isStyleChangeOnlyMode ? "Cambio stile…" : isImageUpdateMode ? "Aggiornamento…" : "Generazione…")}{imageProgress > 0 && imageProgress < 100 && <span style={{ fontSize: 11, opacity: 0.7, fontVariantNumeric: "tabular-nums" }}>{imageProgress}%</span>}</>
-                : isFaceSwapOnlyMode ? <>{"🔄 Avvia Face Swap"}</>
+                ? <><div style={{ width: 14, height: 14, border: "2px solid rgba(255,255,255,0.2)", borderTopColor: "#fff", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />{imageStatus || (isStyleChangeOnlyMode ? "Cambio stile…" : isImageUpdateMode ? "Aggiornamento…" : "Generazione…")}{imageProgress > 0 && imageProgress < 100 && <span style={{ fontSize: 11, opacity: 0.7, fontVariantNumeric: "tabular-nums" }}>{imageProgress}%</span>}</>
                 : isStyleChangeOnlyMode ? <>{"🎨 Cambia Stile"}</>
                 : isImageUpdateMode ? <>{"🔄 Aggiorna Immagine"}</>
                 : <>{"⚡ Genera Immagine"}</>}
@@ -9105,18 +8719,6 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
         })()}
       </div>
 
-      {selectedCharacter && (
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}>
-          <label style={{ fontSize: 11, color: "#888" }}>✨ Rifinitura auto</label>
-          <button onClick={() => setAutoRefine(prev => !prev)} style={{
-            background: autoRefine ? "#8b5cf6" : "rgba(255,255,255,0.15)",
-            border: "none", borderRadius: 12, padding: "3px 10px",
-            color: "white", fontSize: 10, cursor: "pointer"
-          }}>
-            {autoRefine ? "ON" : "OFF"}
-          </button>
-        </div>
-      )}
 
       {previewImg && (
         <div onClick={() => setPreviewImg(null)} style={{ position: "fixed", inset: 0, background: "rgba(10,10,15,0.88)", backdropFilter: "blur(12px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 2000, cursor: "zoom-out" }}>
@@ -9955,7 +9557,7 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
             aspect_ratio: frameAspect,
             num_images: 1,
             enable_safety_checker: false,
-            safety_tolerance: "6",
+            safety_tolerance: "2",
           });
           imageUrl = frameResult?.images?.[0]?.url || frameResult?.image?.url || null;
           if (!imageUrl) throw new Error("Nessun frame d'apertura generato");
@@ -10007,7 +9609,7 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
             aspect_ratio: frameAspect,
             num_images: 1,
             enable_safety_checker: false,
-            safety_tolerance: "6",
+            safety_tolerance: "2",
           });
           imageUrl = frameResult?.images?.[0]?.url || frameResult?.image?.url || null;
           if (!imageUrl) throw new Error("Nessun frame generato");
@@ -10671,7 +10273,7 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
               image_url: setUrl,
               prompt: insertPrompt,
               num_images: 1,
-              safety_tolerance: "6",
+              safety_tolerance: "2",
             });
             let setFrame = insertResult?.images?.[0]?.url || insertResult?.image?.url || null;
 

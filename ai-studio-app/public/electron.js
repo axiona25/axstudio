@@ -192,6 +192,16 @@ ipcMain.handle("load-json", async (_event, { fileName }) => {
   }
 });
 
+ipcMain.handle("delete-json", async (_event, { fileName }) => {
+  try {
+    const filePath = path.join(DATA_DIR, fileName);
+    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    return { success: true };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+});
+
 // ── List files in a subdirectory ──
 ipcMain.handle("list-files", async (_event, { subDir }) => {
   try {

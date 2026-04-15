@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   saveJson: (fileName, data) =>
     ipcRenderer.invoke("save-json", { fileName, data }),
   loadJson: (fileName) => ipcRenderer.invoke("load-json", { fileName }),
+  deleteJson: (fileName) => ipcRenderer.invoke("delete-json", { fileName }),
 
   // ── File management ──
   listFiles: (subDir) => ipcRenderer.invoke("list-files", { subDir }),

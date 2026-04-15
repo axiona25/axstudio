@@ -25,7 +25,7 @@ const url    = require("url");
 // ── Config ──────────────────────────────────────────────────────────────────
 const FAL_API_KEY = process.env.FAL_API_KEY || "";
 const FAL_ENDPOINT = "fal.run";
-const MODEL = "fal-ai/flux-pro/v1.1-ultra";
+const MODEL = "fal-ai/flux-2-pro";
 
 const MANIFEST_PATH = path.join(__dirname, "../public/UI/style-thumbnails/THUMBNAIL_MANIFEST.json");
 const OUT_IMAGE = path.join(__dirname, "../public/UI/style-thumbnails/image");
@@ -107,7 +107,7 @@ async function generateThumbnail(entry, outDir) {
     aspect_ratio: "1:1",
     num_images: 1,
     enable_safety_checker: false,
-    safety_tolerance: "6",
+    safety_tolerance: "2",
   };
   if (entry.negative_prompt) {
     payload.negative_prompt = entry.negative_prompt;
