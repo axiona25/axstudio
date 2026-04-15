@@ -10133,16 +10133,16 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
         finalPrompt += `. Ambient sounds: ${clipAmbient}`;
       }
 
-      // ── Audio routing: ElevenLabs = voce esterna (ffmpeg mix dopo), Kling = voce interna ──
-      // ElevenLabs → Kling genera SOLO ambient (no speech), voce mixata dopo con ffmpeg
+      // ── Audio routing ──
+      // ElevenLabs → Kling SEMPRE muto (generate_audio: false), voce mixata dopo con ffmpeg
       // Kling voice → Kling genera speech + ambient
-      // Solo ambient → Kling genera ambient
+      // Solo ambient, no voce → Kling genera ambient
       // Nessun audio → Kling silent
       const klingGenerateAudio = isElevenLabsVoice
-        ? !!clipAmbient          // ElevenLabs: audio solo per ambient, MAI speech
+        ? false
         : isKlingVoice
-          ? !!(clipDialogue || clipAmbient)  // Kling voice: speech + ambient
-          : !!clipAmbient;       // Nessuna voce: solo ambient
+          ? !!(clipDialogue || clipAmbient)
+          : !!clipAmbient;
       console.log("[AUDIO ROUTING]", { isElevenLabs: isElevenLabsVoice, isKling: isKlingVoice, hasDialogue: !!clipDialogue, hasAmbient: !!clipAmbient, generate_audio: klingGenerateAudio, willMixElevenLabsAfter: isElevenLabsVoice && !!clipDialogue });
 
       // ── Kling O3 Reference-to-Video: preserva identità, costume, sfondo ──
@@ -11403,7 +11403,7 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
                   style={{ flex: "1.6 1 0", padding: "13px 20px", borderRadius: 12, border: "none", background: btnDisabled ? AX.surface : "linear-gradient(135deg, #FF4FA3 0%, #7B4DFF 100%)", color: btnDisabled ? AX.muted : "#fff", fontWeight: 800, fontSize: 14, cursor: btnDisabled ? "not-allowed" : "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 7, minHeight: 46, boxShadow: btnDisabled ? "none" : "0 8px 28px rgba(255,79,163,0.3)", transition: "all 0.15s ease" }}
                 >
                   {generating
-                    ? <><div style={{ width: 14, height: 14, border: "2px solid rgba(255,255,255,0.2)", borderTopColor: "#fff", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />{videoStatus || "Generazione…"}</>
+                    ? <><div style={{ width: 14, height: 14, border: "2px solid rgba(255,255,255,0.2)", borderTopColor: "#fff", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />Generazione in corso…</>
                     : <>{"🎬 Genera Video"}</>}
                 </button>
               );
