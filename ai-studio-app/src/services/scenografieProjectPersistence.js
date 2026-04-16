@@ -624,6 +624,116 @@ function mergePcmChapterAndPoolForPlan(plan, pcmChapter, pcmPool) {
  * @param {object} project — workspace serializzato (o payload con `chapters`)
  * @returns {object}
  */
+function migrationNormalizeHttpMaster(val) {
+  const s = String(val ?? "").trim();
+  return isHttpMasterUrl(s) ? s : "";
+}
+
+/**
+ * Dopo il merge canonico master (senza cambiare URL scelti in collisione): imposta `source` e
+ * `pendingManualReview` + dedup URL condiviso tra pcid distinti. Un log riepilogativo è emesso
+ * una sola volta a fine `migrateProjectToPcidSchema`.
+ */
+function applyPcidMigrationPendingAndSourcePolicy(
+  pcidToCanonicalMaster,
+  membersByNk,
+  globalNkToPcid,
+  snapByChapterId,
+  nkUrlCollision,
+) {
+  const namedPcids = new Set();
+  for (const [nk, members] of membersByNk) {
+    const pcid = globalNkToPcid[nk];
+    if (!looksLikePcidKey(pcid)) continue;
+    namedPcids.add(pcid);
+    const row = pcidToCanonicalMaster[pcid];
+    if (!row || typeof row !== "object") continue;
+    if (row.source === PCM_SOURCE_USER_CANONICAL_LOCK) {
+      row.pendingManualReview = false;
+      continue;
+    }
+    if (nkUrlCollision.get(nk)) {
+      row.source = "migrated_id_and_name";
+      row.pendingManualReview = true;
+      continue;
+    }
+    const m0 = members[0];
+    const snap = snapByChapterId.get(m0.chapterId);
+    if (!snap) continue;
+    const charId = m0.charId;
+    const byId = migrationNormalizeHttpMaster(snap.miIn?.[charId]);
+    const byName = migrationNormalizeHttpMaster(snap.mbnIn?.[nk]);
+
+    let source = "migrated_pcid_layout";
+    let pending = true;
+
+    if (!byId && byName) {
+      source = "migrated_name_only";
+      pending = true;
+    } else if (byId && byName) {
+      if (byId === byName) {
+        source = "migrated_id_and_name_same_url";
+        pending = false;
+      } else {
+        source = "migrated_id_and_name";
+        pending = true;
+      }
+    } else if (byId && !byName) {
+      source = "migrated_id_only";
+      pending = true;
+    }
+
+    row.source = source;
+    row.pendingManualReview = pending;
+  }
+
+  for (const pcid of Object.keys(pcidToCanonicalMaster)) {
+    if (!looksLikePcidKey(pcid)) continue;
+    if (namedPcids.has(pcid)) continue;
+    const row = pcidToCanonicalMaster[pcid];
+    if (!row || typeof row !== "object") continue;
+    if (row.source === PCM_SOURCE_USER_CANONICAL_LOCK) {
+      row.pendingManualReview = false;
+      continue;
+    }
+    row.source = "migrated_unnamed_slot";
+    row.pendingManualReview = true;
+  }
+
+  const urlToPcids = new Map();
+  for (const [pcid, row] of Object.entries(pcidToCanonicalMaster)) {
+    if (!looksLikePcidKey(pcid)) continue;
+    const u = migrationNormalizeHttpMaster(row.masterImageUrl);
+    if (!u) continue;
+    if (!urlToPcids.has(u)) urlToPcids.set(u, []);
+    urlToPcids.get(u).push(pcid);
+  }
+  for (const [, pcids] of urlToPcids) {
+    if (pcids.length <= 1) continue;
+    for (const p of pcids) {
+      const row = pcidToCanonicalMaster[p];
+      if (row && typeof row === "object" && row.source !== PCM_SOURCE_USER_CANONICAL_LOCK) {
+        row.pendingManualReview = true;
+      }
+    }
+  }
+}
+
+function tallyPcidMigrationPendingPolicyLog(pcidToCanonicalMaster) {
+  let nonPending = 0;
+  let pending = 0;
+  const reasons = {};
+  for (const [pcid, row] of Object.entries(pcidToCanonicalMaster)) {
+    if (!looksLikePcidKey(pcid)) continue;
+    if (!row || typeof row !== "object") continue;
+    if (row.pendingManualReview === true) pending += 1;
+    else nonPending += 1;
+    const s = String(row.source || "unknown");
+    reasons[s] = (reasons[s] || 0) + 1;
+  }
+  return { nonPending, pending, reasons };
+}
+
 export function migrateProjectToPcidSchema(project) {
   if (!project || typeof project !== "object") return project;
   const schemaV = project.projectSchemaVersion;
@@ -689,6 +799,7 @@ export function migrateProjectToPcidSchema(project) {
     console.info(
       `[PCID MIGRATION · DIALOG LINES REMAP] ${dialogLineRemapCount}`,
     );
+    console.info(`[PCID MIGRATION · PENDING REVIEW POLICY] nonPending=0 pending=0 reasons={}`);
     return out;
   }
 
@@ -768,7 +879,7 @@ export function migrateProjectToPcidSchema(project) {
     const mbnIn = masterByCharNameValuesAsUrlsForLegacy(data.masterByCharName, pcmIn);
     const capIn = data.characterApprovalMap && typeof data.characterApprovalMap === "object" ? { ...data.characterApprovalMap } : {};
     const filled = migrateLegacyToProjectCharacterMasters(plan, miIn, mbnIn, capIn, pcmIn, {});
-    chapterSnaps.push({ ch, chapterId, data, plan, miIn, pcmIn, capIn, filled });
+    chapterSnaps.push({ ch, chapterId, data, plan, miIn, mbnIn, pcmIn, capIn, filled });
   }
 
   const snapByChapterId = new Map(chapterSnaps.map((s) => [s.chapterId, s]));
@@ -823,6 +934,8 @@ export function migrateProjectToPcidSchema(project) {
   const pcidToCanonicalApproval = {};
   /** @type {Record<string, object|undefined>} */
   const pcidToCanonicalVoice = {};
+  /** @type {Map<string, boolean>} */
+  const nkUrlCollision = new Map();
 
   for (const [nk, members] of membersByNk) {
     const pcid = globalNkToPcid[nk];
@@ -835,6 +948,7 @@ export function migrateProjectToPcidSchema(project) {
       };
     });
     const uniqUrls = [...new Set(pcmRows.map((r) => String(r.masterImageUrl || "").trim()).filter(Boolean))].sort();
+    nkUrlCollision.set(nk, uniqUrls.length > 1);
     const mergedPcm = mergePcmSnapshotRows(pcmRows.length ? pcmRows : [{}]);
     if (uniqUrls.length > 1) {
       const cand = members.map((m) => `${m.chapterId}/${m.charId}=${m.url || "∅"}`).join(" | ");
@@ -933,6 +1047,15 @@ export function migrateProjectToPcidSchema(project) {
       if (v && typeof v === "object") pcidToCanonicalVoice[pcid] = { ...v };
     }
   }
+
+  applyPcidMigrationPendingAndSourcePolicy(
+    pcidToCanonicalMaster,
+    membersByNk,
+    globalNkToPcid,
+    snapByChapterId,
+    nkUrlCollision,
+  );
+  const pendingPolicyTally = tallyPcidMigrationPendingPolicyLog(pcidToCanonicalMaster);
 
   for (const snap of chapterSnaps) {
     const { chapterId, data, plan } = snap;
@@ -1128,6 +1251,9 @@ export function migrateProjectToPcidSchema(project) {
   console.info(
     `[PCID MIGRATION] done chapters=${chapters.length} voiceRemap=${voiceRemapCount} voiceBucketsCollapsed=${voiceBucketsCollapsedCount} dialogLineRemap=${dialogLineRemapCount}`,
   );
+  console.info(
+    `[PCID MIGRATION · PENDING REVIEW POLICY] nonPending=${pendingPolicyTally.nonPending} pending=${pendingPolicyTally.pending} reasons=${JSON.stringify(pendingPolicyTally.reasons)}`,
+  );
 
   return out;
 }
@@ -1272,7 +1398,7 @@ export function migrateLegacyToProjectCharacterMasters(
         if (byId === byName) {
           url = byId;
           source = "migrated_id_and_name_same_url";
-          pendingManualReview = true;
+          pendingManualReview = false;
         } else {
           url = byName;
           source = "migrated_reconciled_prefer_name";
