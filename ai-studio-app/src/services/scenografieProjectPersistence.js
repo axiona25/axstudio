@@ -30,6 +30,9 @@ export const SCENOGRAFIA_INDEX_VERSION = 1;
 /** File root: workspace narrativo (progetto → capitoli → payload editor per capitolo). */
 export const SCENOGRAFIA_WORKSPACE_VERSION = 2;
 
+/** Schema progetto: 2 = identità personaggio per `pcid` (pool e lookup per pcid). */
+export const SCENOGRAFIA_PROJECT_SCHEMA_VERSION_PCID = 2;
+
 /** @typedef {'none'|'production'|'completed'} ScenografiaVideoPhase */
 
 /** Montaggio filmato finale (auto-montaggio) — separato dalla navigazione «Free video». */
@@ -324,6 +327,577 @@ function normCharNameForMasterPool(name) {
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .trim();
+}
+
+const PCID_RANDOM_HEX_LEN = 6;
+const PCID_KEY_RE = /^pcid_[0-9a-f]{6}$/;
+
+function looksLikePcidKey(s) {
+  return PCID_KEY_RE.test(String(s || "").trim());
+}
+
+function generatePcidCandidate() {
+  let hex = "";
+  for (let i = 0; i < PCID_RANDOM_HEX_LEN; i++) {
+    hex += Math.floor(Math.random() * 16).toString(16);
+  }
+  return `pcid_${hex}`;
+}
+
+/**
+ * @param {Set<string>} usedPcids
+ * @returns {string}
+ */
+function allocatePcid(usedPcids) {
+  for (let n = 0; n < 10000; n++) {
+    const p = generatePcidCandidate();
+    if (!usedPcids.has(p)) {
+      usedPcids.add(p);
+      return p;
+    }
+  }
+  throw new Error("[PCID MIGRATION] impossibile allocare pcid (collisioni eccessive)");
+}
+
+function parseIsoMs(s) {
+  const t = Date.parse(String(s || ""));
+  return Number.isFinite(t) ? t : 0;
+}
+
+function voiceHasCanonicalLock(v) {
+  if (!v || typeof v !== "object") return false;
+  if (v.canonicalLock === true || v.voiceCanonicalLock === true) return true;
+  if (v.source === PCM_SOURCE_USER_CANONICAL_LOCK) return true;
+  return false;
+}
+
+function voiceUpdatedMs(v) {
+  return parseIsoMs(v?.updatedAt);
+}
+
+function charLocalKey(chapterId, charId) {
+  return `${String(chapterId || "").trim()}::${String(charId || "").trim()}`;
+}
+
+/**
+ * Migrazione isolata workspace → `projectSchemaVersion` 2: master, approval, voci e riferimenti scena/clip
+ * passano da chiavi `char_N` a `pcid_*` per identità stabile. Idempotente se `projectSchemaVersion >= 2`.
+ *
+ * Policy (3 fasi): (1) globale — snapshot solo dai capitoli (no pool workspace): stesso `normName` → **un solo
+ * `pcid`** in tutto il progetto; merge master/voci cross-capitolo con priorità lock/`updatedAt`/lessicografico;
+ * senza nome → un `pcid` per `(chapterId, char_N)`. (2) per capitolo — remap scene/clip/voci con mappe locali.
+ * (3) pool workspace — `projectMasterByCharName` con chiavi `normName` pure. Legacy `masterByCharName` URL →
+ * `masterByCharNameValuesAsUrlsForLegacy`.
+ *
+ * @param {object} project — workspace serializzato (o payload con `chapters`)
+ * @returns {object}
+ */
+export function migrateProjectToPcidSchema(project) {
+  if (!project || typeof project !== "object") return project;
+  const schemaV = project.projectSchemaVersion;
+  if (typeof schemaV === "number" && schemaV >= SCENOGRAFIA_PROJECT_SCHEMA_VERSION_PCID) {
+    return project;
+  }
+
+  const out = JSON.parse(JSON.stringify(project));
+  const usedPcids = new Set();
+  const seedMaps = [
+    out.projectCharacterMasters,
+    out.projectMasterImages,
+    out.projectCharacterApprovalMap,
+  ];
+  for (const m of seedMaps) {
+    if (m && typeof m === "object") {
+      for (const k of Object.keys(m)) {
+        if (looksLikePcidKey(k)) usedPcids.add(k);
+      }
+    }
+  }
+
+  let voiceRemapCount = 0;
+  let voiceBucketsCollapsedCount = 0;
+  let dialogLineRemapCount = 0;
+
+  const chapters = Array.isArray(out.chapters) ? [...out.chapters] : [];
+  chapters.sort((a, b) => (a.sortOrder - b.sortOrder) || String(a.id).localeCompare(String(b.id)));
+
+  const allPlanCharIds = new Set();
+  for (const ch of chapters) {
+    const plan = ch?.data?.plan;
+    for (const c of plan?.characters || []) {
+      if (c?.id) allPlanCharIds.add(String(c.id).trim());
+    }
+  }
+
+  const oldPoolPcm =
+    project.projectCharacterMasters && typeof project.projectCharacterMasters === "object"
+      ? { ...project.projectCharacterMasters }
+      : {};
+  const oldPoolPm =
+    project.projectMasterImages && typeof project.projectMasterImages === "object"
+      ? { ...project.projectMasterImages }
+      : {};
+  const oldPoolPam =
+    project.projectCharacterApprovalMap && typeof project.projectCharacterApprovalMap === "object"
+      ? { ...project.projectCharacterApprovalMap }
+      : {};
+
+  console.info(
+    `[PCID MIGRATION] start chapters=${chapters.length} planCharIds=${allPlanCharIds.size} schemaVersion→${SCENOGRAFIA_PROJECT_SCHEMA_VERSION_PCID}`,
+  );
+
+  if (chapters.length === 0) {
+    out.projectSchemaVersion = SCENOGRAFIA_PROJECT_SCHEMA_VERSION_PCID;
+    console.info(
+      `[PCID MIGRATION] no chapters — bump only voiceRemap=${voiceRemapCount} voiceBucketsCollapsed=${voiceBucketsCollapsedCount} dialogLineRemap=${dialogLineRemapCount}`,
+    );
+    console.info(
+      `[PCID MIGRATION · VOICE REMAP] ${voiceRemapCount}`,
+    );
+    console.info(
+      `[PCID MIGRATION · DIALOG LINES REMAP] ${dialogLineRemapCount}`,
+    );
+    return out;
+  }
+
+  /**
+   * Valori `masterByCharName` già in formato pcid (re-run / dati parziali): risolvi a URL per `migrateLegacy`.
+   * @param {Record<string, string>} mbn
+   * @param {Record<string, object>} pcm
+   */
+  function masterByCharNameValuesAsUrlsForLegacy(mbn, pcm) {
+    const raw = mbn && typeof mbn === "object" ? mbn : {};
+    const out = {};
+    const p = pcm && typeof pcm === "object" ? pcm : {};
+    for (const [k, v] of Object.entries(raw)) {
+      let val = String(v ?? "").trim();
+      if (!val) continue;
+      if (looksLikePcidKey(val)) {
+        const u = p[val]?.masterImageUrl ? String(p[val].masterImageUrl).trim() : "";
+        if (u) out[k] = u;
+        continue;
+      }
+      out[k] = val;
+    }
+    return out;
+  }
+
+  function mergeCharacterApproval(dst, src) {
+    if (!src || typeof src !== "object") return dst;
+    const a = dst && typeof dst === "object" ? { ...dst } : {};
+    const b = src;
+    return {
+      ...a,
+      ...b,
+      approved: a.approved === true || b.approved === true,
+      version: Math.max(
+        typeof a.version === "number" && Number.isFinite(a.version) ? a.version : 0,
+        typeof b.version === "number" && Number.isFinite(b.version) ? b.version : 0,
+      ),
+    };
+  }
+
+  function mergePcmSnapshotRows(rows) {
+    const list = (rows || []).filter((x) => x && typeof x === "object");
+    if (!list.length) return {};
+    const sorted = [...list].sort((a, b) => {
+      const la = a?.source === PCM_SOURCE_USER_CANONICAL_LOCK ? 1 : 0;
+      const lb = b?.source === PCM_SOURCE_USER_CANONICAL_LOCK ? 1 : 0;
+      if (la !== lb) return lb - la;
+      const ta = parseIsoMs(a?.updatedAt);
+      const tb = parseIsoMs(b?.updatedAt);
+      if (ta !== tb) return tb - ta;
+      return String(a?.masterImageUrl || "").localeCompare(String(b?.masterImageUrl || ""));
+    });
+    return { ...sorted[0] };
+  }
+
+  function compareVoiceLocationCandidates(a, b) {
+    const la = voiceHasCanonicalLock(a.val) ? 1 : 0;
+    const lb = voiceHasCanonicalLock(b.val) ? 1 : 0;
+    if (la !== lb) return lb - la;
+    const ta = voiceUpdatedMs(a.val);
+    const tb = voiceUpdatedMs(b.val);
+    if (ta !== tb) return tb - ta;
+    return String(a.locKey).localeCompare(String(b.locKey));
+  }
+
+  const chapterSnaps = [];
+  for (const ch of chapters) {
+    const chapterId = String(ch?.id || "").trim() || "?";
+    const data = ch?.data && typeof ch.data === "object" ? ch.data : null;
+    if (!data) continue;
+    const plan = data.plan;
+    if (!plan || typeof plan !== "object" || !Array.isArray(plan.characters) || plan.characters.length === 0) {
+      continue;
+    }
+    const miIn = data.masterImages && typeof data.masterImages === "object" ? { ...data.masterImages } : {};
+    const pcmIn = data.projectCharacterMasters && typeof data.projectCharacterMasters === "object" ? { ...data.projectCharacterMasters } : {};
+    const mbnIn = masterByCharNameValuesAsUrlsForLegacy(data.masterByCharName, pcmIn);
+    const capIn = data.characterApprovalMap && typeof data.characterApprovalMap === "object" ? { ...data.characterApprovalMap } : {};
+    const filled = migrateLegacyToProjectCharacterMasters(plan, miIn, mbnIn, capIn);
+    chapterSnaps.push({ ch, chapterId, data, plan, miIn, pcmIn, capIn, filled });
+  }
+
+  const snapByChapterId = new Map(chapterSnaps.map((s) => [s.chapterId, s]));
+
+  /** @type {Map<string, object[]>} */
+  const membersByNk = new Map();
+  for (const snap of chapterSnaps) {
+    for (const c of snap.plan.characters) {
+      if (!c?.id) continue;
+      const charId = String(c.id).trim();
+      const nameTrim = String(c.name ?? "").trim();
+      const nk = normCharNameForMasterPool(c.name);
+      const row = snap.filled[charId];
+      let url = row?.masterImageUrl ? String(row.masterImageUrl).trim() : "";
+      const pcmRow = snap.pcmIn[charId] && typeof snap.pcmIn[charId] === "object" ? { ...snap.pcmIn[charId] } : {};
+      if (!url) url = String(pcmRow.masterImageUrl || "").trim();
+      const updatedMs = parseIsoMs(pcmRow.updatedAt || row?.updatedAt);
+      const capRow = snap.capIn[charId] && typeof snap.capIn[charId] === "object" ? { ...snap.capIn[charId] } : undefined;
+      if (nameTrim && nk) {
+        if (!membersByNk.has(nk)) membersByNk.set(nk, []);
+        membersByNk.get(nk).push({
+          chapterId: snap.chapterId,
+          charId,
+          nk,
+          displayName: nameTrim,
+          url,
+          pcm: pcmRow,
+          filled: row || null,
+          updatedMs,
+          cap: capRow,
+        });
+      }
+    }
+  }
+
+  /** @type {Record<string, string>} */
+  const globalNkToPcid = {};
+  /** @type {Map<string, string>} */
+  const charLocalToPcid = new Map();
+
+  for (const [nk, members] of membersByNk) {
+    const pcid = allocatePcid(usedPcids);
+    globalNkToPcid[nk] = pcid;
+    for (const m of members) {
+      charLocalToPcid.set(charLocalKey(m.chapterId, m.charId), pcid);
+    }
+  }
+
+  /** @type {Record<string, object>} */
+  const pcidToCanonicalMaster = {};
+  /** @type {Record<string, object|undefined>} */
+  const pcidToCanonicalApproval = {};
+  /** @type {Record<string, object|undefined>} */
+  const pcidToCanonicalVoice = {};
+
+  for (const [nk, members] of membersByNk) {
+    const pcid = globalNkToPcid[nk];
+    const pcmRows = members.map((m) => {
+      const u = String(m.url || m.pcm?.masterImageUrl || "").trim();
+      return {
+        ...m.pcm,
+        masterImageUrl: u,
+        updatedAt: m.pcm.updatedAt || m.filled?.updatedAt || new Date().toISOString(),
+      };
+    });
+    const uniqUrls = [...new Set(pcmRows.map((r) => String(r.masterImageUrl || "").trim()).filter(Boolean))].sort();
+    const mergedPcm = mergePcmSnapshotRows(pcmRows.length ? pcmRows : [{}]);
+    if (uniqUrls.length > 1) {
+      const cand = members.map((m) => `${m.chapterId}/${m.charId}=${m.url || "∅"}`).join(" | ");
+      const chosenUrl = String(mergedPcm.masterImageUrl || "").trim() || "∅";
+      console.warn(
+        `[PCID MIGRATION · MASTER URL COLLISION] nameKey=${nk} pcid=${pcid} candidates=[${cand}] chosenUrl=${chosenUrl}`,
+      );
+    }
+    let mergedCap;
+    for (const m of members) {
+      if (m.cap) mergedCap = mergeCharacterApproval(mergedCap, m.cap);
+    }
+    const rep = members[0];
+    pcidToCanonicalMaster[pcid] = {
+      ...mergedPcm,
+      pcid,
+      characterId: rep.charId,
+      characterName: rep.displayName,
+      masterImageUrl: String(mergedPcm.masterImageUrl || "").trim(),
+      approved: mergedPcm.approved === true || mergedCap?.approved === true,
+    };
+    if (mergedCap) pcidToCanonicalApproval[pcid] = mergedCap;
+  }
+
+  for (const [nk, members] of membersByNk) {
+    const pcid = globalNkToPcid[nk];
+    const cands = [];
+    for (const m of members) {
+      const s = snapByChapterId.get(m.chapterId);
+      const v = s?.data?.characterVoiceMasters?.[m.charId];
+      if (v && typeof v === "object") {
+        cands.push({
+          chapterId: m.chapterId,
+          charId: m.charId,
+          locKey: `${m.chapterId}/${m.charId}`,
+          val: { ...v },
+        });
+      }
+    }
+    if (!cands.length) continue;
+    if (cands.length === 1) {
+      pcidToCanonicalVoice[pcid] = cands[0].val;
+      continue;
+    }
+    voiceBucketsCollapsedCount += 1;
+    const sig = new Set(
+      cands.map((c) =>
+        JSON.stringify({
+          voiceId: String(c.val?.voiceId || "").trim(),
+          voiceLabel: String(c.val?.voiceLabel || "").trim(),
+        }),
+      ),
+    );
+    const sortedV = [...cands].sort(compareVoiceLocationCandidates);
+    const pick = sortedV[0];
+    if (sig.size > 1) {
+      const candStr = cands
+        .map(
+          (x) =>
+            `${x.locKey}:voiceId=${String(x.val?.voiceId || "").trim() || "∅"};lock=${voiceHasCanonicalLock(x.val) ? "1" : "0"};updatedAt=${voiceUpdatedMs(x.val)}`,
+        )
+        .join(" | ");
+      const chosenStr = `${pick.locKey}:voiceId=${String(pick.val?.voiceId || "").trim() || "∅"}`;
+      console.warn(
+        `[PCID MIGRATION · VOICE COLLISION] pcid=${pcid} name=${JSON.stringify(members[0].displayName)} candidates=[${candStr}] chosen=${chosenStr}`,
+      );
+    }
+    pcidToCanonicalVoice[pcid] = pick.val;
+  }
+
+  for (const snap of chapterSnaps) {
+    for (const c of snap.plan.characters) {
+      if (!c?.id) continue;
+      const charId = String(c.id).trim();
+      const lk = charLocalKey(snap.chapterId, charId);
+      if (charLocalToPcid.has(lk)) continue;
+      const pcid = allocatePcid(usedPcids);
+      charLocalToPcid.set(lk, pcid);
+      const row = snap.filled[charId];
+      const pcmRow = snap.pcmIn[charId] && typeof snap.pcmIn[charId] === "object" ? { ...snap.pcmIn[charId] } : {};
+      let url = row?.masterImageUrl ? String(row.masterImageUrl).trim() : "";
+      if (!url) url = String(pcmRow.masterImageUrl || "").trim();
+      const merged = mergePcmSnapshotRows([{ ...pcmRow, masterImageUrl: url, updatedAt: pcmRow.updatedAt || row?.updatedAt || new Date().toISOString() }]);
+      let unnamedCap;
+      if (snap.capIn[charId]) unnamedCap = mergeCharacterApproval(unnamedCap, snap.capIn[charId]);
+      pcidToCanonicalMaster[pcid] = {
+        ...merged,
+        pcid,
+        characterId: charId,
+        characterName: c.name,
+        masterImageUrl: String(merged.masterImageUrl || "").trim(),
+        approved: merged.approved === true || unnamedCap?.approved === true,
+      };
+      if (unnamedCap) pcidToCanonicalApproval[pcid] = unnamedCap;
+      const v = snap.data.characterVoiceMasters?.[charId];
+      if (v && typeof v === "object") pcidToCanonicalVoice[pcid] = { ...v };
+    }
+  }
+
+  for (const snap of chapterSnaps) {
+    const { chapterId, data, plan } = snap;
+
+    /** @type {Record<string, string>} */
+    const idToPcid = {};
+    for (const c of plan.characters) {
+      if (!c?.id) continue;
+      const rid = String(c.id).trim();
+      idToPcid[rid] = charLocalToPcid.get(charLocalKey(chapterId, rid)) || "";
+    }
+
+    const pcidsInChapter = new Set(Object.values(idToPcid).filter(Boolean));
+
+    const nextMi = {};
+    const nextMbn = {};
+    const nextPcm = {};
+    const nextCap = {};
+
+    for (const pcid of pcidsInChapter) {
+      const canon = pcidToCanonicalMaster[pcid];
+      if (!canon) continue;
+      nextPcm[pcid] = { ...canon, pcid };
+      const u = String(canon.masterImageUrl || "").trim();
+      if (u) nextMi[pcid] = u;
+      if (pcidToCanonicalApproval[pcid]) nextCap[pcid] = { ...pcidToCanonicalApproval[pcid] };
+    }
+
+    for (const c of plan.characters) {
+      const nt = String(c.name ?? "").trim();
+      const nk = normCharNameForMasterPool(c.name);
+      if (nt && nk && globalNkToPcid[nk]) nextMbn[nk] = globalNkToPcid[nk];
+    }
+
+    for (const c of plan.characters) {
+      if (!c?.id) continue;
+      const rid = String(c.id).trim();
+      const pc = idToPcid[rid];
+      if (pc) c.pcid = pc;
+    }
+
+    const remapId = (x) => {
+      const s = String(x || "").trim();
+      if (!s) return s;
+      return idToPcid[s] || s;
+    };
+
+    for (const sc of plan.scenes || []) {
+      if (!sc || typeof sc !== "object") continue;
+      const pres = Array.isArray(sc.characters_present) ? sc.characters_present : [];
+      sc.characters_present = pres.map((id) => remapId(id)).filter(Boolean);
+    }
+
+    const clips = Array.isArray(data.sceneVideoClips) ? data.sceneVideoClips : [];
+    for (const clip of clips) {
+      if (!clip || typeof clip !== "object") continue;
+      const lines = Array.isArray(clip.dialogLines) ? clip.dialogLines : [];
+      for (const line of lines) {
+        if (!line || typeof line !== "object") continue;
+        const oldC = String(line.characterId || "").trim();
+        if (!oldC) continue;
+        const nextC = remapId(oldC);
+        if (nextC && nextC !== oldC) {
+          line.characterId = nextC;
+          dialogLineRemapCount += 1;
+        }
+      }
+      const ord = Array.isArray(clip.dialogLineOrder) ? clip.dialogLineOrder : [];
+      clip.dialogLineOrder = ord.map((id) => remapId(String(id || "").trim())).filter(Boolean);
+      const dfs = String(clip.dialogFirstSpeakerId || "").trim();
+      if (dfs) {
+        const n = remapId(dfs);
+        if (n && n !== dfs) clip.dialogFirstSpeakerId = n;
+      }
+    }
+
+    const vm = data.characterVoiceMasters && typeof data.characterVoiceMasters === "object" ? { ...data.characterVoiceMasters } : {};
+    for (const k of Object.keys(vm)) {
+      const mapped = remapId(k) || k;
+      if (mapped && mapped !== k) voiceRemapCount += 1;
+    }
+
+    const nextVm = {};
+    for (const pcid of pcidsInChapter) {
+      if (pcidToCanonicalVoice[pcid]) nextVm[pcid] = { ...pcidToCanonicalVoice[pcid] };
+    }
+
+    data.characterVoiceMasters = nextVm;
+    data.masterImages = nextMi;
+    data.masterByCharName = nextMbn;
+    data.projectCharacterMasters = nextPcm;
+    data.characterApprovalMap = nextCap;
+  }
+
+  const mergedPcm = {};
+  for (const [pcid, row] of Object.entries(pcidToCanonicalMaster)) {
+    mergedPcm[pcid] = row && typeof row === "object" ? { ...row, pcid } : {};
+  }
+
+  function poolMergePutString(map, mapName, pcid, nextVal) {
+    if (!looksLikePcidKey(pcid)) {
+      map[pcid] = nextVal;
+      return;
+    }
+    if (Object.prototype.hasOwnProperty.call(map, pcid)) {
+      const prev = map[pcid];
+      if (String(prev ?? "") !== String(nextVal ?? "")) {
+        console.warn(
+          `[PCID MIGRATION · POOL MERGE CONFLICT] map=${mapName} pcid=${pcid} prev=${JSON.stringify(prev)} next=${JSON.stringify(nextVal)}`,
+        );
+      }
+    }
+    map[pcid] = nextVal;
+  }
+
+  function poolMergePutObject(map, mapName, pcid, nextVal) {
+    if (!looksLikePcidKey(pcid)) {
+      map[pcid] = nextVal;
+      return;
+    }
+    if (Object.prototype.hasOwnProperty.call(map, pcid)) {
+      const prev = map[pcid];
+      if (JSON.stringify(prev) !== JSON.stringify(nextVal)) {
+        console.warn(
+          `[PCID MIGRATION · POOL MERGE CONFLICT] map=${mapName} pcid=${pcid} prev=${JSON.stringify(prev)} next=${JSON.stringify(nextVal)}`,
+        );
+      }
+    }
+    map[pcid] = nextVal;
+  }
+
+  const mergedPm = {};
+  for (const [pcid, row] of Object.entries(mergedPcm)) {
+    const u = String(row.masterImageUrl || "").trim();
+    if (u) poolMergePutString(mergedPm, "projectMasterImages", pcid, u);
+  }
+  const mergedPam = {};
+  for (const [pcid, cap] of Object.entries(pcidToCanonicalApproval)) {
+    if (cap && typeof cap === "object") poolMergePutObject(mergedPam, "projectCharacterApprovalMap", pcid, { ...cap });
+  }
+
+  for (const key of Object.keys(oldPoolPm)) {
+    if (!looksLikePcidKey(key) || allPlanCharIds.has(key)) continue;
+    const next = String(oldPoolPm[key] ?? "").trim();
+    if (!next || !Object.prototype.hasOwnProperty.call(mergedPm, key)) continue;
+    poolMergePutString(mergedPm, "projectMasterImages", key, next);
+  }
+  for (const key of Object.keys(oldPoolPam)) {
+    if (!looksLikePcidKey(key) || allPlanCharIds.has(key)) continue;
+    const next = oldPoolPam[key];
+    if (!next || typeof next !== "object" || !Object.prototype.hasOwnProperty.call(mergedPam, key)) continue;
+    poolMergePutObject(mergedPam, "projectCharacterApprovalMap", key, { ...next });
+  }
+
+  const mergedPbn = { ...globalNkToPcid };
+
+  function logOrphanPool(mapName, oldMap) {
+    if (!oldMap || typeof oldMap !== "object") return;
+    for (const key of Object.keys(oldMap)) {
+      if (looksLikePcidKey(key)) continue;
+      if (!allPlanCharIds.has(key)) {
+        console.warn(`[PCID MIGRATION · ORPHAN POOL KEY] ${mapName}.${key}`);
+      }
+    }
+  }
+
+  logOrphanPool("projectCharacterMasters", oldPoolPcm);
+  logOrphanPool("projectMasterImages", oldPoolPm);
+  logOrphanPool("projectCharacterApprovalMap", oldPoolPam);
+
+  for (const key of Object.keys(oldPoolPcm)) {
+    if (looksLikePcidKey(key)) continue;
+    if (!allPlanCharIds.has(key)) mergedPcm[key] = oldPoolPcm[key];
+  }
+  for (const key of Object.keys(oldPoolPm)) {
+    if (looksLikePcidKey(key)) continue;
+    if (!allPlanCharIds.has(key)) mergedPm[key] = oldPoolPm[key];
+  }
+  for (const key of Object.keys(oldPoolPam)) {
+    if (looksLikePcidKey(key)) continue;
+    if (!allPlanCharIds.has(key)) mergedPam[key] = oldPoolPam[key];
+  }
+
+  out.projectMasterImages = mergedPm;
+  out.projectMasterByCharName = mergedPbn;
+  out.projectCharacterApprovalMap = mergedPam;
+  out.projectCharacterMasters = mergedPcm;
+  out.chapters = chapters;
+  out.projectSchemaVersion = SCENOGRAFIA_PROJECT_SCHEMA_VERSION_PCID;
+
+  console.info(`[PCID MIGRATION · VOICE REMAP] ${voiceRemapCount}`);
+  console.info(`[PCID MIGRATION · DIALOG LINES REMAP] ${dialogLineRemapCount}`);
+  console.info(
+    `[PCID MIGRATION] done chapters=${chapters.length} voiceRemap=${voiceRemapCount} voiceBucketsCollapsed=${voiceBucketsCollapsedCount} dialogLineRemap=${dialogLineRemapCount}`,
+  );
+
+  return out;
 }
 
 /**
