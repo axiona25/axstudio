@@ -2143,17 +2143,47 @@ function stableMasterByCharNameEntries(mbn) {
   return sortedStringKeys(o).map((k) => `${k}=${String(o[k] ?? "").trim()}`);
 }
 
+/**
+ * Rimuove da `deletedSceneIds` gli id che non esistono in `plan.scenes` (orfani / ghost).
+ * Non modifica `sceneResults` né aggiunge id a `deletedSceneIds`.
+ * @param {object} data — payload capitolo (mutato se serve)
+ * @returns {{ wasHealed: boolean, removedCount: number }}
+ */
+export function healOrphanDeletedSceneIdsInChapterData(data) {
+  const d = data && typeof data === "object" ? data : {};
+  const plan = d.plan && typeof d.plan === "object" ? d.plan : {};
+  const sceneIds = new Set(
+    (Array.isArray(plan.scenes) ? plan.scenes : [])
+      .map((s) => String(s?.id || "").trim())
+      .filter(Boolean),
+  );
+  const raw = Array.isArray(d.deletedSceneIds) ? d.deletedSceneIds : [];
+  const beforeNorm = raw.map((id) => String(id || "").trim()).filter(Boolean);
+  const filtered = beforeNorm.filter((sid) => sceneIds.has(sid));
+  if (filtered.length === beforeNorm.length && filtered.every((v, i) => v === beforeNorm[i])) {
+    return { wasHealed: false, removedCount: 0 };
+  }
+  d.deletedSceneIds = filtered;
+  return { wasHealed: true, removedCount: beforeNorm.length - filtered.length };
+}
+
 function chapterDataHealFingerprint(data) {
   const d = data && typeof data === "object" ? data : {};
   const plan = d.plan || {};
   const chars = (plan.characters || []).map((c) => `${String(c?.id || "").trim()}/${String(c?.pcid || "").trim()}`);
   chars.sort();
+  const delSrc = Array.isArray(d.deletedSceneIds) ? d.deletedSceneIds : [];
+  const delSorted = delSrc
+    .map((id) => String(id || "").trim())
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b));
   return [
     chars.join(";"),
     sortedStringKeys(d.masterImages || {}).join(","),
     stableMasterByCharNameEntries(d.masterByCharName || {}).join(";"),
     sortedStringKeys(d.projectCharacterMasters || {}).join(","),
     sortedStringKeys(d.characterApprovalMap || {}).join(","),
+    delSorted.join(","),
   ].join("|");
 }
 
@@ -2207,6 +2237,12 @@ export async function applyScenografiaPcidPostMergeHealOnLoad(projectId, workspa
     if (!ch?.data || typeof ch.data !== "object") continue;
     const sliceBefore = chapterDataHealFingerprint(ch.data);
     ch.data = mergeChapterDataWithProjectCharacterPool(ch.data, workspace);
+    const delHeal = healOrphanDeletedSceneIdsInChapterData(ch.data);
+    if (delHeal.wasHealed) {
+      console.info(
+        `[PCID HEAL · DELETED SCENES] chapterId=${String(ch?.id || "")} removedOrphans=${delHeal.removedCount}`,
+      );
+    }
     if (sliceBefore !== chapterDataHealFingerprint(ch.data)) healedChapters++;
   }
   const postMergeFp = fingerprintWorkspaceHealBaseline(workspace);
