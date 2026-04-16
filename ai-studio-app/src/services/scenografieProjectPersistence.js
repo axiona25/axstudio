@@ -1588,8 +1588,11 @@ export async function saveScenografiaProjectsIndex(idx) {
   }
 }
 
-/** @returns {Promise<ScenografiaPersistedProject|null>} */
-export async function loadScenografiaProjectById(projectId) {
+/**
+ * Legge il workspace da disco/localStorage **senza** hook migrazione PCID (usato da save e internamente).
+ * @returns {Promise<ScenografiaPersistedProject|null>}
+ */
+export async function loadScenografiaProjectByIdFromStorage(projectId) {
   if (!projectId) return null;
   if (hasElectronJsonStorage()) {
     try {
@@ -1612,6 +1615,97 @@ export async function loadScenografiaProjectById(projectId) {
   } catch {
     return null;
   }
+}
+
+/** Serializza load+migrazione per progetto (STEP 2 concorrenza in memoria). */
+const scenografiaPcidLoadInflight = new Map();
+
+/** @type {((p: object) => object) | null} — solo harness test (es. migrazione lenta per concorrenza). */
+let pcidMigrateImplForTests = null;
+
+/** @internal harness */
+export function __setPcidMigrateImplForTests(fn) {
+  pcidMigrateImplForTests = typeof fn === "function" ? fn : null;
+}
+
+/** @internal harness */
+export function __clearPcidMigrateImplForTests() {
+  pcidMigrateImplForTests = null;
+}
+
+function readProjectSchemaVersionForPcid(ws) {
+  const v = ws?.projectSchemaVersion;
+  return typeof v === "number" && Number.isFinite(v) ? v : 0;
+}
+
+/**
+ * Migrazione PCID al load (STEP 2). `workspace` deve essere già `ensureWorkspace`.
+ * @param {string} projectId
+ * @param {object} workspace
+ * @param {{ migrateProjectToPcidSchema?: (p: object) => object | Promise<object>, saveScenografiaProjectById?: (id: string, d: object) => Promise<boolean>, onHookMeta?: (m: { schemaBefore: number, schemaAfter: number, wasMigrated: boolean }) => void }} [deps]
+ * @returns {Promise<object>}
+ */
+export async function applyScenografiaPcidMigrationOnLoad(projectId, workspace, deps = {}) {
+  const migrateFn =
+    deps.migrateProjectToPcidSchema ?? pcidMigrateImplForTests ?? migrateProjectToPcidSchema;
+  const saveFn = deps.saveScenografiaProjectById ?? saveScenografiaProjectById;
+
+  const schemaBefore = readProjectSchemaVersionForPcid(workspace);
+  const needsMigrate = schemaBefore < SCENOGRAFIA_PROJECT_SCHEMA_VERSION_PCID;
+
+  let out = workspace;
+  let schemaAfter = schemaBefore;
+  let wasMigrated = false;
+
+  if (needsMigrate) {
+    try {
+      const migratedRaw = migrateFn(JSON.parse(JSON.stringify(workspace)));
+      out =
+        migratedRaw && typeof migratedRaw.then === "function" ? await migratedRaw : migratedRaw;
+      schemaAfter = readProjectSchemaVersionForPcid(out);
+      wasMigrated = true;
+      const saveOk = await saveFn(projectId, out);
+      if (!saveOk) {
+        console.warn(`[PCID MIGRATION · SAVE FAILED] projectId=${projectId}`);
+      }
+    } catch (e) {
+      console.error(
+        `[PCID MIGRATION · FATAL] projectId=${projectId} message=${e?.message || String(e)} stack=${e?.stack || ""}`,
+      );
+      out = workspace;
+      schemaAfter = schemaBefore;
+      wasMigrated = false;
+    }
+  } else {
+    schemaAfter = readProjectSchemaVersionForPcid(workspace);
+  }
+
+  if (typeof deps.onHookMeta === "function") {
+    deps.onHookMeta({ schemaBefore, schemaAfter, wasMigrated });
+  }
+  console.info(
+    `[PCID MIGRATION · LOAD HOOK] projectId=${projectId} schemaBefore=${schemaBefore} schemaAfter=${schemaAfter} wasMigrated=${wasMigrated}`,
+  );
+  return out;
+}
+
+/** @returns {Promise<ScenografiaPersistedProject|null>} */
+export async function loadScenografiaProjectById(projectId) {
+  if (!projectId) return null;
+  if (scenografiaPcidLoadInflight.has(projectId)) {
+    return await scenografiaPcidLoadInflight.get(projectId);
+  }
+  const p = (async () => {
+    try {
+      const stored = await loadScenografiaProjectByIdFromStorage(projectId);
+      if (!stored) return null;
+      return await applyScenografiaPcidMigrationOnLoad(projectId, stored);
+    } finally {
+      scenografiaPcidLoadInflight.delete(projectId);
+    }
+  })();
+  scenografiaPcidLoadInflight.set(projectId, p);
+  return await p;
 }
 
 /** @param {string} projectId @param {ScenografiaPersistedProject} data */
@@ -1650,7 +1744,7 @@ export function upsertChapterDataInWorkspace(workspace, chapterId, chapterPayloa
 export async function saveScenografiaProjectById(projectId, data) {
   if (!projectId) return false;
   const base = isWorkspacePayload(data) ? JSON.parse(JSON.stringify(data)) : migrateFlatToWorkspace(data);
-  const existing = await loadScenografiaProjectById(projectId);
+  const existing = await loadScenografiaProjectByIdFromStorage(projectId);
   const existingWs = existing && ensureWorkspace(existing);
   const now = new Date().toISOString();
   const payload = {
