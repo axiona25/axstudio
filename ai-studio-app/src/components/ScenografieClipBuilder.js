@@ -30,6 +30,7 @@ import {
   SCENE_VIDEO_CLIP_STATUS,
 } from "../services/scenografieVideoWorkflow.js";
 import { resolveElevenLabsVoiceId } from "../services/elevenlabsService.js";
+import { stableCharacterKey, voiceMasterRawForRef } from "../services/scenografiePcidLookup.js";
 
 const STEPS = [
   { n: 1, key: "type", label: "Tipo clip", icon: HiFilm },
@@ -42,7 +43,13 @@ const STEPS = [
 
 function charById(plan) {
   const m = new Map();
-  (plan?.characters || []).forEach((c) => m.set(c.id, c));
+  for (const c of plan?.characters || []) {
+    if (!c) continue;
+    const lid = String(c.id || "").trim();
+    if (lid) m.set(lid, c);
+    const p = String(c.pcid || "").trim();
+    if (p) m.set(p, c);
+  }
   return m;
 }
 
@@ -56,6 +63,15 @@ function charactersPresentInScene(plan, sceneId) {
   const ids = Array.isArray(sc.characters_present) ? sc.characters_present : [];
   const cmap = charById(plan);
   return ids.map((id) => cmap.get(id)).filter(Boolean);
+}
+
+/** Allinea battute legacy (`char_N`) al ref stabile (`pcid_…`) per `<select controlled>`. */
+function resolveLineCharacterRef(charList, lineCharacterId) {
+  const raw = String(lineCharacterId || "").trim();
+  if (!raw) return "";
+  const list = Array.isArray(charList) ? charList : [];
+  const match = list.find((c) => stableCharacterKey(c) === raw || String(c.id || "").trim() === raw);
+  return match ? stableCharacterKey(match) : raw;
 }
 
 function fieldLabel() {
@@ -118,20 +134,22 @@ export function ScenografieClipBuilder({
     if (clipType === CLIP_TYPE.DIALOGUE) {
       const lines = (clip.dialogLines || []).length
         ? clip.dialogLines
-        : presentChars.slice(0, 1).map((c) =>
-            normalizeDialogLine({
-              characterId: c.id,
+        : presentChars.slice(0, 1).map((c) => {
+            const ref = stableCharacterKey(c);
+            const rawVm = voiceMasterRawForRef(characterVoiceMasters, ref, plan);
+            return normalizeDialogLine({
+              characterId: ref,
               text: "",
-              voiceId: characterVoiceMasters[c.id]?.voiceId || "",
+              voiceId: rawVm?.voiceId || "",
               action: "",
               expression: "",
               bodyMovement: "",
-            })
-          );
+            });
+          });
       patch({
         clipType: CLIP_TYPE.DIALOGUE,
         dialogLines: lines || [],
-        dialogFirstSpeakerId: presentChars[0]?.id || "",
+        dialogFirstSpeakerId: presentChars[0] ? stableCharacterKey(presentChars[0]) : "",
       });
     } else {
       patch({
@@ -147,13 +165,14 @@ export function ScenografieClipBuilder({
     const pool = presentChars.length ? presentChars : plan?.characters || [];
     const c0 = pool[0];
     if (!c0) return;
-    const vm = characterVoiceMasters[c0.id];
+    const ref0 = stableCharacterKey(c0);
+    const rawVm = voiceMasterRawForRef(characterVoiceMasters, ref0, plan);
     const next = [
       ...(clip.dialogLines || []),
       normalizeDialogLine({
-        characterId: c0.id,
+        characterId: ref0,
         text: "",
-        voiceId: vm?.voiceId || "",
+        voiceId: rawVm?.voiceId || "",
         action: "",
         expression: "",
         bodyMovement: "",
@@ -485,6 +504,7 @@ export function ScenografieClipBuilder({
               )}
               {(clip.dialogLines || []).map((line, idx) => {
                 const charList = presentChars.length ? presentChars : plan?.characters || [];
+                const lineRef = resolveLineCharacterRef(charList, line.characterId);
                 return (
                   <div key={line.id || idx} style={cardPad()}>
                     <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", gap: 8, marginBottom: 8 }}>
@@ -510,19 +530,19 @@ export function ScenografieClipBuilder({
                       <div>
                         <div style={fieldLabel()}>Personaggio</div>
                         <select
-                          value={line.characterId}
+                          value={lineRef}
                           onChange={(e) => {
                             const cid = e.target.value;
-                            const vm = characterVoiceMasters[cid];
+                            const rawVm = voiceMasterRawForRef(characterVoiceMasters, cid, plan);
                             updateLine(idx, {
                               characterId: cid,
-                              voiceId: vm?.voiceId || "",
+                              voiceId: rawVm?.voiceId || "",
                             });
                           }}
                           style={selectStyle(ax)}
                         >
                           {charList.map((c) => (
-                            <option key={c.id} value={c.id}>
+                            <option key={c.id} value={stableCharacterKey(c)}>
                               {c.name}
                             </option>
                           ))}
@@ -533,7 +553,10 @@ export function ScenografieClipBuilder({
                         <strong style={{ color: ax.text2 }}>voice master</strong> di questo personaggio (step 6 o
                         scheda personaggio). Il menu voce per battuta non è usato dal motore in V1.
                         {(() => {
-                          const vm = normalizeCharacterVoiceMaster(characterVoiceMasters[line.characterId], line.characterId);
+                          const vm = normalizeCharacterVoiceMaster(
+                            voiceMasterRawForRef(characterVoiceMasters, line.characterId, plan),
+                            line.characterId,
+                          );
                           const r = resolveElevenLabsVoiceId(vm.voiceId);
                           if (!vm.voiceId) return <span> · Voice master non impostata.</span>;
                           if (!r.voiceId) return <span> · Preset / ID da completare (.env o ID ElevenLabs).</span>;
@@ -668,15 +691,19 @@ export function ScenografieClipBuilder({
                     <div>
                       <div style={fieldLabel()}>Chi parla per primo (roadmap)</div>
                       <select
-                        value={clip.dialogFirstSpeakerId || ""}
+                        value={resolveLineCharacterRef(
+                          presentChars.length ? presentChars : plan?.characters || [],
+                          clip.dialogFirstSpeakerId,
+                        )}
                         onChange={(e) => patch({ dialogFirstSpeakerId: e.target.value })}
                         style={{ ...selectStyle(ax), marginBottom: 12 }}
                       >
                         <option value="">— Primo speaker —</option>
                         {(clip.dialogLines || []).map((l) => {
                           const ch = cmap.get(l.characterId);
+                          const v = ch ? stableCharacterKey(ch) : resolveLineCharacterRef(plan?.characters || [], l.characterId);
                           return (
-                            <option key={`${l.id}-first`} value={l.characterId}>
+                            <option key={`${l.id}-first`} value={v}>
                               {ch?.name || l.characterId}
                             </option>
                           );
@@ -777,7 +804,8 @@ export function ScenografieClipBuilder({
                 </p>
                 <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                   {(plan?.characters || []).map((c) => {
-                    const vm = normalizeCharacterVoiceMaster(characterVoiceMasters[c.id], c.id);
+                    const ref = stableCharacterKey(c);
+                    const vm = normalizeCharacterVoiceMaster(voiceMasterRawForRef(characterVoiceMasters, ref, plan), ref);
                     return (
                       <div
                         key={c.id}

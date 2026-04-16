@@ -52,6 +52,20 @@ import {
   syncLegacyMapsFromCanonicalPlan,
 } from "../services/scenografieProjectPersistence.js";
 import {
+  stableCharacterKey,
+  findPlanCharacterByPresentRef,
+  findPlanCharacterByLocalId,
+  planCharacterMapByPresentRef,
+  planCharacterDisplayName,
+  pcmRowForCharacter,
+  approvalEntryForCharacter,
+  voiceMasterRawForRef,
+  resolveMasterUrlForPlanChar,
+  getDisplayMasterUrl,
+  isHttpUrl,
+  isPcidKey,
+} from "../services/scenografiePcidLookup.js";
+import {
   createMasterCharacter,
   generateSceneBase,
   lockCharacterIdentity,
@@ -203,31 +217,20 @@ function normCharName(name) {
     .trim();
 }
 
-/** Mappa id personaggio del nuovo piano → URL master preservati per nome. */
-function mergePreservedMastersByName(plan, byName) {
+/** Mappa chiave stabile personaggio (pcid) → URL master preservati per nome. */
+function mergePreservedMastersByName(plan, byName, masterImagesHint = {}) {
   const out = {};
+  const mi = masterImagesHint && typeof masterImagesHint === "object" ? masterImagesHint : {};
   (plan?.characters || []).forEach((c) => {
-    const url = byName[normCharName(c.name)];
-    if (url) out[c.id] = url;
+    const ref = byName[normCharName(c.name)];
+    if (ref == null) return;
+    const sk = stableCharacterKey(c);
+    if (!sk) return;
+    const s = String(ref).trim();
+    if (isHttpUrl(s)) out[sk] = s;
+    else if (isPcidKey(s) && mi[s] != null && isHttpUrl(mi[s])) out[sk] = String(mi[s]).trim();
   });
   return out;
-}
-
-/** Risoluzione legacy solo per log/mismatch (cache); la UI e la pipeline usano `projectCharacterMasters`. */
-function resolveMasterUrlForPlanChar(char, masterImages, masterByCharName) {
-  if (!char) return null;
-  const nk = normCharName(char.name);
-  if (nk && masterByCharName && masterByCharName[nk]) return masterByCharName[nk];
-  if (masterImages && masterImages[char.id]) return masterImages[char.id];
-  return null;
-}
-
-/** URL master in UI e pipeline: solo `projectCharacterMasters` (fonte canonica). */
-function getDisplayMasterUrl(char, projectCharacterMasters) {
-  if (!char?.id) return null;
-  const row = projectCharacterMasters?.[char.id];
-  if (row && String(row.masterImageUrl || "").trim()) return String(row.masterImageUrl).trim();
-  return null;
 }
 
 function charHasResolvedMaster(char, projectCharacterMasters) {
@@ -274,9 +277,20 @@ function normSceneTextBlob(scene) {
  */
 function resolveSceneCharacterIdsForPipeline(scene, plan) {
   const chars = Array.isArray(plan?.characters) ? plan.characters : [];
-  const byId = Object.fromEntries(chars.map((c) => [c.id, c]));
+  const presentMap = planCharacterMapByPresentRef(plan);
   const raw = Array.isArray(scene?.characters_present) ? scene.characters_present : [];
-  const sanitized = [...new Set(raw.map((id) => String(id || "").trim()).filter((id) => byId[id]))];
+  const sanitized = [
+    ...new Set(
+      raw
+        .map((id) => String(id || "").trim())
+        .filter((id) => id && presentMap.has(id))
+        .map((id) => {
+          const c = presentMap.get(id);
+          return c ? stableCharacterKey(c) : "";
+        })
+        .filter(Boolean),
+    ),
+  ];
 
   if (isEnvironmentScene(scene)) {
     return { ids: [], source: "environment_scene" };
@@ -310,17 +324,17 @@ function resolveSceneCharacterIdsForPipeline(scene, plan) {
   if (ranked.length >= 1) {
     const top = ranked[0].score;
     const ties = ranked.filter((r) => r.score === top);
-    if (ties.length === 1) return { ids: [ties[0].c.id], source: "title_summary_name_match" };
-    return { ids: ties.map((t) => t.c.id), source: "title_summary_name_match_tie" };
+    if (ties.length === 1) return { ids: [stableCharacterKey(ties[0].c)], source: "title_summary_name_match" };
+    return { ids: ties.map((t) => stableCharacterKey(t.c)), source: "title_summary_name_match_tie" };
   }
 
   const protag =
     chars.find((c) => c.is_protagonist) ||
     chars.find((c) => c.character_role === CHARACTER_ROLE.PROTAGONIST) ||
     null;
-  if (protag) return { ids: [protag.id], source: "plan_protagonist_fallback" };
+  if (protag) return { ids: [stableCharacterKey(protag)], source: "plan_protagonist_fallback" };
 
-  if (chars[0]?.id) return { ids: [chars[0].id], source: "first_plan_character_fallback" };
+  if (chars[0]) return { ids: [stableCharacterKey(chars[0])], source: "first_plan_character_fallback" };
   return { ids: [], source: "none" };
 }
 
@@ -332,12 +346,14 @@ function buildApprovedMasterUrlMap(plan, projectCharacterMasters, characterAppro
   const pcm = projectCharacterMasters && typeof projectCharacterMasters === "object" ? projectCharacterMasters : {};
   for (const char of plan?.characters || []) {
     if (!char?.id) continue;
-    if (!characterApprovalMap?.[char.id]?.approved) continue;
-    const row = pcm[char.id];
+    const sk = stableCharacterKey(char);
+    if (!sk) continue;
+    if (!approvalEntryForCharacter(characterApprovalMap, char)?.approved) continue;
+    const row = pcmRowForCharacter(pcm, char);
     if (row?.pendingManualReview === true) continue;
     if (row?.source !== PCM_SOURCE_USER_CANONICAL_LOCK) continue;
     const u = row?.masterImageUrl ? String(row.masterImageUrl).trim() : "";
-    if (u) out[char.id] = u;
+    if (u) out[sk] = u;
   }
   return out;
 }
@@ -349,11 +365,12 @@ function shortUrl(u, max = 88) {
   return s.length <= max ? s : `${s.slice(0, max)}…`;
 }
 
-/** Id in characters_present che non esistono nel piano. */
+/** Id in characters_present che non risolvono a nessun personaggio (pcid o char_N). */
 function collectInvalidPresentIds(scene, plan) {
-  const byId = new Set((plan?.characters || []).map((c) => c.id));
   const raw = Array.isArray(scene?.characters_present) ? scene.characters_present : [];
-  return [...new Set(raw.map((id) => String(id || "").trim()).filter(Boolean))].filter((id) => !byId.has(id));
+  return [...new Set(raw.map((id) => String(id || "").trim()).filter(Boolean))].filter(
+    (id) => !findPlanCharacterByPresentRef(plan, id),
+  );
 }
 
 /**
@@ -364,9 +381,11 @@ function masterUrlMetaForLog(char, projectCharacterMasters, masterImages, master
   if (!char?.id) {
     return { characterId: null, name: null, approved: false, url: null, source: "none" };
   }
-  const approved = characterApprovalMap?.[char.id]?.approved === true;
-  const row = projectCharacterMasters?.[char.id];
+  const sk = stableCharacterKey(char);
+  const approved = approvalEntryForCharacter(characterApprovalMap, char)?.approved === true;
+  const row = pcmRowForCharacter(projectCharacterMasters, char);
   const canonicalUrl = row?.masterImageUrl ? String(row.masterImageUrl).trim() : null;
+  const byStable = sk && masterImages?.[sk] ? String(masterImages[sk]).trim() : null;
   const byId = masterImages?.[char.id] ? String(masterImages[char.id]).trim() : null;
   const nk = normCharName(char.name);
   const byName = nk && masterByCharName?.[nk] ? String(masterByCharName[nk]).trim() : null;
@@ -375,19 +394,25 @@ function masterUrlMetaForLog(char, projectCharacterMasters, masterImages, master
   let source = "none";
   if (canonicalUrl) source = `canonical:${row?.source || "unknown"}`;
   else if (fallback && byName && fallback === byName) source = "legacy_name_fallback";
-  else if (fallback && byId && fallback === byId) source = "legacy_id_fallback";
+  else if (fallback && (byStable || byId) && (fallback === byStable || fallback === byId)) source = "legacy_id_fallback";
   else if (resolved) source = "legacy_other";
   return {
     characterId: char.id,
+    stableKey: sk,
     name: char.name,
     approved,
     url: resolved || null,
     source,
     canonicalSource: row?.source || null,
     pendingManualReview: row?.pendingManualReview === true,
-    hadMasterImagesKey: !!byId,
+    hadMasterImagesKey: !!(byStable || byId),
     hadMasterByCharNameKey: !!byName,
-    cacheMatchesCanonical: !!(canonicalUrl && byId && byId === canonicalUrl && byName && byName === canonicalUrl),
+    cacheMatchesCanonical: !!(
+      canonicalUrl &&
+      (byStable || byId) &&
+      (byStable === canonicalUrl || byId === canonicalUrl) &&
+      (!byName || byName === canonicalUrl || isHttpUrl(byName))
+    ),
   };
 }
 
@@ -401,25 +426,31 @@ function isMariaGiuseppeTraceName(name) {
  */
 function buildMasterPipelineTraceRow(char, pcm, cacheMi, cacheMbn, characterApprovalMap, mastersMap) {
   if (!char?.id) return null;
+  const sk = stableCharacterKey(char);
   const nk = normCharName(char.name);
-  const row = pcm?.[char.id];
+  const row = pcmRowForCharacter(pcm, char);
   const canonicalUrl = row?.masterImageUrl?.trim() || null;
   const uiCardUrl = getDisplayMasterUrl(char, pcm);
+  const byStable = sk && cacheMi?.[sk] ? String(cacheMi[sk]).trim() : null;
   const byId = cacheMi?.[char.id] ? String(cacheMi[char.id]).trim() : null;
   const byName = nk && cacheMbn?.[nk] ? String(cacheMbn[nk]).trim() : null;
   return {
     characterId: char.id,
+    stableKey: sk,
     characterName: char.name,
     canonical_master_url: canonicalUrl,
     uiCardUrl: uiCardUrl,
-    derived_masterImagesUrl: byId,
+    derived_masterImagesUrl: byStable || byId,
     derived_masterByCharNameUrl: byName,
-    approvedMasterUrlMapUrl: mastersMap[char.id] || null,
-    approved: characterApprovalMap?.[char.id]?.approved === true,
+    approvedMasterUrlMapUrl: mastersMap[sk] || null,
+    approved: approvalEntryForCharacter(characterApprovalMap, char)?.approved === true,
     pendingManualReview: row?.pendingManualReview === true,
     canonical_source: row?.source || null,
     cache_differs_from_canonical: !!(
-      canonicalUrl && ((byId && byId !== canonicalUrl) || (byName && byName !== canonicalUrl))
+      canonicalUrl &&
+      (((byStable || byId) && byStable !== canonicalUrl && byId !== canonicalUrl) ||
+        (byName && !isHttpUrl(byName) && byName !== canonicalUrl) ||
+        (byName && isHttpUrl(byName) && byName !== canonicalUrl))
     ),
   };
 }
@@ -438,14 +469,15 @@ function diagnoseTitleResolvedMismatch(scene, plan, resolvedIds) {
     return nk.length >= 2 && blob.includes(nk);
   });
   for (const c of mentioned) {
-    if (!resolvedIds.includes(c.id)) {
+    const sk = stableCharacterKey(c);
+    if (!resolvedIds.includes(sk)) {
       warnings.push(
-        `SEMANTICA: titolo/summary citano «${c.name}» (id ${c.id}) ma NON è tra gli id risolti [${resolvedIds.join(", ") || "—"}] — controllare characters_present / piano.`,
+        `SEMANTICA: titolo/summary citano «${c.name}» (id ${c.id}${sk && sk !== c.id ? `, pcid ${sk}` : ""}) ma NON è tra gli id risolti [${resolvedIds.join(", ") || "—"}] — controllare characters_present / piano.`,
       );
     }
   }
   for (const rid of resolvedIds) {
-    const c = chars.find((x) => x.id === rid);
+    const c = findPlanCharacterByPresentRef(plan, rid);
     if (!c) continue;
     const nk = normCharName(c.name);
     if (nk.length >= 2 && !blob.includes(nk) && mentioned.length > 0) {
@@ -945,18 +977,22 @@ export function ScenografieProjectEditor({
     if (!persistReady || !plan?.characters?.length) return;
     const rows = getCharactersNeedingMaster(plan).map((char) => {
       const nk = normCharName(char.name);
-      const row = projectCharacterMasters[char.id];
+      const sk = stableCharacterKey(char);
+      const row = pcmRowForCharacter(projectCharacterMasters, char);
       const canonicalUrl = row?.masterImageUrl ? String(row.masterImageUrl).trim() : null;
+      const byStable = sk && masterImages[sk] ? String(masterImages[sk]).trim() : null;
       const byId = masterImages[char.id] ? String(masterImages[char.id]).trim() : null;
       const byName = nk && masterByCharName[nk] ? String(masterByCharName[nk]).trim() : null;
       const cacheMatchesCanonical =
-        !!canonicalUrl && byId === canonicalUrl && (!byName || byName === canonicalUrl);
+        !!canonicalUrl &&
+        (byStable === canonicalUrl || byId === canonicalUrl) &&
+        (!byName || byName === canonicalUrl || isPcidKey(byName));
       let sharesCanonicalUrlWith = null;
       if (canonicalUrl) {
         for (const c of plan.characters) {
           if (c.id === char.id) continue;
-          const ou = projectCharacterMasters[c.id]?.masterImageUrl
-            ? String(projectCharacterMasters[c.id].masterImageUrl).trim()
+          const ou = pcmRowForCharacter(projectCharacterMasters, c)?.masterImageUrl
+            ? String(pcmRowForCharacter(projectCharacterMasters, c).masterImageUrl).trim()
             : null;
           if (ou && ou === canonicalUrl) {
             sharesCanonicalUrlWith = c.name;
@@ -966,15 +1002,16 @@ export function ScenografieProjectEditor({
       }
       return {
         characterId: char.id,
+        stableKey: sk,
         characterName: char.name,
         canonicalUrl,
         canonicalSource: row?.source || null,
         pendingManualReview: row?.pendingManualReview === true,
-        derived_masterImagesUrl: byId,
+        derived_masterImagesUrl: byStable || byId,
         derived_masterByCharNameUrl: byName,
         cacheMatchesCanonical,
         duplicateCanonicalUrlAs: sharesCanonicalUrlWith,
-        characterApprovalApproved: characterApprovalMap[char.id]?.approved === true,
+        characterApprovalApproved: approvalEntryForCharacter(characterApprovalMap, char)?.approved === true,
       };
     });
     const sig = rows.map((x) => `${x.characterId}|${x.canonicalUrl || ""}|${x.pendingManualReview}|${x.duplicateCanonicalUrlAs || ""}`).join(";");
@@ -1261,10 +1298,12 @@ export function ScenografieProjectEditor({
         setProjectStyle(buildProjectStyleFromPlan(result, imageStylePresets));
       }
       {
-        const fromNames = mergePreservedMastersByName(result, masterByCharNameRef.current);
+        const fromNames = mergePreservedMastersByName(result, masterByCharNameRef.current, masterImagesRef.current);
         const merged = { ...fromNames };
         (result.characters || []).forEach((c) => {
-          if (!merged[c.id] && masterImagesRef.current[c.id]) merged[c.id] = masterImagesRef.current[c.id];
+          const sk = stableCharacterKey(c);
+          if (sk && !merged[sk] && masterImagesRef.current[sk]) merged[sk] = masterImagesRef.current[sk];
+          if (!merged[sk] && c.id && masterImagesRef.current[c.id]) merged[sk || c.id] = masterImagesRef.current[c.id];
         });
         const r = reconcileCharacterMasterMaps(result, merged, masterByCharNameRef.current);
         let nextApprovals = { ...characterApprovalMap };
@@ -1331,10 +1370,12 @@ export function ScenografieProjectEditor({
       setPlan(result);
       setProjectStyle(buildProjectStyleFromPlan(result, imageStylePresets));
       if (preserveMasters) {
-        const fromNames = mergePreservedMastersByName(result, masterByCharNameRef.current);
+        const fromNames = mergePreservedMastersByName(result, masterByCharNameRef.current, masterImagesRef.current);
         const merged = { ...fromNames };
         (result.characters || []).forEach((c) => {
-          if (!merged[c.id] && masterImagesRef.current[c.id]) merged[c.id] = masterImagesRef.current[c.id];
+          const sk = stableCharacterKey(c);
+          if (sk && !merged[sk] && masterImagesRef.current[sk]) merged[sk] = masterImagesRef.current[sk];
+          if (!merged[sk] && c.id && masterImagesRef.current[c.id]) merged[sk || c.id] = masterImagesRef.current[c.id];
         });
         const r = reconcileCharacterMasterMaps(result, merged, masterByCharNameRef.current);
         let nextApprovals = { ...characterApprovalMap };
@@ -1511,6 +1552,7 @@ export function ScenografieProjectEditor({
           const meta = masterUrlMetaForLog(c, pcmSnap, sync.masterImages, sync.masterByCharName, characterApprovalMap);
           return {
             characterId: c.id,
+            stableKey: meta.stableKey || stableCharacterKey(c),
             name: c.name,
             approved: meta.approved,
             masterImageUrl: meta.url,
@@ -1538,25 +1580,24 @@ export function ScenografieProjectEditor({
           const charResolution = resolveSceneCharacterIdsForPipeline(scene, plan);
           const sceneCharIds = isEnvScene ? [] : charResolution.ids;
           const protagonistId = sceneCharIds[0];
-          const protagonistChar = protagonistId ? plan.characters.find((c) => c.id === protagonistId) : null;
+          const protagonistChar = protagonistId ? findPlanCharacterByPresentRef(plan, protagonistId) : null;
 
           const numSubjects = isEnvScene ? 0 : sceneCharIds.length > 1 ? sceneCharIds.length : 1;
 
           const supportingChars = isEnvScene
             ? ""
             : plan.characters
-                .filter((c) => sceneCharIds.includes(c.id) && c.id !== protagonistId)
+                .filter((c) => {
+                  const sk = stableCharacterKey(c);
+                  return sceneCharIds.includes(sk) && sk !== protagonistId;
+                })
                 .map((c) => c.appearance_prompt || c.name)
                 .join(". ");
 
           const sceneProtagonistIds = isEnvScene ? [] : sceneCharIds.filter((id) => masters[id]);
           const missingMasterForLock = isEnvScene ? [] : sceneCharIds.filter((id) => !masters[id]);
-          const lockNames = sceneProtagonistIds
-            .map((id) => plan.characters.find((c) => c.id === id)?.name || id)
-            .join(" → ");
-          const missingNames = missingMasterForLock
-            .map((id) => plan.characters.find((c) => c.id === id)?.name || id)
-            .join(", ");
+          const lockNames = sceneProtagonistIds.map((id) => planCharacterDisplayName(plan, id)).join(" → ");
+          const missingNames = missingMasterForLock.map((id) => planCharacterDisplayName(plan, id)).join(", ");
 
           const invalidPresentIds = collectInvalidPresentIds(scene, plan);
           if (invalidPresentIds.length) {
@@ -1572,7 +1613,7 @@ export function ScenografieProjectEditor({
           });
 
           const charactersResolvedRows = sceneCharIds.map((id) => {
-            const c = plan.characters.find((x) => x.id === id);
+            const c = findPlanCharacterByPresentRef(plan, id);
             const meta = c ? masterUrlMetaForLog(c, pcmSnap, sync.masterImages, sync.masterByCharName, characterApprovalMap) : null;
             return {
               id,
@@ -1588,7 +1629,7 @@ export function ScenografieProjectEditor({
           const mentionedChars = !isEnvScene ? charactersMentionedInSceneText(scene, plan) : [];
           const expectedCharacterName = mentionedChars[0]?.name ?? null;
           const firstLockId = sceneProtagonistIds[0] || null;
-          const firstLockChar = firstLockId ? plan.characters.find((c) => c.id === firstLockId) : null;
+          const firstLockChar = firstLockId ? findPlanCharacterByPresentRef(plan, firstLockId) : null;
           const resolvedMasterCharacterName = firstLockChar?.name ?? null;
           const firstLockMasterUrl = firstLockId ? masters[firstLockId] || null : null;
           if (
@@ -1625,7 +1666,11 @@ export function ScenografieProjectEditor({
             resolution_source: charResolution.source,
             resolved_character_ids: sceneCharIds,
             resolved_characters: charactersResolvedRows,
-            characters_mentioned_in_scene_text: mentionedChars.map((c) => ({ id: c.id, name: c.name })),
+            characters_mentioned_in_scene_text: mentionedChars.map((c) => ({
+              id: c.id,
+              stableKey: stableCharacterKey(c),
+              name: c.name,
+            })),
             expectedCharacterName,
             resolvedMasterCharacterName,
             first_lock_master_url: firstLockMasterUrl,
@@ -1711,7 +1756,7 @@ export function ScenografieProjectEditor({
           if (!isEnvScene) {
             for (let pi = 0; pi < sceneProtagonistIds.length; pi++) {
               const pId = sceneProtagonistIds[pi];
-              const pChar = plan.characters.find((c) => c.id === pId);
+              const pChar = findPlanCharacterByPresentRef(plan, pId);
               const label = pChar?.name || pId;
               const masterUrl = masters[pId] || null;
               const meta = pChar
@@ -2414,36 +2459,41 @@ export function ScenografieProjectEditor({
     [clipBuilderClipId]
   );
 
-  const patchCharacterVoiceMaster = useCallback((characterId, partial) => {
-    setCharacterVoiceMasters((prev) => {
-      const next = { ...prev };
-      if (partial.isNarratorDefault === true) {
-        for (const k of Object.keys(next)) {
-          if (k === characterId) continue;
-          const o = normalizeCharacterVoiceMaster(next[k], k);
-          if (o.isNarratorDefault) {
-            next[k] = {
-              voiceId: o.voiceId,
-              voiceLabel: o.voiceLabel,
-              voiceProvider: o.voiceProvider,
-              isNarratorDefault: false,
-              elevenLabs: o.elevenLabs || {},
-            };
+  const patchCharacterVoiceMaster = useCallback(
+    (characterId, partial) => {
+      const ch = plan?.characters?.find((c) => c.id === characterId);
+      const mapKey = ch ? stableCharacterKey(ch) : characterId;
+      setCharacterVoiceMasters((prev) => {
+        const next = { ...prev };
+        if (partial.isNarratorDefault === true) {
+          for (const k of Object.keys(next)) {
+            if (k === mapKey) continue;
+            const o = normalizeCharacterVoiceMaster(next[k], k);
+            if (o.isNarratorDefault) {
+              next[k] = {
+                voiceId: o.voiceId,
+                voiceLabel: o.voiceLabel,
+                voiceProvider: o.voiceProvider,
+                isNarratorDefault: false,
+                elevenLabs: o.elevenLabs || {},
+              };
+            }
           }
         }
-      }
-      const cur = normalizeCharacterVoiceMaster(next[characterId], characterId);
-      const n = normalizeCharacterVoiceMaster({ ...cur, ...partial }, characterId);
-      next[characterId] = {
-        voiceId: n.voiceId,
-        voiceLabel: n.voiceLabel,
-        voiceProvider: n.voiceProvider,
-        isNarratorDefault: n.isNarratorDefault,
-        elevenLabs: n.elevenLabs || {},
-      };
-      return next;
-    });
-  }, []);
+        const cur = normalizeCharacterVoiceMaster(next[mapKey], mapKey);
+        const n = normalizeCharacterVoiceMaster({ ...cur, ...partial }, mapKey);
+        next[mapKey] = {
+          voiceId: n.voiceId,
+          voiceLabel: n.voiceLabel,
+          voiceProvider: n.voiceProvider,
+          isNarratorDefault: n.isNarratorDefault,
+          elevenLabs: n.elevenLabs || {},
+        };
+        return next;
+      });
+    },
+    [plan],
+  );
 
   const addSceneVideoClip = useCallback((sceneId) => {
     setSceneVideoClips((prev) => {
@@ -2595,7 +2645,8 @@ export function ScenografieProjectEditor({
       return;
     }
     const hasResolvedRef = (c) => {
-      const row = projectCharacterMastersRef.current[c.id];
+      const sk = stableCharacterKey(c);
+      const row = sk ? projectCharacterMastersRef.current[sk] : null;
       return !!(row && String(row.masterImageUrl || "").trim());
     };
     const toGenerate = needMaster.filter((c) => !hasResolvedRef(c));
@@ -2620,7 +2671,8 @@ export function ScenografieProjectEditor({
         setImageStatus(`Master: ${char.name}…`);
         setImageProgress(Math.round(8 + (done / totalGen) * 40));
         try {
-          const prevRow = projectCharacterMastersRef.current[char.id] || {};
+          const pcmKey = stableCharacterKey(char);
+          const prevRow = (pcmKey && projectCharacterMastersRef.current[pcmKey]) || {};
           const extraPrompt = buildMasterExtraPromptForCharacter(char, prevRow);
           const masterResult = await createMasterCharacter({
             appearance: {},
@@ -2633,7 +2685,7 @@ export function ScenografieProjectEditor({
           const savedPrompt = String(prevRow.characterMasterPrompt || "").trim();
           const pcmNext = {
             ...projectCharacterMastersRef.current,
-            [char.id]: {
+            [pcmKey]: {
               ...prevRow,
               characterId: char.id,
               characterName: char.name,
@@ -2657,7 +2709,7 @@ export function ScenografieProjectEditor({
           setProjectCharacterMasters(pcmNext);
           setCharacterApprovalMap((prev) => ({
             ...prev,
-            [char.id]: { approved: false, approvedAt: null, version: (prev[char.id]?.version ?? 0) + 1 },
+            [pcmKey]: { approved: false, approvedAt: null, version: (prev[pcmKey]?.version ?? 0) + 1 },
           }));
         } catch (err) {
           setExecutionLog((prev) => [
@@ -2691,12 +2743,14 @@ export function ScenografieProjectEditor({
     const globalVisual = composeGlobalVisualStyle(lockedStyle);
     setPlanError("");
     setRegeneratingCharId(charId);
+    const pcmKeyPre = stableCharacterKey(char);
     setCharacterApprovalMap((prev) => ({
       ...prev,
-      [charId]: { approved: false, approvedAt: null, version: (prev[charId]?.version ?? 0) + 1 },
+      [pcmKeyPre]: { approved: false, approvedAt: null, version: (prev[pcmKeyPre]?.version ?? 0) + 1 },
     }));
     try {
-      const prevRow = projectCharacterMastersRef.current[char.id] || {};
+      const pcmKey = stableCharacterKey(char);
+      const prevRow = (pcmKey && projectCharacterMastersRef.current[pcmKey]) || {};
       const rowForPrompt =
         explicit !== "" ? { ...prevRow, characterMasterPrompt: explicit } : prevRow;
       const extraPrompt = buildMasterExtraPromptForCharacter(char, rowForPrompt);
@@ -2712,7 +2766,7 @@ export function ScenografieProjectEditor({
         explicit !== "" ? explicit : String(prevRow.characterMasterPrompt || "").trim();
       const pcmNext = {
         ...projectCharacterMastersRef.current,
-        [char.id]: {
+        [pcmKey]: {
           ...prevRow,
           characterId: char.id,
           characterName: char.name,
@@ -2743,16 +2797,17 @@ export function ScenografieProjectEditor({
   };
 
   const approveProtagonistMaster = (charId) => {
-    const ch = plan?.characters?.find((c) => c.id === charId);
+    const ch = findPlanCharacterByLocalId(plan, charId);
     if (!ch) return;
+    const pcmKey = stableCharacterKey(ch);
     const url = getDisplayMasterUrl(ch, projectCharacterMasters);
     if (!url) return;
-    const row = projectCharacterMasters[ch.id] || {};
+    const row = pcmRowForCharacter(projectCharacterMasters, ch) || {};
     const pcmNext = {
       ...projectCharacterMasters,
-      [charId]: {
+      [pcmKey]: {
         ...row,
-        characterId: charId,
+        characterId: ch.id,
         characterName: ch.name,
         masterImageUrl: url,
         approved: true,
@@ -2764,10 +2819,10 @@ export function ScenografieProjectEditor({
     commitProjectCharacterMastersSync(pcmNext);
     setCharacterApprovalMap((prev) => ({
       ...prev,
-      [charId]: {
+      [pcmKey]: {
         approved: true,
         approvedAt: new Date().toISOString(),
-        version: prev[charId]?.version ?? 1,
+        version: prev[pcmKey]?.version ?? 1,
       },
     }));
   };
@@ -2783,8 +2838,9 @@ export function ScenografieProjectEditor({
         finalMontagePhase === "done" ||
         scenografiaVideoPhase === "completed";
       if (!plan || masterPromoteLocked) return;
-      const ch = plan.characters?.find((c) => c.id === charId);
+      const ch = findPlanCharacterByLocalId(plan, charId);
       if (!ch) return;
+      const pcmKey = stableCharacterKey(ch);
       const u = String(imageUrl || "").trim();
       if (!u) return;
       const ok = window.confirm(
@@ -2793,7 +2849,7 @@ export function ScenografieProjectEditor({
           `Confermi?`
       );
       if (!ok) return;
-      const prevRow = projectCharacterMastersRef.current[charId] || {};
+      const prevRow = (pcmKey && projectCharacterMastersRef.current[pcmKey]) || {};
       const prevUrl = String(prevRow.masterImageUrl || "").trim();
       const prior = Array.isArray(prevRow.priorMasterImageUrls)
         ? prevRow.priorMasterImageUrls.filter((x) => typeof x === "string" && x.trim())
@@ -2803,9 +2859,9 @@ export function ScenografieProjectEditor({
       const now = new Date().toISOString();
       const pcmNext = {
         ...projectCharacterMastersRef.current,
-        [charId]: {
+        [pcmKey]: {
           ...prevRow,
-          characterId: charId,
+          characterId: ch.id,
           characterName: ch.name,
           masterImageUrl: u,
           approved: true,
@@ -2818,10 +2874,10 @@ export function ScenografieProjectEditor({
       commitProjectCharacterMastersSync(pcmNext);
       setCharacterApprovalMap((prev) => ({
         ...prev,
-        [charId]: {
+        [pcmKey]: {
           approved: true,
           approvedAt: now,
-          version: (prev[charId]?.version ?? 0) + 1,
+          version: (prev[pcmKey]?.version ?? 0) + 1,
         },
       }));
       addLog(`Master progetto da scena: «${ch.name}» ← ${shortUrl(u, 72)}`);
@@ -3528,7 +3584,7 @@ export function ScenografieProjectEditor({
             >
               {getCharactersNeedingMaster(plan).map((char) => {
                 const url = getDisplayMasterUrl(char, projectCharacterMasters);
-                const ap = characterApprovalMap[char.id];
+                const ap = approvalEntryForCharacter(characterApprovalMap, char);
                 const approved = ap?.approved === true;
                 const masterInFlight =
                   regeneratingCharId === char.id ||
@@ -3727,7 +3783,7 @@ export function ScenografieProjectEditor({
                         <button
                           type="button"
                           onClick={() => {
-                            const row = projectCharacterMasters[char.id];
+                            const row = pcmRowForCharacter(projectCharacterMasters, char);
                             setMasterPromptDraft(
                               typeof row?.characterMasterPrompt === "string" ? row.characterMasterPrompt : ""
                             );
@@ -3784,7 +3840,8 @@ export function ScenografieProjectEditor({
                           Voice master · ElevenLabs
                         </div>
                         {(() => {
-                          const vm = normalizeCharacterVoiceMaster(characterVoiceMasters[char.id], char.id);
+                          const vRaw = voiceMasterRawForRef(characterVoiceMasters, char.id, plan);
+                          const vm = normalizeCharacterVoiceMaster(vRaw, stableCharacterKey(char));
                           return (
                             <>
                               <select
@@ -5317,15 +5374,16 @@ export function ScenografieProjectEditor({
                     if (!masterPromptModalCharId || !plan?.characters?.length) return;
                     const ch = plan.characters.find((c) => c.id === masterPromptModalCharId);
                     if (!ch) return;
-                    const row = projectCharacterMasters[masterPromptModalCharId] || {};
+                    const pcmKeyModal = stableCharacterKey(ch);
+                    const row = pcmRowForCharacter(projectCharacterMasters, ch) || {};
                     const draft = masterPromptDraft.trim();
                     setMasterPromptModalBusy(true);
                     try {
                       const pcmNext = {
                         ...projectCharacterMasters,
-                        [masterPromptModalCharId]: {
+                        [pcmKeyModal]: {
                           ...row,
-                          characterId: masterPromptModalCharId,
+                          characterId: ch.id,
                           characterName: ch.name,
                           characterMasterPrompt: draft,
                           updatedAt: new Date().toISOString(),

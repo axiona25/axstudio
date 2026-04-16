@@ -125,15 +125,15 @@ function scoreSceneRowForCover(chapterData, ctx, planScene, sceneRow) {
   const logTokens = new Set(tokens(blob));
 
   const chars = Array.isArray(plan.characters) ? plan.characters : [];
-  const idToNormName = new Map(
-    chars
-      .map((c) => {
-        const id = String(c?.id || "").trim();
-        const nm = normKey(String(c?.name || ""));
-        return id && nm ? [id, nm] : null;
-      })
-      .filter(Boolean),
-  );
+  const idToNormName = new Map();
+  for (const c of chars) {
+    const nm = normKey(String(c?.name || ""));
+    if (!nm || nm.length < 2) continue;
+    const lid = String(c?.id || "").trim();
+    const pc = String(c?.pcid || "").trim();
+    if (lid) idToNormName.set(lid, nm);
+    if (pc) idToNormName.set(pc, nm);
+  }
 
   const titleIt = String(planScene?.title_it || "");
   const sumIt = String(planScene?.summary_it || "");
@@ -221,10 +221,13 @@ export function pickChapterRepresentativeThumbnailUrl(chapterData, ctx = {}) {
 
   const scoredChars = chars
     .map((c) => {
-      const id = String(c.id || "");
-      const url = id && masters[id] ? String(masters[id]).trim() : "";
+      const stable = String(c.pcid || "").trim() || String(c.id || "").trim();
+      const urlPrimary = stable && masters[stable] ? String(masters[stable]).trim() : "";
+      const urlLegacy = c.id && masters[c.id] ? String(masters[c.id]).trim() : "";
+      const url = urlPrimary || urlLegacy;
       if (!url) return null;
-      let s = countScenePresenceForCharacter(plan, id) * 2;
+      const presenceKey = stable || String(c.id || "").trim();
+      let s = countScenePresenceForCharacter(plan, presenceKey) * 2;
       if (c.is_protagonist) s += 8;
       if (String(c.character_role || "").includes("protagonist")) s += 6;
       const nk = normKey(String(c.name || ""));
@@ -232,7 +235,7 @@ export function pickChapterRepresentativeThumbnailUrl(chapterData, ctx = {}) {
       for (const w of nk.split(/\s+/).filter((x) => x.length > 2)) {
         if (blobNorm.includes(w)) s += 5;
       }
-      return { id, url, s };
+      return { id: stable || String(c.id || ""), url, s };
     })
     .filter(Boolean)
     .sort((a, b) => b.s - a.s);
@@ -240,7 +243,8 @@ export function pickChapterRepresentativeThumbnailUrl(chapterData, ctx = {}) {
   if (scoredChars.length) return scoredChars[0].url;
 
   for (const c of chars) {
-    const u = masters[c.id];
+    const stable = String(c.pcid || "").trim() || String(c.id || "").trim();
+    const u = (stable && masters[stable]) || (c.id && masters[c.id]);
     if (u && String(u).trim()) return String(u).trim();
   }
   for (const k of Object.keys(masters)) {

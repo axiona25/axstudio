@@ -5,6 +5,12 @@
 
 import { getCharactersNeedingMaster } from "./scenografiePlanner.js";
 import { resolveElevenLabsVoiceId, getElevenLabsApiKey } from "./elevenlabsService.js";
+import {
+  approvalEntryForCharacter,
+  planCharacterDisplayName,
+  stableCharacterKey,
+  voiceMasterRawForRef,
+} from "./scenografiePcidLookup.js";
 
 /** @typedef {'narrated'|'dialogue'} ScenografiaClipType */
 /** @typedef {'auto'|'manual'} ScenografiaClipDurationMode */
@@ -196,11 +202,7 @@ export function getClipGenerationReadiness(clip, ctx = {}) {
   const dur = resolveClipDurationSeconds(clip);
   if (dur == null) reasons.push("Imposta una durata valida (stima automatica o secondi manuali ≥ 3).");
 
-  const charLabel = (characterId) => {
-    const id = String(characterId || "");
-    const c = plan?.characters?.find((x) => x.id === id);
-    return (c && c.name) || id || "Personaggio";
-  };
+  const charLabel = (characterId) => planCharacterDisplayName(plan, characterId);
 
   if (type === CLIP_TYPE.NARRATED) {
     if (!String(clip.narratorText || "").trim()) reasons.push("Inserisci il testo del narratore.");
@@ -216,7 +218,10 @@ export function getClipGenerationReadiness(clip, ctx = {}) {
     const resolvedVoiceIds = [];
     for (const line of lines) {
       if (!String(line.text || "").trim()) reasons.push("Ogni battuta deve avere testo.");
-      const master = normalizeCharacterVoiceMaster(characterVoiceMasters[line.characterId], line.characterId);
+      const master = normalizeCharacterVoiceMaster(
+        voiceMasterRawForRef(characterVoiceMasters, line.characterId, plan),
+        line.characterId,
+      );
       if (!String(master.voiceId || "").trim()) {
         reasons.push(`Voice master obbligatoria per «${charLabel(line.characterId)}» (scheda personaggio o step 6).`);
         continue;
@@ -551,8 +556,9 @@ export function allCharacterMastersApprovedForVideo(data) {
   if (!need.length) return true;
   const pcm = data.projectCharacterMasters && typeof data.projectCharacterMasters === "object" ? data.projectCharacterMasters : {};
   return need.every((c) => {
-    if (data.characterApprovalMap?.[c.id]?.approved !== true) return false;
-    const row = pcm[c.id];
+    if (!approvalEntryForCharacter(data.characterApprovalMap, c)?.approved) return false;
+    const k = stableCharacterKey(c);
+    const row = (k && pcm[k]) || (c.id != null ? pcm[c.id] : null);
     const url = row?.masterImageUrl ? String(row.masterImageUrl).trim() : "";
     if (!url) return false;
     if (row.pendingManualReview === true) return false;

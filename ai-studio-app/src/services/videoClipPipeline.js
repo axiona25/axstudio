@@ -19,11 +19,10 @@ import {
 import { generateKlingAvatarV2Pro, KLING_AVATAR_V2_PRO_ENDPOINT } from "./klingAvatarService.js";
 import { imageUrlToBase64, uploadToFalStorage, uploadBlobToFalStorage } from "./imagePipeline.js";
 import { sanitizeClipPipelineErrorForUser } from "./scenografieClipUserMessages.js";
+import { planCharacterDisplayName, voiceMasterRawForRef } from "./scenografiePcidLookup.js";
 
 function charName(plan, characterId) {
-  const id = String(characterId || "");
-  const c = plan?.characters?.find((x) => x.id === id);
-  return (c && c.name) || id || "Personaggio";
+  return planCharacterDisplayName(plan, characterId);
 }
 
 /**
@@ -49,7 +48,10 @@ export function resolveDialogueSingleVoiceId(clip, characterVoiceMasters, plan) 
   const lines = (Array.isArray(clip.dialogLines) ? clip.dialogLines : []).map(normalizeDialogLine).filter(Boolean);
   const resolved = [];
   for (const line of lines) {
-    const master = normalizeCharacterVoiceMaster(characterVoiceMasters[line.characterId], line.characterId);
+    const master = normalizeCharacterVoiceMaster(
+      voiceMasterRawForRef(characterVoiceMasters, line.characterId, plan),
+      line.characterId,
+    );
     if (!String(master.voiceId || "").trim()) {
       errors.push(`Voice master mancante per «${charName(plan, line.characterId)}».`);
       continue;
