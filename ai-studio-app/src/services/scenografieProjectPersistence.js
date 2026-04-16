@@ -69,9 +69,23 @@ function lsProjectKey(id) {
 /** Master confermato esplicitamente dall'utente come canonico (non sovrascritto da migrazione / piano). */
 export const PCM_SOURCE_USER_CANONICAL_LOCK = "user_canonical_lock";
 
+/** Log una-tantum: master considerato ready grazie a source post-migrazione (non `user_canonical_lock`). */
+let __migrationReadyLogged = false;
+
+/** Solo test harness: reset log sessione `characterMasterReadyForScenes`. */
+export function __resetMigrationReadyLogForTests() {
+  __migrationReadyLogged = false;
+}
+
+const VALID_MIGRATION_SOURCES = new Set([
+  "migrated_id_and_name_same_url",
+  "migrated_id_and_name",
+  "migrated_name_only",
+]);
+
 /**
- * Personaggio pronto per pipeline scene: URL, approvazione, niente revisione pendente e **conferma canonica esplicita**
- * (`source === user_canonical_lock`).
+ * Personaggio pronto per pipeline scene: URL, approvazione, niente revisione pendente e
+ * `source` canonico (`user_canonical_lock`) oppure **source coerente post-migrazione** (whitelist).
  * @param {{ id: string }} char
  * @param {object} d — payload capitolo (plan, projectCharacterMasters, characterApprovalMap)
  */
@@ -84,7 +98,19 @@ export function characterMasterReadyForScenes(char, d) {
   if (row.pendingManualReview === true) return false;
   const ap = (p && d.characterApprovalMap?.[p]) || d.characterApprovalMap?.[char.id];
   if (ap?.approved !== true) return false;
-  if (row.source !== PCM_SOURCE_USER_CANONICAL_LOCK) return false;
+  // Policy: ready se lock utente OPPURE source migrato coerente (evita stallo post-STEP1–4).
+  if (
+    row.source !== PCM_SOURCE_USER_CANONICAL_LOCK &&
+    !VALID_MIGRATION_SOURCES.has(row.source)
+  ) {
+    return false;
+  }
+  if (row.source !== PCM_SOURCE_USER_CANONICAL_LOCK && !__migrationReadyLogged) {
+    console.info(
+      `[PCID READY · MIGRATION SOURCE] character ready without user_canonical_lock (source="${row.source}")`,
+    );
+    __migrationReadyLogged = true;
+  }
   return true;
 }
 
