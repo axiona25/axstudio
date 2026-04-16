@@ -5975,6 +5975,11 @@ export default function AIStudio() {
     return ids;
   }, [history]);
 
+  const legacyProjectIds = useMemo(
+    () => new Set((projects || []).map(p => p?.id).filter(v => v != null)),
+    [projects],
+  );
+
   const homeRecentItems = useMemo(() => {
     const knownPaths = new Set(mediaHistory.map(h => h.filePath).filter(Boolean));
     const scenoPaths = collectScenografieAssetFilePaths(history);
@@ -5982,10 +5987,28 @@ export default function AIStudio() {
       e => e.filePath && !knownPaths.has(e.filePath) && !diskMediaEntryIsScenografieScoped(e) && !scenoPaths.has(e.filePath),
     );
     let list = [...mediaHistory, ...fromDisk];
-    if (homeGalleryFilter === "image") list = list.filter(h => h.type === "image" && !h.params?.screenplayId && !screenplayProjectIds.has(h.projectId));
-    else if (homeGalleryFilter === "video") list = list.filter(h => h.type === "video" && !h.params?.screenplayId && !screenplayProjectIds.has(h.projectId));
+    // Policy: quando LEGACY_PROJECTS_UI_ENABLED=false, nascondi dalla Home i
+    // record history legati al vecchio modulo "Progetti" (projectId presente in
+    // `projects` legacy). Immagini libere/video liberi (projectId=null) e
+    // scenografie (sceneId valorizzato) restano visibili.
+    const hideLegacy = !LEGACY_PROJECTS_UI_ENABLED;
+    if (homeGalleryFilter === "image") {
+      list = list.filter(h =>
+        h.type === "image" &&
+        !h.params?.screenplayId &&
+        !screenplayProjectIds.has(h.projectId) &&
+        !(hideLegacy && h.projectId != null && legacyProjectIds.has(h.projectId)),
+      );
+    } else if (homeGalleryFilter === "video") {
+      list = list.filter(h =>
+        h.type === "video" &&
+        !h.params?.screenplayId &&
+        !screenplayProjectIds.has(h.projectId) &&
+        !(hideLegacy && h.projectId != null && legacyProjectIds.has(h.projectId)),
+      );
+    }
     return [...list].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
-  }, [mediaHistory, homeGalleryFilter, diskMediaEntries, screenplayProjectIds, history]);
+  }, [mediaHistory, homeGalleryFilter, diskMediaEntries, screenplayProjectIds, history, legacyProjectIds]);
 
   const [homeExpandedSp, setHomeExpandedSp] = useState(new Set());
   const homeScreenplayGroups = useMemo(() => {
@@ -6348,10 +6371,6 @@ export default function AIStudio() {
         }>
         {/* ═══ HOME ═══ */}
         {view === "home" && <>
-          <p style={{ fontSize: 15, color: AX.text2, margin: "0 0 20px", maxWidth: 560, lineHeight: 1.55, flexShrink: 0 }}>
-            Benvenuto in <strong style={{ color: AX.text }}>AXSTUDIO</strong> — crea immagini e video con la GPU cloud, senza limiti creativi.
-          </p>
-
           <h2 style={{ fontSize: 13, fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", color: AX.muted, margin: "0 0 16px", flexShrink: 0 }}>Cosa vuoi creare oggi?</h2>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 16, marginBottom: 24, flexShrink: 0 }}>
             {[
