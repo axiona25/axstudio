@@ -577,6 +577,32 @@ function normalizeSceneResultRow(r) {
   };
 }
 
+/** Merge una scena appena generata in `sceneResults` ordinati come il piano (stessa logica di setSceneResults post-pipeline). */
+function mergePipelineSceneIntoResults(prevRows, scene, finalUrl, sceneBaseResult, updatedAt, del, plan) {
+  const prev = Array.isArray(prevRows) ? prevRows : [];
+  const map = new Map(prev.map((r) => [r.sceneId, r]));
+  const prevRow = map.get(scene.id);
+  const rowInput = {
+    sceneId: scene.id,
+    title: scene.title_it,
+    imageUrl: finalUrl,
+    baseImageUrl: sceneBaseResult.outputImage,
+    sceneFinalUrl: finalUrl,
+    displayedVariant: "post_pipeline_final",
+    approved: false,
+    approvedAt: null,
+    lastEditPrompt: null,
+    editHistory: prevRow?.editHistory ? [...prevRow.editHistory] : [],
+    lastUpdatedAt: updatedAt,
+  };
+  const normalized = normalizeSceneResultRow(rowInput);
+  map.set(scene.id, normalized);
+  return (plan.scenes || [])
+    .filter((s) => !del.has(s.id))
+    .map((s) => map.get(s.id))
+    .filter(Boolean);
+}
+
 function shortUrlForSceneLog(u, max = 96) {
   if (u == null) return "(null)";
   const s = String(u);
@@ -1020,39 +1046,67 @@ export function ScenografieProjectEditor({
     console.log(`[SCENOGRAFIE UI CHARACTER CARD DEBUG]\n${JSON.stringify(rows, null, 2)}`);
   }, [persistReady, plan, projectCharacterMasters, masterImages, masterByCharName, characterApprovalMap]);
 
+  const buildCurrentChapterPayload = useCallback(
+    (overrides = {}) => ({
+      prompt,
+      scenografiaProjectTitle: projectTitle,
+      plan,
+      projectStyle,
+      projectStyleLocked,
+      masterImages,
+      masterByCharName,
+      projectCharacterMasters,
+      sceneResults,
+      executionLog,
+      enableRepair,
+      selectedSceneIds,
+      deletedSceneIds,
+      scenografiaPhase,
+      characterApprovalMap,
+      scenografiaVideoPhase,
+      sceneVideoClips,
+      characterVoiceMasters,
+      finalMontagePhase,
+      finalMontagePlan,
+      timelinePlan,
+      runtimeHints: {
+        sceneExecuteMode: sceneExecuteModeRef.current,
+        reuseMastersNext: reuseMastersRef.current,
+      },
+      ...overrides,
+    }),
+    [
+      prompt,
+      projectTitle,
+      plan,
+      projectStyle,
+      projectStyleLocked,
+      masterImages,
+      masterByCharName,
+      projectCharacterMasters,
+      sceneResults,
+      executionLog,
+      enableRepair,
+      selectedSceneIds,
+      deletedSceneIds,
+      scenografiaPhase,
+      characterApprovalMap,
+      scenografiaVideoPhase,
+      sceneVideoClips,
+      characterVoiceMasters,
+      finalMontagePhase,
+      finalMontagePlan,
+      timelinePlan,
+    ],
+  );
+
   useEffect(() => {
     if (!persistReady || !projectId || !chapterId) return;
     const t = setTimeout(() => {
       void (async () => {
         currentSaveIdRef.current += 1;
         const mySaveId = currentSaveIdRef.current;
-        const payload = {
-          prompt,
-          scenografiaProjectTitle: projectTitle,
-          plan,
-          projectStyle,
-          projectStyleLocked,
-          masterImages,
-          masterByCharName,
-          projectCharacterMasters,
-          sceneResults,
-          executionLog,
-          enableRepair,
-          selectedSceneIds,
-          deletedSceneIds,
-          scenografiaPhase,
-          characterApprovalMap,
-          scenografiaVideoPhase,
-          sceneVideoClips,
-          characterVoiceMasters,
-          finalMontagePhase,
-          finalMontagePlan,
-          timelinePlan,
-          runtimeHints: {
-            sceneExecuteMode: sceneExecuteModeRef.current,
-            reuseMastersNext: reuseMastersRef.current,
-          },
-        };
+        const payload = buildCurrentChapterPayload();
         const sceneRows = Array.isArray(payload.sceneResults) ? payload.sceneResults : [];
         const sceneIds = sceneRows.map((r) => r?.sceneId);
         const sceneUrlPreview = sceneRows.map((r) => ({
@@ -1124,6 +1178,7 @@ export function ScenografieProjectEditor({
     finalMontagePhase,
     finalMontagePlan,
     timelinePlan,
+    buildCurrentChapterPayload,
   ]);
 
   useEffect(() => {
@@ -1514,6 +1569,19 @@ export function ScenografieProjectEditor({
     } else if (exMode === "BATCH_ALL") {
       const rm = new Set(scenesToRun.map((s) => s.id));
       setSceneResults((prev) => prev.filter((r) => !rm.has(r.sceneId)));
+    }
+
+    let workingSceneResults;
+    if (exMode === "ALL") {
+      workingSceneResults = [];
+    } else if (exMode === "SELECTED") {
+      const rm = new Set(regenSingleSceneId ? selectedRemovalIds || [] : scenesToRun.map((s) => s.id));
+      workingSceneResults = sceneResults.filter((r) => !rm.has(r.sceneId));
+    } else if (exMode === "BATCH_ALL") {
+      const rm = new Set(scenesToRun.map((s) => s.id));
+      workingSceneResults = sceneResults.filter((r) => !rm.has(r.sceneId));
+    } else {
+      workingSceneResults = sceneResults.slice();
     }
 
     try {
@@ -1913,37 +1981,51 @@ export function ScenografieProjectEditor({
             mastersUsed: sceneProtagonistIds.map((id) => masters[id]).filter(Boolean),
           });
 
+          const nextRows = mergePipelineSceneIntoResults(
+            workingSceneResults,
+            scene,
+            finalUrl,
+            sceneResult,
+            updatedAt,
+            del,
+            plan,
+          );
+          workingSceneResults = nextRows;
+
+          const normalizedForTrace = nextRows.find((r) => r.sceneId === scene.id);
+          if (normalizedForTrace && shouldTraceSceneRow(normalizedForTrace)) {
+            logTraceScene2Lifecycle("dopo pipeline (input → normalize)", [
+              `scene_base_url=${shortUrlForSceneLog(sceneResult.outputImage)}`,
+              `final_output_url=${shortUrlForSceneLog(finalUrl)}`,
+              `displayed_image_chosen=${shortUrlForSceneLog(displayedImageChosen)}`,
+              `normalized_row: ${sceneRowDebugLine(normalizedForTrace, del)}`,
+            ]);
+          }
+
+          console.log("[SCENE SAVE · DIRECT POST-PIPELINE]", { sceneId: scene.id });
+          void persistChapterPayload(
+            buildCurrentChapterPayload({
+              sceneResults: nextRows,
+              masterImages: sync.masterImages,
+              masterByCharName: sync.masterByCharName,
+              projectCharacterMasters: pcmSnap,
+            }),
+          )
+            .then((ok) => {
+              if (ok) console.log("[SCENE SAVE · DIRECT POST-PIPELINE · OK]", { sceneId: scene.id });
+              else
+                console.error(
+                  "[SCENE SAVE · DIRECT POST-PIPELINE · FAIL]",
+                  new Error("persistChapterPayload returned false"),
+                  { sceneId: scene.id },
+                );
+            })
+            .catch((e) => {
+              console.error("[SCENE SAVE · DIRECT POST-PIPELINE · FAIL]", e);
+            });
+
           setSceneResults((prev) => {
             logSceneResultsSnapshot("setSceneResults BEFORE", prev, del);
-            const map = new Map(prev.map((r) => [r.sceneId, r]));
-            const prevRow = map.get(scene.id);
-            const rowInput = {
-              sceneId: scene.id,
-              title: scene.title_it,
-              imageUrl: finalUrl,
-              baseImageUrl: sceneResult.outputImage,
-              sceneFinalUrl: finalUrl,
-              displayedVariant: "post_pipeline_final",
-              approved: false,
-              approvedAt: null,
-              lastEditPrompt: null,
-              editHistory: prevRow?.editHistory ? [...prevRow.editHistory] : [],
-              lastUpdatedAt: updatedAt,
-            };
-            const normalized = normalizeSceneResultRow(rowInput);
-            if (shouldTraceSceneRow(normalized)) {
-              logTraceScene2Lifecycle("dopo pipeline (input → normalize)", [
-                `scene_base_url=${shortUrlForSceneLog(sceneResult.outputImage)}`,
-                `final_output_url=${shortUrlForSceneLog(finalUrl)}`,
-                `displayed_image_chosen=${shortUrlForSceneLog(displayedImageChosen)}`,
-                `normalized_row: ${sceneRowDebugLine(normalized, del)}`,
-              ]);
-            }
-            map.set(scene.id, normalized);
-            const nextRows = (plan.scenes || [])
-              .filter((s) => !del.has(s.id))
-              .map((s) => map.get(s.id))
-              .filter(Boolean);
             const planActiveIds = (plan.scenes || []).filter((s) => !del.has(s.id)).map((s) => s.id);
             const withoutRow = planActiveIds.filter((sid) => !nextRows.some((rr) => rr.sceneId === sid));
             const prevIds = new Set(prev.map((x) => x.sceneId));
