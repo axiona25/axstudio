@@ -231,17 +231,21 @@ export function buildScenePrompt({
   const physicalDesc = appearanceToPrompt(appearance);
   const parts = [];
 
-  if (numSubjects === 1) {
+  if (numSubjects === 0) {
+    parts.push(
+      "Environment-only shot: no people, no faces, no human figures, no silhouettes of characters; focus on place, architecture, nature, atmosphere"
+    );
+  } else if (numSubjects === 1) {
     parts.push("ONE SINGLE main character, only one protagonist");
   } else {
     parts.push(`${numSubjects} characters in the scene`);
   }
 
-  if (physicalDesc) {
+  if (numSubjects !== 0 && physicalDesc) {
     parts.push(physicalDesc);
   }
 
-  if (outfit) {
+  if (numSubjects !== 0 && outfit) {
     parts.push(`wearing ${outfit}`);
   }
 
@@ -261,7 +265,7 @@ export function buildScenePrompt({
     parts.push(palette);
   }
 
-  if (supportingCharacters) {
+  if (numSubjects !== 0 && supportingCharacters) {
     parts.push(`Supporting characters: ${supportingCharacters}`);
   }
 

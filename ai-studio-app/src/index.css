@@ -5,6 +5,26 @@ body,
   margin: 0;
 }
 
+html {
+  overscroll-behavior-x: none;
+}
+
+#root {
+  overflow-x: hidden;
+  overscroll-behavior-x: none;
+}
+
+/* Modali: niente pan orizzontale sullo sfondo; lo scroll verticale resta sulle aree con .ax-modal-scroll-y */
+.ax-modal-touch-lock {
+  touch-action: none;
+  overscroll-behavior: none;
+}
+
+.ax-modal-scroll-y {
+  touch-action: pan-y;
+  overscroll-behavior-y: contain;
+}
+
 body {
   overflow: hidden;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
@@ -17,4 +37,25 @@ body {
 code {
   font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
     monospace;
+}
+
+/* Scenografie — placeholder personaggio senza master progetto */
+@keyframes scenografie-char-placeholder-ring {
+  0%,
+  100% {
+    box-shadow:
+      0 0 0 1px rgba(255, 79, 163, 0.45),
+      0 0 14px rgba(41, 182, 255, 0.18);
+    border-color: rgba(255, 79, 163, 0.55);
+  }
+  50% {
+    box-shadow:
+      0 0 0 3px rgba(255, 79, 163, 0.75),
+      0 0 26px rgba(41, 182, 255, 0.42);
+    border-color: rgba(41, 182, 255, 0.65);
+  }
+}
+
+.ax-scen-char-placeholder {
+  animation: scenografie-char-placeholder-ring 1.65s ease-in-out infinite;
 }

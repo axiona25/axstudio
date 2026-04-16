@@ -20,6 +20,12 @@ const PLANNER_MODELS = [
   "openai/gpt-4o-mini",
 ];
 
+/** Tipo scena: personaggi visibili vs solo ambiente (paesaggio, establishing, villaggio senza figure). */
+export const SCENE_TYPE = {
+  CHARACTER_SCENE: "character_scene",
+  ENVIRONMENT_SCENE: "environment_scene",
+};
+
 /** Ruolo narrativo per master identity-lock: solo protagonist e recurring ricevono master dedicato. */
 export const CHARACTER_ROLE = {
   PROTAGONIST: "protagonist",
@@ -45,6 +51,32 @@ const IT_HINT_RE =
  * @param {string} s
  * @returns {boolean}
  */
+/**
+ * @param {object|null|undefined} scene
+ * @returns {typeof SCENE_TYPE.CHARACTER_SCENE|typeof SCENE_TYPE.ENVIRONMENT_SCENE}
+ */
+export function normalizeSceneType(scene) {
+  const t = String(scene?.sceneType ?? scene?.scene_type ?? "").trim();
+  if (t === SCENE_TYPE.ENVIRONMENT_SCENE) return SCENE_TYPE.ENVIRONMENT_SCENE;
+  return SCENE_TYPE.CHARACTER_SCENE;
+}
+
+/**
+ * @param {object|null|undefined} scene
+ * @returns {boolean}
+ */
+export function isEnvironmentScene(scene) {
+  return normalizeSceneType(scene) === SCENE_TYPE.ENVIRONMENT_SCENE;
+}
+
+/**
+ * Etichetta breve UI (italiano).
+ * @param {object|null|undefined} scene
+ */
+export function sceneTypeUiLabelIt(scene) {
+  return isEnvironmentScene(scene) ? "Ambiente" : "Con personaggi";
+}
+
 export function looksLikeEnglishNarrative(s) {
   if (s == null || typeof s !== "string") return false;
   const t = s.trim();
@@ -110,12 +142,13 @@ RULES:
 5. Keep appearance descriptions concrete and physical (gender, age, build, hair, skin, outfit).
 6. Each character MUST have a unique name/role.
 7. The main protagonist should be listed first.
-8. For each scene, specify which characters appear (characters_present must list every character visible in that shot).
-9. For each character set "character_role": "protagonist" for the main lead(s), "recurring" for named characters who appear in multiple scenes or are story-important and need a consistent face, "background" for extras/crowd with no dedicated master.
-10. All scene/character FLUX fields in English EXCEPT: top-level "summary_it", each scene's "summary_it", and each clip's "action_it" MUST be in Italian (user-facing copy).
-11. Top-level "summary_it": one short Italian logline of the whole story (concrete; NO meta phrases like "creazione di", "sequenza narrativa", "progetto scenografico", "basata su", "per bambini", "animata per").
-12. EVERY scene MUST include "summary_it": exactly ONE Italian sentence stating WHO does WHAT in THAT shot (pure story). Same forbidden meta phrases as above. Never describe the production process.
-13. EVERY clip MUST include "action_it": one short Italian sentence (who does what in that beat). Include "action_en": concise English for video/model prompts only (never shown as primary UI text).
+8. For each scene set "scene_type": "character_scene" OR "environment_scene". Use "environment_scene" for landscapes, villages, houses, panoramas, establishing shots with NO visible named characters in frame. Use "character_scene" when any planned character appears visibly.
+9. For "character_scene": "characters_present" MUST list every character id visible in that shot (non-empty). For "environment_scene": "characters_present" MUST be [] (empty array) — never list characters for pure environment shots.
+10. For each character set "character_role": "protagonist" for the main lead(s), "recurring" for named characters who appear in multiple scenes or are story-important and need a consistent face, "background" for extras/crowd with no dedicated master.
+11. All scene/character FLUX fields in English EXCEPT: top-level "summary_it", each scene's "summary_it", and each clip's "action_it" MUST be in Italian (user-facing copy).
+12. Top-level "summary_it": one short Italian logline of the whole story (concrete; NO meta phrases like "creazione di", "sequenza narrativa", "progetto scenografico", "basata su", "per bambini", "animata per").
+13. EVERY scene MUST include "summary_it": for character_scene, one Italian sentence WHO does WHAT; for environment_scene, one Italian sentence describing the place, light, mood (still pure story, no production meta).
+14. EVERY clip MUST include "action_it": one short Italian sentence (who does what in that beat). Include "action_en": concise English for video/model prompts only (never shown as primary UI text).
 
 Return ONLY valid JSON (no markdown, no backticks):
 {
@@ -150,6 +183,7 @@ Return ONLY valid JSON (no markdown, no backticks):
       "lighting": "lighting description",
       "mood": "mood/atmosphere",
       "camera": "camera angle/framing",
+      "scene_type": "character_scene",
       "characters_present": ["char_1"],
       "outfit_override": null
     }
@@ -175,6 +209,7 @@ export function getCharactersNeedingMaster(plan) {
   if (!plan?.characters?.length) return [];
   const presentIds = new Set();
   for (const s of plan.scenes || []) {
+    if (normalizeSceneType(s) === SCENE_TYPE.ENVIRONMENT_SCENE) continue;
     for (const id of s.characters_present || []) {
       if (id) presentIds.add(id);
     }
@@ -185,7 +220,8 @@ export function getCharactersNeedingMaster(plan) {
     }
     return c.is_protagonist === true || presentIds.has(c.id);
   });
-  return picked.length > 0 ? picked : [plan.characters[0]];
+  if (picked.length > 0) return picked;
+  return presentIds.size === 0 ? [] : [plan.characters[0]];
 }
 
 /**
@@ -204,6 +240,7 @@ export function characterRoleLabelIt(char) {
 function assignCharacterRoles(plan) {
   const presentIds = new Set();
   for (const scene of plan.scenes || []) {
+    if (normalizeSceneType(scene) === SCENE_TYPE.ENVIRONMENT_SCENE) continue;
     for (const id of scene.characters_present || []) {
       if (id) presentIds.add(id);
     }
@@ -389,6 +426,7 @@ Rules:
 - Add NEW scenes with NEW unique ids for beats the user describes (do not reuse ids for different content).
 - Update top-level summary_it in Italian (concrete logline, no production meta).
 - Every new or touched scene MUST have summary_it (Italian, one narrative sentence as in the schema).
+- Every scene MUST include scene_type "character_scene" or "environment_scene"; environment_scene MUST use characters_present [].
 - Every clip MUST have action_it in Italian and action_en in English for model prompts.
 - Keep one global visual_style aligned with the existing plan unless the user explicitly asks to change the look.
 
@@ -456,11 +494,34 @@ export function validatePlan(plan) {
     if (!scene.description) {
       return { valid: false, error: `Scena "${scene.title_it}" senza descrizione` };
     }
-    // Default characters_present to first protagonist
-    if (!Array.isArray(scene.characters_present) || scene.characters_present.length === 0) {
+
+    const rawType = String(scene.scene_type ?? scene.sceneType ?? "").trim();
+    let st = SCENE_TYPE.CHARACTER_SCENE;
+    if (rawType === SCENE_TYPE.ENVIRONMENT_SCENE || rawType === "environment") {
+      st = SCENE_TYPE.ENVIRONMENT_SCENE;
+    } else if (rawType === SCENE_TYPE.CHARACTER_SCENE || rawType === "character") {
+      st = SCENE_TYPE.CHARACTER_SCENE;
+    } else if (!rawType && Array.isArray(scene.characters_present) && scene.characters_present.length === 0) {
+      st = SCENE_TYPE.ENVIRONMENT_SCENE;
+    }
+    scene.sceneType = st;
+    if (scene.scene_type != null) delete scene.scene_type;
+
+    if (st === SCENE_TYPE.ENVIRONMENT_SCENE) {
+      scene.characters_present = [];
+    } else if (!Array.isArray(scene.characters_present) || scene.characters_present.length === 0) {
       const protag = plan.characters.find((c) => c.is_protagonist) || plan.characters[0];
       scene.characters_present = [protag.id];
+    } else {
+      scene.characters_present = [
+        ...new Set(scene.characters_present.map((id) => String(id || "").trim()).filter(Boolean)),
+      ];
+      if (scene.characters_present.length === 0) {
+        const protag = plan.characters.find((c) => c.is_protagonist) || plan.characters[0];
+        scene.characters_present = [protag.id];
+      }
     }
+
     const names = (scene.characters_present || []).map((id) => charById.get(id)?.name).filter(Boolean);
     const tit = String(scene.title_it || "").trim() || `Scena ${i + 1}`;
     let sum = String(scene.summary_it || "").trim().replace(/\s+/g, " ");

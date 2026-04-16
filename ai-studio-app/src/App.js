@@ -1,6 +1,14 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo, useId, memo } from "react";
 import { resolveVideoPresetFromImageMeta, resolveVideoPresetFromFilename, VALID_VIDEO_PRESET_IDS } from "./imageStyleToVideoPreset";
 import {
+  ASSET_DOMAIN,
+  mergeImageSaveParams,
+  mergeVideoSaveParams,
+  historyRecordIsScenografieDomain,
+  diskMediaEntryIsScenografieScoped,
+  collectScenografieAssetFilePaths,
+} from "./mediaAssetDomain.js";
+import {
   HiHome,
   HiPhoto,
   HiFilm,
@@ -39,6 +47,7 @@ import {
   HiClock,
   HiPencil,
   HiEye,
+  HiChevronLeft,
   HiChevronRight,
   HiVideoCamera,
   HiEllipsisVertical,
@@ -54,6 +63,9 @@ import {
 } from "react-icons/hi2";
 import VideoEditor from "./editor/VideoEditor";
 import ScenografieSection from "./components/ScenografieSection.js";
+
+/** Lista «Progetti» + voce sidebar: disattivata (impostare `true` per riattivare). */
+const LEGACY_PROJECTS_UI_ENABLED = false;
 
 // ── ElevenLabs Config (voci/dialoghi TTS) ──
 const ELEVENLABS_API_KEY = process.env.REACT_APP_ELEVENLABS_API_KEY || "";
@@ -3374,6 +3386,7 @@ function pushGalleryUrlEntry(out, seen, url, i, sessionHint) {
 function buildVideoLibraryPickEntries(history, diskMediaEntries, generatedImages, { freeOnly = false } = {}) {
   const out = [];
   const seen = new Set();
+  const scenoPaths = collectScenografieAssetFilePaths(history);
   const pushFile = (filePath, hint) => {
     if (!filePath || seen.has(`f:${filePath}`)) return;
     seen.add(`f:${filePath}`);
@@ -3382,13 +3395,16 @@ function buildVideoLibraryPickEntries(history, diskMediaEntries, generatedImages
   };
   (Array.isArray(history) ? history : []).forEach(h => {
     if (!historyRecordIsImage(h)) return;
+    if (historyRecordIsScenografieDomain(h)) return;
     if (freeOnly && h.projectId) return;
     const p = historyRecordImagePath(h);
     if (p) pushFile(p, h.params?.promptIT || h.params?.userIdea || h.prompt || h.fileName || "");
   });
   if (!freeOnly) {
     (diskMediaEntries || []).forEach(e => {
-      if (e?.type === "image" && e.filePath) pushFile(e.filePath, e.params?.promptIT || e.params?.userIdea || e.prompt || e.fileName || "");
+      if (e?.type !== "image" || !e.filePath) return;
+      if (diskMediaEntryIsScenografieScoped(e) || scenoPaths.has(e.filePath)) return;
+      pushFile(e.filePath, e.params?.promptIT || e.params?.userIdea || e.prompt || e.fileName || "");
     });
   }
   (generatedImages || []).forEach((url, i) => pushGalleryUrlEntry(out, seen, url, i, "Generata (sessione)"));
@@ -3400,6 +3416,7 @@ function buildVideoLibraryPickEntries(history, diskMediaEntries, generatedImages
  */
 function buildGlobalFreeImageGalleryEntries(history, generatedImages, projects, diskMediaEntries) {
   const projectNameById = new Map((projects || []).map(p => [String(p.id), p.name]));
+  const scenoPaths = collectScenografieAssetFilePaths(history);
   const out = [];
   const seen = new Set();
   const pushFile = (filePath, hint) => {
@@ -3410,7 +3427,7 @@ function buildGlobalFreeImageGalleryEntries(history, generatedImages, projects, 
   };
   (generatedImages || []).forEach((url, i) => pushGalleryUrlEntry(out, seen, url, i, "Sessione corrente"));
   const imageHistory = (Array.isArray(history) ? history : [])
-    .filter(h => historyRecordIsImage(h) && historyRecordImagePath(h))
+    .filter(h => historyRecordIsImage(h) && historyRecordImagePath(h) && !historyRecordIsScenografieDomain(h))
     .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
   for (const h of imageHistory) {
     const hintBase = (h.params?.promptIT || h.params?.userIdea || h.prompt || h.fileName || "").trim();
@@ -3424,6 +3441,7 @@ function buildGlobalFreeImageGalleryEntries(history, generatedImages, projects, 
     .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
   for (const e of diskImages) {
     const fp = e.filePath || e.path;
+    if (diskMediaEntryIsScenografieScoped(e) || scenoPaths.has(fp)) continue;
     const hintBase = (e.params?.promptIT || e.params?.userIdea || e.prompt || e.fileName || "").trim();
     const hint = hintBase ? `${hintBase} · Catalogo disco` : "Catalogo disco";
     pushFile(fp, hint);
@@ -3490,6 +3508,7 @@ function VideoAppImageLibraryPanel({
     <>
       <div
         role="presentation"
+        className="ax-modal-touch-lock"
         onClick={onClose}
         onKeyDown={e => { if (e.key === "Escape") onClose(); }}
         style={{ position: "fixed", inset: 0, background: "rgba(10,10,15,0.55)", backdropFilter: "blur(5px)", zIndex: 1998 }}
@@ -3845,6 +3864,159 @@ function StylePresetTile({ preset, selected, onClick, variant, large }) {
   );
 }
 
+/** Media sceneggiatura in Home: niente striscia orizzontale a swipe — solo pulsanti Avanti/Indietro. */
+const HomeScreenplayMediaCarousel = React.memo(function HomeScreenplayMediaCarousel({ media, galleryThumbSize, onOpenPreview }) {
+  const PAGE = 4;
+  const [start, setStart] = useState(0);
+  const total = media.length;
+  const maxStart = Math.max(0, total - PAGE);
+  useEffect(() => {
+    setStart((s) => Math.min(s, maxStart));
+  }, [maxStart, total]);
+  const pageStart = Math.min(Math.max(0, start), maxStart);
+  const showNav = total > PAGE;
+  const visible = showNav ? media.slice(pageStart, pageStart + PAGE) : media;
+  const canPrev = showNav && pageStart > 0;
+  const canNext = showNav && pageStart + PAGE < total;
+  const navBtn = (disabled, aria, onClick, Icon) => (
+    <button
+      type="button"
+      aria-label={aria}
+      disabled={disabled}
+      onClick={onClick}
+      style={{
+        flexShrink: 0,
+        width: 38,
+        height: 38,
+        alignSelf: "center",
+        borderRadius: 10,
+        border: `1px solid ${AX.border}`,
+        background: AX.surface,
+        color: AX.text2,
+        cursor: disabled ? "not-allowed" : "pointer",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 0,
+        opacity: disabled ? 0.35 : 1,
+      }}
+    >
+      <Icon size={20} />
+    </button>
+  );
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <div style={{ display: "flex", alignItems: "stretch", gap: 10 }}>
+        {showNav ? navBtn(!canPrev, "Media precedenti", () => setStart((s) => Math.max(0, s - PAGE)), HiChevronLeft) : <div style={{ width: 38, flexShrink: 0 }} aria-hidden />}
+        <div style={{ flex: 1, minWidth: 0, display: "flex", gap: 10, overflow: "hidden", justifyContent: showNav ? "flex-start" : "flex-start" }}>
+          {visible.map((m, mi) => {
+            const idx = showNav ? pageStart + mi : mi;
+            return (
+              <div
+                key={m.url + idx}
+                style={{
+                  position: "relative",
+                  flex: showNav ? "1 1 0" : "0 0 auto",
+                  minWidth: showNav ? 0 : 100,
+                  width: showNav ? undefined : galleryThumbSize,
+                  maxWidth: galleryThumbSize,
+                }}
+              >
+                <button
+                  type="button"
+                  title={m.prompt || ""}
+                  onClick={() => m.entry && onOpenPreview(m.entry)}
+                  style={{
+                    position: "relative",
+                    width: "100%",
+                    aspectRatio: "1",
+                    borderRadius: 10,
+                    overflow: "hidden",
+                    border: `1px solid ${AX.border}`,
+                    background: AX.bg,
+                    padding: 0,
+                    cursor: "pointer",
+                    display: "block",
+                    transition: "transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease",
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.borderColor = AX.violet;
+                    e.currentTarget.style.transform = "scale(1.03)";
+                    e.currentTarget.style.boxShadow = "0 8px 24px rgba(0,0,0,0.35)";
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.borderColor = AX.border;
+                    e.currentTarget.style.transform = "scale(1)";
+                    e.currentTarget.style.boxShadow = "none";
+                  }}
+                >
+                  {m.type === "video" ? (
+                    <video
+                      src={m.url}
+                      muted
+                      playsInline
+                      preload="metadata"
+                      style={{ width: "100%", height: "100%", objectFit: "cover", objectPosition: THUMB_COVER_POSITION, pointerEvents: "none" }}
+                      onLoadedData={(e) => {
+                        try {
+                          const v = e.currentTarget;
+                          if (v.duration && !Number.isNaN(v.duration)) v.currentTime = Math.min(0.05, v.duration * 0.01);
+                        } catch (_) {
+                          /* noop */
+                        }
+                      }}
+                    />
+                  ) : (
+                    <img alt="" src={m.url} loading="lazy" decoding="async" style={{ width: "100%", height: "100%", objectFit: "cover", objectPosition: THUMB_COVER_POSITION }} />
+                  )}
+                  <span
+                    style={{
+                      position: "absolute",
+                      top: 5,
+                      left: 5,
+                      fontSize: 8,
+                      fontWeight: 700,
+                      padding: "2px 5px",
+                      borderRadius: 5,
+                      background: m.type === "video" ? "rgba(123,77,255,0.9)" : "rgba(41,182,255,0.9)",
+                      color: AX.bg,
+                    }}
+                  >
+                    {m.type === "video" ? "VIDEO" : "IMG"}
+                  </span>
+                  {m.clipIndex != null && (
+                    <span
+                      style={{
+                        position: "absolute",
+                        bottom: 5,
+                        right: 5,
+                        fontSize: 8,
+                        fontWeight: 700,
+                        padding: "2px 6px",
+                        borderRadius: 5,
+                        background: "rgba(0,0,0,0.7)",
+                        color: AX.text2,
+                      }}
+                    >
+                      #{m.clipIndex + 1}
+                    </span>
+                  )}
+                </button>
+              </div>
+            );
+          })}
+        </div>
+        {showNav ? navBtn(!canNext, "Media successivi", () => setStart((s) => Math.min(maxStart, s + PAGE)), HiChevronRight) : <div style={{ width: 38, flexShrink: 0 }} aria-hidden />}
+      </div>
+      {showNav ? (
+        <div style={{ fontSize: 11, color: AX.muted, textAlign: "center" }}>
+          {pageStart + 1}–{Math.min(pageStart + PAGE, total)} di {total}
+        </div>
+      ) : null}
+    </div>
+  );
+});
+
 /** Miniatura catalogo Home: anteprima file salvato in locale (Electron). */
 const HomeGalleryTile = React.memo(function HomeGalleryTile({ entry, onRequestDelete, onOpenPreview }) {
   const isVideo = entry.type === "video";
@@ -4054,6 +4226,7 @@ const GalleryPreviewModal = React.memo(function GalleryPreviewModal({ entry, onC
 
   return (
     <div
+      className="ax-modal-touch-lock"
       style={{
         position: "fixed",
         inset: 0,
@@ -4134,6 +4307,7 @@ const GalleryPreviewModal = React.memo(function GalleryPreviewModal({ entry, onC
         </div>
       </div>
       <div
+        className="ax-modal-scroll-y"
         style={{
           flex: 1,
           minHeight: 0,
@@ -5115,10 +5289,12 @@ const storage = {
 // ── Main App ──
 export default function AIStudio() {
   const [view, setView] = useState("home");
-  /** Scenografie: pulsante header «←» torna alla griglia progetti se l'editor è aperto. */
+  /** Scenografie: header «←» — gerarchia hub → progetto → capitolo (tryBackToHub). */
   const scenografieNavRef = useRef({ tryBackToHub: () => false });
-  /** Su griglia Scenografie il back di sistema è nascosto; visibile solo con un progetto aperto. */
-  const [scenografieEditorOpen, setScenografieEditorOpen] = useState(false);
+  /** Su hub Scenografie (solo griglia progetti) il back è nascosto; visibile dentro Progetto o Capitolo. */
+  const [scenografieSectionStacked, setScenografieSectionStacked] = useState(false);
+  /** Titolo workspace in header quando si è dentro un progetto (null → etichetta «Scenografie»). */
+  const [scenografieHeaderTitle, setScenografieHeaderTitle] = useState(null);
   const [projects, setProjects] = useState([]);
   const [currentProject, setCurrentProject] = useState(null);
   const [showNewProject, setShowNewProject] = useState(false);
@@ -5393,7 +5569,17 @@ export default function AIStudio() {
   }, [view]);
 
   useEffect(() => {
-    if (view !== "scenografie") setScenografieEditorOpen(false);
+    if (view !== "scenografie") {
+      setScenografieSectionStacked(false);
+      setScenografieHeaderTitle(null);
+    }
+  }, [view]);
+
+  useEffect(() => {
+    if (!LEGACY_PROJECTS_UI_ENABLED && view === "projects") {
+      setView("home");
+      setCurrentProject(null);
+    }
   }, [view]);
 
   useEffect(() => {
@@ -5415,8 +5601,10 @@ export default function AIStudio() {
 
   // ── Save generated media to disk + history ──
   const saveGeneratedImage = useCallback(async (base64DataUrl, promptUsed, params = {}) => {
+    const mergedParams = mergeImageSaveParams(params);
+    const isScenografie = mergedParams.assetDomain === ASSET_DOMAIN.SCENOGRAFIE;
     const ts = Date.now();
-    const fileName = `img_${ts}.png`;
+    const fileName = isScenografie ? `sceno_img_${ts}.png` : `img_${ts}.png`;
     const raw = base64DataUrl.startsWith("data:") ? base64DataUrl.split(",")[1] : base64DataUrl;
 
     const saveResult = await storage.saveFile(fileName, raw, "images");
@@ -5427,17 +5615,19 @@ export default function AIStudio() {
       fileName,
       filePath: saveResult.path,
       prompt: promptUsed,
-      params,
+      params: mergedParams,
       createdAt: new Date().toISOString(),
       projectId: currentProject?.id || null,
     };
-    setHistory(prev => [entry, ...prev]);
+    if (!isScenografie) setHistory(prev => [entry, ...prev]);
     return entry;
   }, [currentProject]);
 
   const saveGeneratedVideo = useCallback(async (base64Data, promptUsed, params = {}) => {
+    const mergedParams = mergeVideoSaveParams(params);
+    const isScenografie = mergedParams.assetDomain === ASSET_DOMAIN.SCENOGRAFIE;
     const ts = Date.now();
-    const fileName = `vid_${ts}.mp4`;
+    const fileName = isScenografie ? `sceno_vid_${ts}.mp4` : `vid_${ts}.mp4`;
     const raw = base64Data.startsWith("data:") ? base64Data.split(",")[1] : base64Data;
 
     const saveResult = await storage.saveFile(fileName, raw, "videos");
@@ -5448,11 +5638,11 @@ export default function AIStudio() {
       fileName,
       filePath: saveResult.path,
       prompt: promptUsed,
-      params,
+      params: mergedParams,
       createdAt: new Date().toISOString(),
       projectId: currentProject?.id || null,
     };
-    setHistory(prev => [entry, ...prev]);
+    if (!isScenografie) setHistory(prev => [entry, ...prev]);
     return entry;
   }, [currentProject]);
 
@@ -5771,7 +5961,12 @@ export default function AIStudio() {
   }, [projectSourceImageUrl, projectGalleryEntryList]);
 
   const mediaHistory = useMemo(
-    () => history.filter(h => h.type === "image" || h.type === "video"),
+    () => history.filter(h => (h.type === "image" || h.type === "video") && !historyRecordIsScenografieDomain(h)),
+    [history],
+  );
+
+  const historyForFreeStudio = useMemo(
+    () => history.filter(h => !historyRecordIsScenografieDomain(h)),
     [history],
   );
   const screenplayProjectIds = useMemo(() => {
@@ -5782,12 +5977,15 @@ export default function AIStudio() {
 
   const homeRecentItems = useMemo(() => {
     const knownPaths = new Set(mediaHistory.map(h => h.filePath).filter(Boolean));
-    const fromDisk = diskMediaEntries.filter(e => e.filePath && !knownPaths.has(e.filePath));
+    const scenoPaths = collectScenografieAssetFilePaths(history);
+    const fromDisk = diskMediaEntries.filter(
+      e => e.filePath && !knownPaths.has(e.filePath) && !diskMediaEntryIsScenografieScoped(e) && !scenoPaths.has(e.filePath),
+    );
     let list = [...mediaHistory, ...fromDisk];
     if (homeGalleryFilter === "image") list = list.filter(h => h.type === "image" && !h.params?.screenplayId && !screenplayProjectIds.has(h.projectId));
     else if (homeGalleryFilter === "video") list = list.filter(h => h.type === "video" && !h.params?.screenplayId && !screenplayProjectIds.has(h.projectId));
     return [...list].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
-  }, [mediaHistory, homeGalleryFilter, diskMediaEntries, screenplayProjectIds]);
+  }, [mediaHistory, homeGalleryFilter, diskMediaEntries, screenplayProjectIds, history]);
 
   const [homeExpandedSp, setHomeExpandedSp] = useState(new Set());
   const homeScreenplayGroups = useMemo(() => {
@@ -5844,9 +6042,12 @@ export default function AIStudio() {
   /** Catalogo globale (storico + disco), nessun filtro progetto — usato per Home e viste libere. */
   const homeRecentCatalogBase = useMemo(() => {
     const knownPaths = new Set(mediaHistory.map(h => h.filePath).filter(Boolean));
-    const fromDisk = diskMediaEntries.filter(e => e.filePath && !knownPaths.has(e.filePath));
+    const scenoPaths = collectScenografieAssetFilePaths(history);
+    const fromDisk = diskMediaEntries.filter(
+      e => e.filePath && !knownPaths.has(e.filePath) && !diskMediaEntryIsScenografieScoped(e) && !scenoPaths.has(e.filePath),
+    );
     return [...mediaHistory, ...fromDisk].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
-  }, [mediaHistory, diskMediaEntries]);
+  }, [mediaHistory, diskMediaEntries, history]);
 
   const homeCatalogImageUrls = useMemo(
     () => homeRecentCatalogBase.filter(h => h.type === "image").map(h => (h.filePath ? mediaFileUrl(h.filePath) : null)).filter(Boolean),
@@ -5899,7 +6100,7 @@ export default function AIStudio() {
   }, [view, generatedVideos, freeCatalogVideoUrls, projectCatalogVideoUrls]);
 
   const studioSidebarVideoHistory = useMemo(() => {
-    const vidHistory = history.filter(h => h.type === "video");
+    const vidHistory = history.filter(h => h.type === "video" && !historyRecordIsScenografieDomain(h));
     if (view === "project" && currentProject) {
       return vidHistory.filter(h => h.projectId === currentProject.id);
     }
@@ -5912,6 +6113,7 @@ export default function AIStudio() {
   const projectHistoryStatsById = useMemo(() => {
     const m = new Map();
     for (const h of history) {
+      if (historyRecordIsScenografieDomain(h)) continue;
       const pid = h.projectId;
       if (!pid) continue;
       if (!m.has(pid)) {
@@ -5943,7 +6145,7 @@ export default function AIStudio() {
   const headerTitle = view === "home" ? "Benvenuto"
     : view === "free-image" ? "Immagine libera"
       : view === "free-video" ? "Video libero"
-        : view === "scenografie" ? "Scenografie"
+        : view === "scenografie" ? scenografieHeaderTitle || "Scenografie"
           : view === "video-editor" ? "Video Editor"
             : view === "settings" ? "Impostazioni"
               : view === "projects" ? "Progetti"
@@ -5966,7 +6168,7 @@ export default function AIStudio() {
   /** Home / lista progetti / split libero: colonna centrale bloccata. Dettaglio progetto: scroll (colonna sinistra o main) così il modulo non viene tagliato. Video libero ha scroll abilitato per contenere tutti i controlli. */
   const mainScrollLocked =
     (studioSplitView && view !== "free-video") ||
-    view === "projects" ||
+    (LEGACY_PROJECTS_UI_ENABLED && view === "projects") ||
     view === "home" ||
     view === "settings";
   /** Riga principale + sidebar anteprime (solo image/video libero o progetto su tab immagine/video). */
@@ -5993,7 +6195,7 @@ export default function AIStudio() {
     </a>
   );
 
-  const backHiddenOnScenografieHub = view === "scenografie" && !scenografieEditorOpen;
+  const backHiddenOnScenografieHub = view === "scenografie" && !scenografieSectionStacked;
 
   const BackBtn = () =>
     view !== "home" &&
@@ -6007,7 +6209,8 @@ export default function AIStudio() {
         type="button"
         onClick={() => {
           if (view === "project") {
-            setView("projects");
+            setView(LEGACY_PROJECTS_UI_ENABLED ? "projects" : "home");
+            if (!LEGACY_PROJECTS_UI_ENABLED) setCurrentProject(null);
             return;
           }
           if (view === "scenografie") {
@@ -6084,7 +6287,9 @@ export default function AIStudio() {
           <NavBtn icon={<HiPhoto size={20} />} label="Immagine libera" active={view === "free-image"} onClick={() => { setView("free-image"); setCurrentProject(null); }} />
           <NavBtn icon={<HiFilm size={20} />} label="Video libero" active={view === "free-video"} onClick={() => { setView("free-video"); setCurrentProject(null); }} />
           <NavBtn icon={<HiRectangleGroup size={20} />} label="Scenografie" active={view === "scenografie"} onClick={() => { setView("scenografie"); setCurrentProject(null); }} />
-          <NavBtn icon={<HiFolder size={20} />} label="Progetti" active={view === "projects" || view === "project"} onClick={() => { setView("projects"); setCurrentProject(null); }} />
+          {LEGACY_PROJECTS_UI_ENABLED ? (
+            <NavBtn icon={<HiFolder size={20} />} label="Progetti" active={view === "projects" || view === "project"} onClick={() => { setView("projects"); setCurrentProject(null); }} />
+          ) : null}
           <NavBtn icon={<HiVideoCamera size={20} />} label="Video Editor" active={view === "video-editor"} onClick={() => { setView("video-editor"); setCurrentProject(null); }} />
           <div style={{ flex: 1 }} />
           <NavBtn icon={<HiCog6Tooth size={20} />} label="Impostazioni" active={view === "settings"} onClick={() => { setView("settings"); setCurrentProject(null); }} />
@@ -6096,7 +6301,7 @@ export default function AIStudio() {
           <VideoEditor
             projectName={currentProject?.name}
             projectMedia={[]}
-            history={history}
+            history={historyForFreeStudio}
             mediaFileUrl={mediaFileUrl}
           />
         ) : (<>
@@ -6152,7 +6357,9 @@ export default function AIStudio() {
             {[
               { v: "free-image", thumb: AX.gradPrimary, title: "Crea immagine", desc: "Genera un’immagine da prompt", CardIcon: HiPhoto, onClick: () => setView("free-image") },
               { v: "free-video", thumb: AX.gradCreative, title: "Crea video", desc: "Animazione e motion da prompt", CardIcon: HiFilm, onClick: () => setView("free-video") },
-              { v: "new-project", thumb: AX.gradAccent, title: "Nuovo progetto", desc: "Personaggi, scene e coerenza", CardIcon: HiSparkles, onClick: () => setShowNewProject(true) },
+              ...(LEGACY_PROJECTS_UI_ENABLED
+                ? [{ v: "new-project", thumb: AX.gradAccent, title: "Nuovo progetto", desc: "Personaggi, scene e coerenza", CardIcon: HiSparkles, onClick: () => setShowNewProject(true) }]
+                : []),
             ].map(q => (
               <button key={q.v} type="button" onClick={q.onClick} style={{ display: "flex", alignItems: "stretch", gap: 16, textAlign: "left", padding: 18, borderRadius: 18, border: `1px solid ${AX.border}`, background: AX.surface, cursor: "pointer", transition: "background 0.2s ease, border-color 0.2s ease, transform 0.15s ease" }}
                 onMouseEnter={e => { e.currentTarget.style.borderColor = AX.violet; e.currentTarget.style.background = AX.hover; }}
@@ -6280,45 +6487,11 @@ export default function AIStudio() {
                       </button>
                       {isOpen && group.media.length > 0 && (
                         <div style={{ padding: "4px 16px 14px" }}>
-                          <div style={{ display: "flex", gap: 10, overflowX: "auto", overflowY: "hidden", padding: "4px 0 6px" }} className="ax-hide-scrollbar">
-                            {group.media.map((m, mi) => (
-                              <div
-                                key={m.url + mi}
-                                style={{ position: "relative", flexShrink: 0, width: galleryThumbSize, minWidth: 100 }}
-                              >
-                                <button
-                                  type="button"
-                                  title={m.prompt || ""}
-                                  onClick={() => m.entry && setGalleryPreviewEntry(m.entry)}
-                                  style={{
-                                    position: "relative", width: "100%", aspectRatio: "1", borderRadius: 10, overflow: "hidden",
-                                    border: `1px solid ${AX.border}`, background: AX.bg, padding: 0, cursor: "pointer", display: "block",
-                                    transition: "transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease",
-                                  }}
-                                  onMouseEnter={e => { e.currentTarget.style.borderColor = AX.violet; e.currentTarget.style.transform = "scale(1.03)"; e.currentTarget.style.boxShadow = "0 8px 24px rgba(0,0,0,0.35)"; }}
-                                  onMouseLeave={e => { e.currentTarget.style.borderColor = AX.border; e.currentTarget.style.transform = "scale(1)"; e.currentTarget.style.boxShadow = "none"; }}
-                                >
-                                  {m.type === "video" ? (
-                                    <video src={m.url} muted playsInline preload="metadata" style={{ width: "100%", height: "100%", objectFit: "cover", objectPosition: THUMB_COVER_POSITION, pointerEvents: "none" }}
-                                      onLoadedData={e => { try { const v = e.currentTarget; if (v.duration && !Number.isNaN(v.duration)) v.currentTime = Math.min(0.05, v.duration * 0.01); } catch (_) { /* noop */ } }}
-                                    />
-                                  ) : (
-                                    <img alt="" src={m.url} loading="lazy" decoding="async" style={{ width: "100%", height: "100%", objectFit: "cover", objectPosition: THUMB_COVER_POSITION }} />
-                                  )}
-                                  <span style={{
-                                    position: "absolute", top: 5, left: 5, fontSize: 8, fontWeight: 700, padding: "2px 5px", borderRadius: 5,
-                                    background: m.type === "video" ? "rgba(123,77,255,0.9)" : "rgba(41,182,255,0.9)", color: AX.bg,
-                                  }}>{m.type === "video" ? "VIDEO" : "IMG"}</span>
-                                  {m.clipIndex != null && (
-                                    <span style={{
-                                      position: "absolute", bottom: 5, right: 5, fontSize: 8, fontWeight: 700, padding: "2px 6px", borderRadius: 5,
-                                      background: "rgba(0,0,0,0.7)", color: AX.text2,
-                                    }}>#{m.clipIndex + 1}</span>
-                                  )}
-                                </button>
-                              </div>
-                            ))}
-                          </div>
+                          <HomeScreenplayMediaCarousel
+                            media={group.media}
+                            galleryThumbSize={galleryThumbSize}
+                            onOpenPreview={setGalleryPreviewEntry}
+                          />
                         </div>
                       )}
                     </div>
@@ -6355,8 +6528,8 @@ export default function AIStudio() {
           )}
         </>}
 
-        {/* ═══ PROJECTS (lista) ═══ */}
-        {view === "projects" && (
+        {/* ═══ PROJECTS (lista) — solo se LEGACY_PROJECTS_UI_ENABLED ═══ */}
+        {LEGACY_PROJECTS_UI_ENABLED && view === "projects" && (
           <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
             <div style={{ flexShrink: 0 }}>
               <p style={{ fontSize: 15, color: AX.text2, margin: "0 0 14px", maxWidth: 560, lineHeight: 1.5 }}>
@@ -6893,8 +7066,8 @@ export default function AIStudio() {
             const completePct = Math.round((filled / totalFields) * 100);
 
             return (
-              <div onClick={() => setShowCharCreator(false)} style={{ position: "fixed", inset: 0, background: "rgba(6,6,12,0.82)", backdropFilter: "blur(12px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1500, padding: 24 }}>
-              <div onClick={e => e.stopPropagation()} style={{ width: "100%", maxWidth: 620, maxHeight: "90vh", overflowY: "auto", overflowX: "hidden", borderRadius: 16, border: `1px solid rgba(255,179,71,0.25)`, background: "linear-gradient(145deg, #13131c 0%, #0f0f18 100%)" }}>
+              <div className="ax-modal-touch-lock" onClick={() => setShowCharCreator(false)} style={{ position: "fixed", inset: 0, background: "rgba(6,6,12,0.82)", backdropFilter: "blur(12px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1500, padding: 24 }}>
+              <div onClick={e => e.stopPropagation()} className="ax-modal-scroll-y" style={{ width: "100%", maxWidth: 620, maxHeight: "90vh", overflowY: "auto", overflowX: "hidden", borderRadius: 16, border: `1px solid rgba(255,179,71,0.25)`, background: "linear-gradient(145deg, #13131c 0%, #0f0f18 100%)" }}>
 
                 {/* Header */}
                 <div style={{ padding: "12px 16px", background: "rgba(255,179,71,0.06)", borderBottom: "1px solid rgba(255,179,71,0.12)", display: "flex", alignItems: "center", gap: 10 }}>
@@ -7149,11 +7322,11 @@ export default function AIStudio() {
 
           {activeTab === "image" && (
             <>
-              <ImgGen {...{ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setResolution, generating, setGenerating, generatedImages, setGeneratedImages, selectedCharacter: null, setSelectedCharacter: null, projectCharacters: [], scenes: scenePresets, onSave: saveGeneratedImage, previewImg: genPreviewImg, setPreviewImg: setGenPreviewImg, layoutFill: false, history, recallImageUrl, setRecallImageUrl, selectedStyles: imgSelectedStyles, setSelectedStyles: setImgSelectedStyles, aspect: imgAspect, setAspect: setImgAspect, steps: imgSteps, setSteps: setImgSteps, cfg: imgCfg, setCfg: setImgCfg, adv: imgAdv, setAdv: setImgAdv, projectSourceImageUrl, setProjectSourceImageUrl, currentProjectId: currentProject?.id, imgSessionPromptMap, imgPickerEntries: projectGalleryEntryList, imgPickerSelectedId: imgGallerySelectedEntryId, onImgPickerChange: handleImgGalleryPick, myImagesPickedUrl, onSaveAsSet: (imgUrl) => { setSaveSetImageUrl(imgUrl); setShowSaveSetModal(true); }, selectedSet, imageStatus, setImageStatus, imageProgress, setImageProgress }} />
+              <ImgGen {...{ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setResolution, generating, setGenerating, generatedImages, setGeneratedImages, selectedCharacter: null, setSelectedCharacter: null, projectCharacters: [], scenes: scenePresets, onSave: saveGeneratedImage, previewImg: genPreviewImg, setPreviewImg: setGenPreviewImg, layoutFill: false, history: historyForFreeStudio, recallImageUrl, setRecallImageUrl, selectedStyles: imgSelectedStyles, setSelectedStyles: setImgSelectedStyles, aspect: imgAspect, setAspect: setImgAspect, steps: imgSteps, setSteps: setImgSteps, cfg: imgCfg, setCfg: setImgCfg, adv: imgAdv, setAdv: setImgAdv, projectSourceImageUrl, setProjectSourceImageUrl, currentProjectId: currentProject?.id, imgSessionPromptMap, imgPickerEntries: projectGalleryEntryList, imgPickerSelectedId: imgGallerySelectedEntryId, onImgPickerChange: handleImgGalleryPick, myImagesPickedUrl, onSaveAsSet: (imgUrl) => { setSaveSetImageUrl(imgUrl); setShowSaveSetModal(true); }, selectedSet, imageStatus, setImageStatus, imageProgress, setImageProgress }} />
             </>
           )}
           {activeTab === "video" && (
-            <VidGen {...{ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, videoResolution, setVideoResolution, generating, setGenerating, selectedCharacter: null, vidTemplates: videoStylePresets, onSaveVideo: saveGeneratedVideo, generatedVideos, setGeneratedVideos, previewVideo: genPreviewVideo, setPreviewVideo: setGenPreviewVideo, layoutFill: false, history, diskMediaEntries, generatedImages, controlledSourceImg: projectVideoSourceImg, setControlledSourceImg: setProjectVideoSourceImg, proposalResetNonce: projectVideoProposalResetNonce, pickerImageEntries: projectGalleryEntryList, pickerSelectedEntryId: projectGallerySelectedEntryId, onPickerImageChange: handleProjectGallerySelection, selectedVideoStyles: vidSelectedStyles, setSelectedVideoStyles: setVidSelectedStyles, selectedDirectionStyles: vidSelectedDirectionStyles, setSelectedDirectionStyles: setVidSelectedDirectionStyles, vidAspect, setVidAspect, vidSteps, setVidSteps, recallVideoUrl, setRecallVideoUrl, videoStatus, setVideoStatus, directionRecommendation: vidDirectionRecommendation, setDirectionRecommendation: setVidDirectionRecommendation, directionRecLoading: vidDirectionRecLoading, setDirectionRecLoading: setVidDirectionRecLoading, imgSessionPromptMap, videoSidebarMode, setVideoSidebarMode, expandedScreenplays, setExpandedScreenplays, voiceLibrary, elFavorites, myVoices, projectSets, videosRendering, setVideosRendering }} />
+            <VidGen {...{ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, videoResolution, setVideoResolution, generating, setGenerating, selectedCharacter: null, vidTemplates: videoStylePresets, onSaveVideo: saveGeneratedVideo, generatedVideos, setGeneratedVideos, previewVideo: genPreviewVideo, setPreviewVideo: setGenPreviewVideo, layoutFill: false, history: historyForFreeStudio, diskMediaEntries, generatedImages, controlledSourceImg: projectVideoSourceImg, setControlledSourceImg: setProjectVideoSourceImg, proposalResetNonce: projectVideoProposalResetNonce, pickerImageEntries: projectGalleryEntryList, pickerSelectedEntryId: projectGallerySelectedEntryId, onPickerImageChange: handleProjectGallerySelection, selectedVideoStyles: vidSelectedStyles, setSelectedVideoStyles: setVidSelectedStyles, selectedDirectionStyles: vidSelectedDirectionStyles, setSelectedDirectionStyles: setVidSelectedDirectionStyles, vidAspect, setVidAspect, vidSteps, setVidSteps, recallVideoUrl, setRecallVideoUrl, videoStatus, setVideoStatus, directionRecommendation: vidDirectionRecommendation, setDirectionRecommendation: setVidDirectionRecommendation, directionRecLoading: vidDirectionRecLoading, setDirectionRecLoading: setVidDirectionRecLoading, imgSessionPromptMap, videoSidebarMode, setVideoSidebarMode, expandedScreenplays, setExpandedScreenplays, voiceLibrary, elFavorites, myVoices, projectSets, videosRendering, setVideosRendering }} />
           )}
 
           </div>
@@ -7162,14 +7335,14 @@ export default function AIStudio() {
         {/* ═══ FREE IMAGE ═══ */}
         {view === "free-image" && (
           <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflowY: "auto", overflowX: "hidden" }}>
-            <ImgGen {...{ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setResolution, generating, setGenerating, generatedImages, setGeneratedImages, selectedCharacter: null, setSelectedCharacter: null, projectCharacters: [], scenes: scenePresets, onSave: saveGeneratedImage, previewImg: genPreviewImg, setPreviewImg: setGenPreviewImg, layoutFill: true, history, recallImageUrl, setRecallImageUrl, selectedStyles: imgSelectedStyles, setSelectedStyles: setImgSelectedStyles, aspect: imgAspect, setAspect: setImgAspect, steps: imgSteps, setSteps: setImgSteps, cfg: imgCfg, setCfg: setImgCfg, adv: imgAdv, setAdv: setImgAdv, imgSessionPromptMap, imageStatus, setImageStatus, imageProgress, setImageProgress }} />
+            <ImgGen {...{ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setResolution, generating, setGenerating, generatedImages, setGeneratedImages, selectedCharacter: null, setSelectedCharacter: null, projectCharacters: [], scenes: scenePresets, onSave: saveGeneratedImage, previewImg: genPreviewImg, setPreviewImg: setGenPreviewImg, layoutFill: true, history: historyForFreeStudio, recallImageUrl, setRecallImageUrl, selectedStyles: imgSelectedStyles, setSelectedStyles: setImgSelectedStyles, aspect: imgAspect, setAspect: setImgAspect, steps: imgSteps, setSteps: setImgSteps, cfg: imgCfg, setCfg: setImgCfg, adv: imgAdv, setAdv: setImgAdv, imgSessionPromptMap, imageStatus, setImageStatus, imageProgress, setImageProgress }} />
           </div>
         )}
 
         {/* ═══ FREE VIDEO ═══ */}
         {view === "free-video" && (
           <div className="ax-hide-scrollbar" style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflowY: "auto", overflowX: "hidden" }}>
-            <VidGen {...{ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, videoResolution, setVideoResolution, generating, setGenerating, selectedCharacter: null, vidTemplates: videoStylePresets, onSaveVideo: saveGeneratedVideo, generatedVideos, setGeneratedVideos, previewVideo: genPreviewVideo, setPreviewVideo: setGenPreviewVideo, layoutFill: true, history, diskMediaEntries, generatedImages, freeSourceImg: vidFreeSourceImg, setFreeSourceImg: setVidFreeSourceImg, selectedVideoStyles: vidSelectedStyles, setSelectedVideoStyles: setVidSelectedStyles, selectedDirectionStyles: vidSelectedDirectionStyles, setSelectedDirectionStyles: setVidSelectedDirectionStyles, vidAspect, setVidAspect, vidSteps, setVidSteps, recallVideoUrl, setRecallVideoUrl, videoStatus, setVideoStatus, directionRecommendation: vidDirectionRecommendation, setDirectionRecommendation: setVidDirectionRecommendation, directionRecLoading: vidDirectionRecLoading, setDirectionRecLoading: setVidDirectionRecLoading, imgSessionPromptMap, videoSidebarMode, setVideoSidebarMode, expandedScreenplays, setExpandedScreenplays, voiceLibrary, elFavorites, myVoices, videosRendering, setVideosRendering }} />
+            <VidGen {...{ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, videoResolution, setVideoResolution, generating, setGenerating, selectedCharacter: null, vidTemplates: videoStylePresets, onSaveVideo: saveGeneratedVideo, generatedVideos, setGeneratedVideos, previewVideo: genPreviewVideo, setPreviewVideo: setGenPreviewVideo, layoutFill: true, history: historyForFreeStudio, diskMediaEntries, generatedImages, freeSourceImg: vidFreeSourceImg, setFreeSourceImg: setVidFreeSourceImg, selectedVideoStyles: vidSelectedStyles, setSelectedVideoStyles: setVidSelectedStyles, selectedDirectionStyles: vidSelectedDirectionStyles, setSelectedDirectionStyles: setVidSelectedDirectionStyles, vidAspect, setVidAspect, vidSteps, setVidSteps, recallVideoUrl, setRecallVideoUrl, videoStatus, setVideoStatus, directionRecommendation: vidDirectionRecommendation, setDirectionRecommendation: setVidDirectionRecommendation, directionRecLoading: vidDirectionRecLoading, setDirectionRecLoading: setVidDirectionRecLoading, imgSessionPromptMap, videoSidebarMode, setVideoSidebarMode, expandedScreenplays, setExpandedScreenplays, voiceLibrary, elFavorites, myVoices, videosRendering, setVideosRendering }} />
           </div>
         )}
 
@@ -7178,7 +7351,8 @@ export default function AIStudio() {
           <div className="ax-hide-scrollbar" style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflowY: "auto", overflowX: "hidden" }}>
             <ScenografieSection
               scenografieNavRef={scenografieNavRef}
-              onEditorOpenChange={setScenografieEditorOpen}
+              onEditorOpenChange={setScenografieSectionStacked}
+              onHeaderTitleChange={setScenografieHeaderTitle}
               onSave={saveGeneratedImage}
               onGoToVideoProduction={() => {
                 setView("free-video");
@@ -7259,7 +7433,11 @@ export default function AIStudio() {
       </>)}
       </div>
 
-      {showNewProject && <Modal title="Nuovo Progetto" onClose={() => setShowNewProject(false)}><NewProjectForm onCreate={createProject} /></Modal>}
+      {LEGACY_PROJECTS_UI_ENABLED && showNewProject && (
+        <Modal title="Nuovo Progetto" onClose={() => setShowNewProject(false)}>
+          <NewProjectForm onCreate={createProject} />
+        </Modal>
+      )}
 
       {showAddCharModal && currentProject && (
         <Modal title="Nuovo Personaggio" onClose={() => setShowAddCharModal(false)}>
@@ -7290,7 +7468,7 @@ export default function AIStudio() {
       )}
 
       {myImagesModalOpen && currentProject && (
-        <div style={{ position: "fixed", inset: 0, zIndex: 2000, display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <div className="ax-modal-touch-lock" style={{ position: "fixed", inset: 0, zIndex: 2000, display: "flex", alignItems: "center", justifyContent: "center" }}>
           <div role="presentation" onClick={() => setMyImagesModalOpen(false)} style={{ position: "absolute", inset: 0, background: "rgba(10,10,15,0.7)", backdropFilter: "blur(6px)" }} />
           <div style={{ position: "relative", zIndex: 1, width: "min(820px, 90vw)", maxHeight: "80vh", background: AX.sidebar, borderRadius: 16, border: `1px solid ${AX.border}`, boxShadow: "0 24px 64px rgba(0,0,0,0.6)", display: "flex", flexDirection: "column", overflow: "hidden" }}>
             <div style={{ flexShrink: 0, padding: "16px 20px", borderBottom: `1px solid ${AX.border}`, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
@@ -7300,7 +7478,7 @@ export default function AIStudio() {
               </div>
               <button type="button" onClick={() => setMyImagesModalOpen(false)} style={{ width: 36, height: 36, borderRadius: 10, border: `1px solid ${AX.border}`, background: AX.bg, color: AX.text2, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}><HiXMark size={18} /></button>
             </div>
-            <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: 16 }}>
+            <div className="ax-modal-scroll-y" style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: 16 }}>
               {projectGalleryEntryList.length === 0 ? (
                 <div style={{ padding: 40, textAlign: "center", color: AX.muted }}>
                   <HiPhoto size={36} style={{ opacity: 0.4, marginBottom: 8 }} />
@@ -7603,6 +7781,7 @@ const VideoPreviewModal = React.memo(function VideoPreviewModal({ src, onClose, 
 
   return (
     <div
+      className="ax-modal-touch-lock"
       onClick={onClose}
       style={{ position: "fixed", inset: 0, background: "rgba(10,10,15,0.88)", backdropFilter: "blur(12px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 2000, cursor: "zoom-out" }}
     >
@@ -8590,6 +8769,7 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
       {/* ── Modale prompt proposto ── */}
       {proposedPrompt ? (
         <div
+          className="ax-modal-touch-lock"
           onClick={handleDismissProposal}
           style={{ position: "fixed", inset: 0, background: "rgba(6,6,12,0.78)", backdropFilter: "blur(14px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1500, padding: 24 }}
         >
@@ -8721,7 +8901,7 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
 
 
       {previewImg && (
-        <div onClick={() => setPreviewImg(null)} style={{ position: "fixed", inset: 0, background: "rgba(10,10,15,0.88)", backdropFilter: "blur(12px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 2000, cursor: "zoom-out" }}>
+        <div className="ax-modal-touch-lock" onClick={() => setPreviewImg(null)} style={{ position: "fixed", inset: 0, background: "rgba(10,10,15,0.88)", backdropFilter: "blur(12px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 2000, cursor: "zoom-out" }}>
           <div onClick={e => e.stopPropagation()} style={{ position: "relative", maxWidth: "92vw", maxHeight: "92vh", display: "flex", flexDirection: "column", alignItems: "center", gap: 14 }}>
             <img src={previewImg} alt="" style={{ maxWidth: "100%", maxHeight: "82vh", borderRadius: 12, boxShadow: "0 24px 64px rgba(0,0,0,0.55)", border: `1px solid ${AX.border}` }} />
             <div style={{ display: "flex", gap: 10 }}>
@@ -10869,6 +11049,7 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
       {/* ── Modale prompt video proposto ── */}
       {proposedVideoPrompt ? (
         <div
+          className="ax-modal-touch-lock"
           onClick={handleDismissVideoProposal}
           style={{ position: "fixed", inset: 0, background: "rgba(6,6,12,0.78)", backdropFilter: "blur(14px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1500, padding: 24 }}
         >
@@ -12294,6 +12475,7 @@ function Modal({ title, titleIcon, children, onClose, maxWidth = 480 }) {
   const mouseDownTargetRef = useRef(null);
   return (
     <div ref={backdropRef}
+      className="ax-modal-touch-lock"
       style={{ position: "fixed", inset: 0, background: "rgba(10,10,15,0.85)", backdropFilter: "blur(14px)", WebkitBackdropFilter: "blur(14px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 20 }}
       onMouseDown={e => { mouseDownTargetRef.current = e.target; }}
       onClick={e => { if (e.target === backdropRef.current && mouseDownTargetRef.current === backdropRef.current) onClose(); }}

@@ -105,3 +105,23 @@ export function composeGlobalVisualStyle(projectStyle) {
   const note = projectStyle.plannerVisualNotes || "";
   return [projectStyle.stylePrompt, note].filter(Boolean).join(". ");
 }
+
+/**
+ * Stile globale da preset immagine App (creazione guidata progetto / hub).
+ * @param {{ id: string, label: string, prompt: string, negative_prompt?: string }|null|undefined} preset
+ * @param {{ descriptionHint?: string }} [opts]
+ */
+export function buildProjectStyleFromImagePreset(preset, opts = {}) {
+  if (!preset) return null;
+  const hint = String(opts.descriptionHint || "").trim();
+  return {
+    presetId: preset.id,
+    label: preset.label,
+    stylePrompt: preset.prompt,
+    negativePrompt: preset.negative_prompt || "",
+    plannerVisualNotes: hint
+      ? `${hint.slice(0, 720)} · ${preset.label}`
+      : `${preset.label}, consistent global look for the entire project`,
+    isAnimated: isAnimatedStyle([preset.id]),
+  };
+}

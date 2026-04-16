@@ -163,6 +163,48 @@ export async function uploadToFalStorage(base64DataUrl) {
   return file_url;
 }
 
+/**
+ * Carica un blob (es. MP3 ElevenLabs) su fal storage e restituisce URL pubblico.
+ */
+export async function uploadBlobToFalStorage(blob, fileName = "audio.mp3", contentType = null) {
+  const ct = contentType || blob.type || "application/octet-stream";
+
+  const initRes = await fetch("https://rest.alpha.fal.ai/storage/upload/initiate", {
+    method: "POST",
+    headers: {
+      Authorization: `Key ${FAL_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      file_name: fileName,
+      content_type: ct,
+    }),
+  });
+
+  if (!initRes.ok) {
+    const formData = new FormData();
+    formData.append("file", blob, fileName);
+    const fallbackRes = await fetch("https://rest.alpha.fal.ai/storage/upload", {
+      method: "POST",
+      headers: { Authorization: `Key ${FAL_API_KEY}` },
+      body: formData,
+    });
+    if (!fallbackRes.ok) throw new Error(`fal.ai upload error ${fallbackRes.status}`);
+    const fallbackData = await fallbackRes.json();
+    return fallbackData.url || fallbackData.access_url;
+  }
+
+  const { upload_url, file_url } = await initRes.json();
+  const uploadRes = await fetch(upload_url, {
+    method: "PUT",
+    headers: { "Content-Type": ct },
+    body: blob,
+  });
+  if (!uploadRes.ok) throw new Error(`fal.ai presigned upload error ${uploadRes.status}`);
+
+  return file_url;
+}
+
 export async function imageUrlToBase64(url) {
   const res = await fetch(url);
   const blob = await res.blob();
@@ -644,3 +686,4 @@ export async function createSceneWithCharacter({
     onProgress,
   });
 }
+
