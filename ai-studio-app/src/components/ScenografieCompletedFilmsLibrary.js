@@ -2,8 +2,17 @@
  * Home — libreria film Scenografie: consegne guardabili, quasi pronte e da recuperare.
  */
 
-import React, { useState, useEffect, useCallback } from "react";
-import { HiFilm, HiPlay, HiXMark, HiArrowPath } from "react-icons/hi2";
+import React, { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef } from "react";
+import {
+  HiFilm,
+  HiPlay,
+  HiXMark,
+  HiArrowPath,
+  HiMagnifyingGlass,
+  HiArrowTopRightOnSquare,
+  HiRectangleStack,
+  HiShieldCheck,
+} from "react-icons/hi2";
 import {
   loadScenografiaProjectsIndex,
   loadScenografiaProjectById,
@@ -13,7 +22,6 @@ import {
 } from "../services/scenografieProjectPersistence.js";
 import {
   FILM_OUTPUT_READINESS,
-  FILM_DELIVERY_LABEL_IT,
   FILM_DELIVERY_STATE,
   workspaceEligibleForCompletedFilmsLibrary,
   deriveConsumerFilmConfidence,
@@ -23,6 +31,10 @@ import {
   describeFinalFilmPlaybackMoment,
   humanizeHtml5VideoElementError,
 } from "../services/scenografieConsumerReliability.js";
+import { shelfGridContentMinHeight } from "../home/shelfGridMetrics.js";
+import { HOME_SHELF_EMPTY_WRAP } from "../home/shelfHomeLayoutStyles.js";
+import { HOME_SHELF_VIEW_MODE } from "../home/homeShelfViewMode.js";
+import { buildHomeGridLayoutDebugPayload, logHomeGridLayoutDebug } from "../home/shelfLayoutDebug.js";
 
 const AX = {
   surface: "#13131a",
@@ -33,32 +45,6 @@ const AX = {
   electric: "#29b6ff",
   gradPrimary: "linear-gradient(135deg, #29b6ff 0%, #7b4dff 100%)",
 };
-
-/** Etichetta breve per badge card (italiano consumer). */
-function filmReadinessBadgeLabel(readiness) {
-  switch (readiness) {
-    case FILM_OUTPUT_READINESS.PLAYABLE:
-      return "Pronto da guardare";
-    case FILM_OUTPUT_READINESS.DEGRADED:
-      return "Probabilmente pronto · avvisi";
-    case FILM_OUTPUT_READINESS.URL_STALE_PHASE:
-    case FILM_OUTPUT_READINESS.UNVERIFIED_URL:
-      return "Da verificare · link salvato";
-    case FILM_OUTPUT_READINESS.MONTAGE_FAILED:
-      return "Da rigenerare · montaggio";
-    case FILM_OUTPUT_READINESS.IN_PROGRESS:
-      return "Da verificare · montaggio in corso";
-    case FILM_OUTPUT_READINESS.MISSING_OUTPUT:
-    default:
-      return "Non disponibile · senza file";
-  }
-}
-
-function deliveryBadgeLabel(filmDeliveryState, readinessFallback) {
-  const d = filmDeliveryState != null ? String(filmDeliveryState).trim() : "";
-  if (d && FILM_DELIVERY_LABEL_IT[d]) return FILM_DELIVERY_LABEL_IT[d];
-  return filmReadinessBadgeLabel(readinessFallback);
-}
 
 /** Una riga sintetica da `filmReconcileMeta` (senza duplicare il box «fiducia» quando possibile). */
 function filmReconcileRiskLineIt(meta) {
@@ -77,27 +63,19 @@ function filmReconcileRiskLineIt(meta) {
   return null;
 }
 
-function filmCardAccent(filmDeliveryState, readiness, hasUrl) {
-  if (filmDeliveryState === FILM_DELIVERY_STATE.MONTAGE_FAILED || readiness === FILM_OUTPUT_READINESS.MONTAGE_FAILED) {
-    return "#fb7185";
-  }
-  if (
-    filmDeliveryState === FILM_DELIVERY_STATE.DELIVERED_MISSING_OUTPUT ||
-    readiness === FILM_OUTPUT_READINESS.MISSING_OUTPUT ||
-    !hasUrl
-  ) {
-    return "#fbbf24";
-  }
-  if (
-    filmDeliveryState === FILM_DELIVERY_STATE.DELIVERED_FRAGILE ||
-    filmDeliveryState === FILM_DELIVERY_STATE.DELIVERED_UNVERIFIED ||
-    filmDeliveryState === FILM_DELIVERY_STATE.MULTI_CHAPTER_NO_CONSOLIDATED ||
-    readiness === FILM_OUTPUT_READINESS.DEGRADED ||
-    readiness === FILM_OUTPUT_READINESS.URL_STALE_PHASE
-  ) {
-    return "#fbbf24";
-  }
-  return "#4ade80";
+/** Metadati capitoli: una sola stringa compatta per la riga sotto il titolo. */
+function filmChaptersMetaLine(r) {
+  const n = r.chaptersCount ?? 0;
+  if (n <= 0) return "";
+  if (n === 1) return "1 cap.";
+  const done = r.chaptersCompleted ?? 0;
+  return `${done}/${n} cap.`;
+}
+
+/** Stato sintetico file finale guardabile da Home (no paragrafi tecnici). */
+function filmFinalAvailabilityShort(r) {
+  if (r.canTryPlayback) return { label: "Disponibile", ok: true };
+  return { label: "Non disponibile", ok: false };
 }
 
 /** Una sola azione principale per ridurre ambiguità CTA. */
@@ -123,18 +101,34 @@ function completedFilmPrimaryKind(r) {
 }
 
 /**
- * @param {{ homeActive?: boolean, onOpenScenografieProject?: (projectId: string, deepLink?: object|null) => void }} props
+ * @param {{ homeActive?: boolean, suppressWhenTabNotFilm?: boolean, onOpenScenografieProject?: (projectId: string, deepLink?: object|null) => void, onFilmsPresenceChange?: (meta: { loading: boolean, hasFilms: boolean }) => void, simplifiedHomeCards?: boolean, fixedFourColumnHomeGrid?: boolean, homeViewMode?: "grid"|"list", homeGridCols?: number, homeGridVisibleRows?: number, homeGridGap?: number, homeShelfMetrics?: { cellHeight: number, cellWidth: number, columns: number, visibleRows: number, gap: number } | null, homeShelfViewportInnerW?: number, titleSearch?: string }} props
  */
-export default function ScenografieCompletedFilmsLibrary({ homeActive = true, onOpenScenografieProject }) {
+export default function ScenografieCompletedFilmsLibrary({
+  homeActive = true,
+  suppressWhenTabNotFilm = false,
+  onOpenScenografieProject,
+  onFilmsPresenceChange,
+  simplifiedHomeCards = false,
+  fixedFourColumnHomeGrid = false,
+  homeViewMode = "grid",
+  homeGridCols = 4,
+  homeGridVisibleRows = 3,
+  homeGridGap = 10,
+  homeShelfMetrics = null,
+  homeShelfViewportInnerW = 0,
+  titleSearch = "",
+}) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [player, setPlayer] = useState(null);
   const [playbackError, setPlaybackError] = useState(null);
   const [playerReloadKey, setPlayerReloadKey] = useState(0);
   const [verifyBusyId, setVerifyBusyId] = useState(null);
+  const filmShelfGridRef = useRef(null);
 
   const refresh = useCallback(async () => {
     setLoading(true);
+    setRows([]);
     try {
       const idx = await loadScenografiaProjectsIndex();
       const projects = idx.projects || [];
@@ -285,10 +279,34 @@ export default function ScenografieCompletedFilmsLibrary({ homeActive = true, on
     }
   }, [refresh]);
 
+  const openPlayerForRow = useCallback((r) => {
+    setPlaybackError(null);
+    setPlayerReloadKey((k) => k + 1);
+    setPlayer({
+      id: r.id,
+      title: r.title,
+      entries: r.playbackEntries && r.playbackEntries.length ? r.playbackEntries : [],
+      activeIndex: 0,
+      openedAtIso: new Date().toISOString(),
+      filmOutputReadiness: r.filmOutputReadiness,
+      montageDeepLink: r.montageDeepLink,
+      primaryChapterId: r.primaryChapterId,
+      playableSourceChapterId: r.playableSourceChapterId,
+      showOpenChapterWithFile: r.showOpenChapterWithFile,
+      simplePrimary: r.simple.primaryLine,
+      playbackMoment: describeFinalFilmPlaybackMoment(
+        r.simple.tier,
+        r.filmOutputReadiness,
+        r.filmVerificationEffective,
+      ),
+    });
+  }, []);
+
   useEffect(() => {
     if (!homeActive) return;
+    if (suppressWhenTabNotFilm) return;
     void refresh();
-  }, [homeActive, refresh]);
+  }, [homeActive, suppressWhenTabNotFilm, refresh]);
 
   useEffect(() => {
     if (!homeActive) return undefined;
@@ -304,267 +322,531 @@ export default function ScenografieCompletedFilmsLibrary({ homeActive = true, on
     };
   }, [homeActive, refresh]);
 
-  if (!homeActive || loading || rows.length === 0) return null;
+  useEffect(() => {
+    if (typeof onFilmsPresenceChange !== "function" || !homeActive) return;
+    if (suppressWhenTabNotFilm) {
+      onFilmsPresenceChange({ loading: true, hasFilms: false });
+      return;
+    }
+    onFilmsPresenceChange({ loading, hasFilms: rows.length > 0 });
+  }, [homeActive, suppressWhenTabNotFilm, loading, rows.length, onFilmsPresenceChange]);
 
-  const playableCount = rows.filter((r) => r.canTryPlayback).length;
-  const fragileCount = rows.length - playableCount;
+  const rowsToShow = useMemo(() => {
+    const n = typeof titleSearch === "string" ? titleSearch.trim().toLowerCase() : "";
+    if (!n) return rows;
+    return rows.filter((r) => {
+      const blob = [
+        r.title,
+        r.simple?.primaryLine,
+        r.simple?.detailLine,
+        r.simple?.technicalHeadline,
+        r.filmUserHint,
+      ]
+        .filter(Boolean)
+        .join("\n")
+        .toLowerCase();
+      return blob.includes(n);
+    });
+  }, [rows, titleSearch]);
 
-  return (
-    <>
-      <h2
-        style={{
-          fontSize: 13,
-          fontWeight: 700,
-          letterSpacing: "0.1em",
-          textTransform: "uppercase",
-          color: AX.muted,
-          margin: "8px 0 8px",
-          flexShrink: 0,
-        }}
-      >
-        Film completati · percorso Scenografie
-      </h2>
-      <p style={{ fontSize: 11, color: AX.muted, margin: "0 0 14px", lineHeight: 1.45, flexShrink: 0 }}>
-        Stesso percorso dell’hub Scenografie. Sopra ogni scheda trovi una sintesi in cinque livelli (es. «Pronto da
-        guardare», «Da verificare»); sotto, dettaglio e azione consigliata. Stato ricalcolato dal file progetto.
-      </p>
-      {fragileCount > 0 ? (
-        <p style={{ fontSize: 11, color: AX.muted, margin: "0 0 14px", lineHeight: 1.45, flexShrink: 0 }}>
-          {playableCount > 0
-            ? `${playableCount} pronti per la riproduzione · ${fragileCount} con avviso o senza file (le schede restano visibili: leggi il badge sotto ogni titolo).`
-            : `Alcuni progetti risultano avanzati ma il file non è utilizzabile da qui: apri il capitolo suggerito in Scenografie per sistemare o rigenerare.`}
-        </p>
-      ) : (
-        <p style={{ fontSize: 11, color: AX.muted, margin: "0 0 14px", lineHeight: 1.45, flexShrink: 0 }}>
-          I link video dipendono dal servizio remoto. «Montaggio in corso» o «file assente» si risolvono riaprendo il
-          progetto; «Vai al montaggio» apre il capitolo più utile quando possibile.
-        </p>
-      )}
-      <div style={{ marginBottom: 12, flexShrink: 0 }}>
-        <button
-          type="button"
-          onClick={() => void refresh()}
+  useLayoutEffect(() => {
+    if (process.env.NODE_ENV !== "development") return;
+    if (!homeActive || suppressWhenTabNotFilm || !fixedFourColumnHomeGrid) return;
+    if (homeViewMode !== HOME_SHELF_VIEW_MODE.grid || !homeShelfMetrics) return;
+    if (rowsToShow.length === 0) return;
+    const gridEl = filmShelfGridRef.current;
+    if (!gridEl) return;
+    const firstTile = gridEl.firstElementChild;
+    const firstInner = firstTile?.querySelector?.("[data-ax-shelf-tile-inner]");
+    logHomeGridLayoutDebug(
+      buildHomeGridLayoutDebugPayload(
+        "film",
+        rowsToShow.length,
+        homeGridCols,
+        homeShelfMetrics.cellWidth,
+        gridEl,
+        firstTile instanceof HTMLElement ? firstTile : null,
+        firstInner instanceof HTMLElement ? firstInner : null,
+        { containerInnerWidth: homeShelfViewportInnerW },
+      ),
+    );
+  }, [
+    homeActive,
+    suppressWhenTabNotFilm,
+    fixedFourColumnHomeGrid,
+    homeViewMode,
+    homeShelfMetrics,
+    rowsToShow.length,
+    homeGridCols,
+    homeShelfViewportInnerW,
+  ]);
+
+  if (!homeActive || loading) return null;
+  if (rows.length === 0) return null;
+  if (suppressWhenTabNotFilm) return null;
+
+  /** Home vetrina: celle ad altezza fissa da ResizeObserver (scroll solo oltre le righe previste). */
+  const shelfCellH =
+    fixedFourColumnHomeGrid && homeShelfMetrics && Number.isFinite(homeShelfMetrics.cellHeight)
+      ? homeShelfMetrics.cellHeight
+      : 0;
+  const homeListMode = fixedFourColumnHomeGrid && homeViewMode === HOME_SHELF_VIEW_MODE.list;
+  const useShelfCell = simplifiedHomeCards && shelfCellH > 0;
+  const cardRadius = useShelfCell ? Math.max(5, Math.min(14, Math.round(shelfCellH * 0.11))) : 18;
+  const badgeFont = useShelfCell ? Math.max(7, Math.min(11, Math.round(shelfCellH * 0.095))) : 11;
+  const titleFont = useShelfCell ? Math.max(9, Math.min(15, Math.round(shelfCellH * 0.14))) : 16;
+  const metaFont = useShelfCell ? Math.max(8, Math.min(11, Math.round(shelfCellH * 0.08))) : 11;
+  const showFilmFooter = !useShelfCell || shelfCellH >= 76;
+
+  const gridMinHeight =
+    fixedFourColumnHomeGrid && homeShelfMetrics
+      ? shelfGridContentMinHeight(rowsToShow.length, homeGridCols, homeShelfMetrics.cellHeight, homeGridGap)
+      : undefined;
+
+  /** Vista elenco Home: righe cliccabili (stesso datasource di `rowsToShow`). */
+  const listInner = homeListMode ? (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 6,
+        flex: "0 0 auto",
+        alignSelf: "stretch",
+        boxSizing: "border-box",
+      }}
+    >
+      {rowsToShow.map((r) => {
+        const primaryKind = completedFilmPrimaryKind(r);
+        const fin = filmFinalAvailabilityShort(r);
+        const ch = filmChaptersMetaLine(r);
+        const sub = [
+          ch || null,
+          `Finale: ${fin.label}`,
+          r.updatedAt
+            ? new Date(r.updatedAt).toLocaleDateString("it-IT", { day: "numeric", month: "short", year: "numeric" })
+            : null,
+        ]
+          .filter(Boolean)
+          .join(" · ");
+        const rowAct = () => {
+          if (primaryKind === "watch" || primaryKind === "verify_final") {
+            openPlayerForRow(r);
+            return;
+          }
+          if (primaryKind === "verify" && r.filmUrl) {
+            try {
+              window.open(r.filmUrl, "_blank", "noopener,noreferrer");
+            } catch {
+              /* ignore */
+            }
+            return;
+          }
+          if (typeof onOpenScenografieProject === "function") {
+            onOpenScenografieProject(r.id, { focus: "project" });
+          }
+        };
+        return (
+          <button
+            key={r.id}
+            type="button"
+            onClick={rowAct}
+            title={r.title}
+            style={{
+              display: "flex",
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 12,
+              width: "100%",
+              minWidth: 0,
+              padding: "8px 12px",
+              borderRadius: 10,
+              border: `1px solid ${AX.border}`,
+              background: "rgba(16,18,26,0.78)",
+              cursor: "pointer",
+              textAlign: "left",
+              boxSizing: "border-box",
+              transition: "border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease",
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.borderColor = AX.electric;
+              e.currentTarget.style.background = "rgba(41,182,255,0.06)";
+              e.currentTarget.style.boxShadow = "0 4px 18px rgba(0,0,0,0.28)";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.borderColor = AX.border;
+              e.currentTarget.style.background = "rgba(16,18,26,0.78)";
+              e.currentTarget.style.boxShadow = "none";
+            }}
+          >
+            <div
+              style={{
+                width: 44,
+                aspectRatio: "27/40",
+                flexShrink: 0,
+                borderRadius: 8,
+                overflow: "hidden",
+                background: "#0a0a0f",
+                border: `1px solid ${AX.border}`,
+                boxSizing: "border-box",
+              }}
+            >
+              {r.poster ? (
+                <img alt="" src={r.poster} style={{ width: "100%", height: "100%", objectFit: "cover", objectPosition: "center top", display: "block" }} />
+              ) : (
+                <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  <HiFilm size={22} style={{ color: AX.muted }} />
+                </div>
+              )}
+            </div>
+            <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 4 }}>
+              <div
+                style={{
+                  fontSize: 14,
+                  fontWeight: 700,
+                  color: AX.text,
+                  lineHeight: 1.25,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {r.title}
+              </div>
+              <div
+                style={{
+                  fontSize: 12,
+                  color: AX.muted,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {sub || "Film Scenografie"}
+              </div>
+            </div>
+            <span
+              style={{
+                flexShrink: 0,
+                maxWidth: "36%",
+                fontSize: 10,
+                fontWeight: 800,
+                textTransform: "uppercase",
+                letterSpacing: "0.04em",
+                lineHeight: 1.25,
+                padding: "5px 8px",
+                borderRadius: 6,
+                color: fin.ok ? "#86efac" : "#fbbf24",
+                background: "rgba(0,0,0,0.35)",
+                border: `1px solid ${fin.ok ? "rgba(74,222,128,0.35)" : "rgba(251,191,36,0.45)"}`,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {fin.label}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  ) : null;
+
+  const gridInner = (
+        <div
+          ref={filmShelfGridRef}
+          data-ax-home-shelf-grid="film"
           style={{
-            padding: "8px 14px",
-            borderRadius: 10,
-            border: `1px solid ${AX.border}`,
-            background: "rgba(20,20,28,0.6)",
-            color: AX.text2,
-            fontWeight: 700,
-            fontSize: 12,
-            cursor: "pointer",
-            display: "inline-flex",
-            alignItems: "center",
-            gap: 8,
+            display: "grid",
+            gridTemplateColumns: fixedFourColumnHomeGrid
+              ? `repeat(${homeGridCols}, ${homeShelfMetrics ? homeShelfMetrics.cellWidth : 0}px)`
+              : "repeat(auto-fill, minmax(min(100%, 360px), 1fr))",
+            gap: fixedFourColumnHomeGrid ? homeGridGap : 20,
+            marginBottom: 0,
+            flexShrink: 0,
+            ...(fixedFourColumnHomeGrid && homeShelfMetrics
+              ? {
+                  flex: "0 0 auto",
+                  alignSelf: "flex-start",
+                  boxSizing: "border-box",
+                  width: "max-content",
+                  justifyContent: "start",
+                  justifyItems: "start",
+                  gridAutoRows: `${homeShelfMetrics.cellHeight}px`,
+                  minHeight: gridMinHeight,
+                  alignContent: "start",
+                }
+              : {}),
           }}
         >
-          <HiArrowPath size={16} />
-          Aggiorna elenco
-        </button>
-      </div>
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))",
-          gap: 14,
-          marginBottom: 28,
-          flexShrink: 0,
-        }}
-      >
-        {rows.map((r) => {
+        {rowsToShow.map((r) => {
           const primaryKind = completedFilmPrimaryKind(r);
+          const fin = filmFinalAvailabilityShort(r);
+          const chLine = filmChaptersMetaLine(r);
+          const iconSz = useShelfCell ? Math.max(14, Math.min(20, Math.round(shelfCellH * 0.12))) : 18;
+          const actionBtn = useShelfCell ? Math.max(28, Math.min(40, Math.round(shelfCellH * 0.26))) : 36;
+          const microShelfClick = () => {
+            if (primaryKind === "watch" || primaryKind === "verify_final") {
+              openPlayerForRow(r);
+              return;
+            }
+            if (typeof onOpenScenografieProject === "function") {
+              onOpenScenografieProject(r.id, { focus: "project" });
+            }
+          };
+          const posterInteractive = useShelfCell && showFilmFooter;
           return (
           <div
             key={r.id}
+            data-ax-shelf-tile={useShelfCell ? "film" : undefined}
+            role={useShelfCell && !showFilmFooter ? "button" : undefined}
+            tabIndex={useShelfCell && !showFilmFooter ? 0 : undefined}
+            onKeyDown={
+              useShelfCell && !showFilmFooter
+                ? (e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      microShelfClick();
+                    }
+                  }
+                : undefined
+            }
+            onClick={useShelfCell && !showFilmFooter ? microShelfClick : undefined}
             style={{
-              borderRadius: 16,
+              borderRadius: cardRadius,
               border: `1px solid ${r.canTryPlayback ? AX.border : "rgba(251,191,36,0.35)"}`,
               background: AX.surface,
               overflow: "hidden",
               display: "flex",
               flexDirection: "column",
               opacity: 1,
+              boxShadow: useShelfCell ? "0 8px 20px rgba(0,0,0,0.28)" : "0 18px 40px rgba(0,0,0,0.35)",
+              ...(useShelfCell
+                ? {
+                    width: homeShelfMetrics.cellWidth,
+                    minWidth: homeShelfMetrics.cellWidth,
+                    maxWidth: homeShelfMetrics.cellWidth,
+                    justifySelf: "start",
+                    height: "100%",
+                    minHeight: 0,
+                    cursor: "pointer",
+                    boxSizing: "border-box",
+                  }
+                : {}),
             }}
           >
-            <div style={{ aspectRatio: "2/3", background: "#0a0a0f", position: "relative" }}>
+            {/* Locandina: area dominante; chip stato compatto (no paragrafi tecnici). */}
+            <div
+              role={posterInteractive ? "button" : undefined}
+              tabIndex={posterInteractive ? 0 : undefined}
+              onKeyDown={
+                posterInteractive
+                  ? (e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        microShelfClick();
+                      }
+                    }
+                  : undefined
+              }
+              onClick={posterInteractive ? () => microShelfClick() : undefined}
+              data-ax-shelf-tile-inner={useShelfCell ? true : undefined}
+              style={
+                useShelfCell
+                  ? {
+                      flex: "1 1 0",
+                      minHeight: 0,
+                      width: "100%",
+                      minWidth: 0,
+                      background: "#0a0a0f",
+                      position: "relative",
+                      cursor: posterInteractive ? "pointer" : undefined,
+                    }
+                  : {
+                      aspectRatio: "2 / 3",
+                      minHeight: 200,
+                      background: "#0a0a0f",
+                      position: "relative",
+                      cursor: posterInteractive ? "pointer" : undefined,
+                    }
+              }
+            >
               {r.poster ? (
-                <img alt="" src={r.poster} style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+                <img alt="" src={r.poster} style={{ width: "100%", height: "100%", objectFit: "cover", objectPosition: "center top", display: "block" }} />
               ) : (
                 <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                  <HiFilm size={36} style={{ color: AX.muted }} />
+                  <HiFilm size={useShelfCell ? Math.max(20, Math.round(shelfCellH * 0.45)) : 48} style={{ color: AX.muted }} />
                 </div>
               )}
               <div
                 style={{
                   position: "absolute",
-                  bottom: 8,
-                  left: 8,
-                  right: 8,
-                  fontSize: 10,
-                  fontWeight: 800,
-                  color: filmCardAccent(r.filmDeliveryState, r.filmOutputReadiness, r.hasUrl),
-                  textTransform: "uppercase",
-                  letterSpacing: "0.06em",
-                  textShadow: "0 1px 4px rgba(0,0,0,0.8)",
+                  bottom: useShelfCell ? Math.max(6, Math.round(shelfCellH * 0.06)) : 10,
+                  right: useShelfCell ? Math.max(6, Math.round(shelfCellH * 0.06)) : 10,
+                  left: "auto",
+                  maxWidth: "58%",
+                  pointerEvents: "none",
                 }}
               >
-                {r.simple?.primaryLine || deliveryBadgeLabel(r.filmDeliveryState, r.filmOutputReadiness)}
+                <span
+                  style={{
+                    display: "inline-block",
+                    fontSize: badgeFont,
+                    fontWeight: 800,
+                    letterSpacing: "0.05em",
+                    textTransform: "uppercase",
+                    textShadow: "0 1px 6px rgba(0,0,0,0.85)",
+                    padding: "4px 9px",
+                    borderRadius: 999,
+                    border: fin.ok ? "1px solid rgba(74,222,128,0.45)" : "1px solid rgba(251,191,36,0.4)",
+                    background: "rgba(6,6,10,0.72)",
+                    backdropFilter: "blur(6px)",
+                    color: fin.ok ? "#bbf7d0" : "#fde68a",
+                    whiteSpace: "nowrap",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                  }}
+                >
+                  {fin.label}
+                </span>
               </div>
             </div>
-            <div style={{ padding: 12, flex: 1, display: "flex", flexDirection: "column", gap: 8 }}>
-              <div style={{ fontSize: 14, fontWeight: 800, color: AX.text, lineHeight: 1.3 }}>{r.title}</div>
-              <div style={{ fontSize: 11, color: AX.muted }}>
-                {r.durationSec != null ? `~${Math.round(r.durationSec)}s` : "Durata n/d"}
-                {r.updatedAt
-                  ? ` · ${new Date(r.updatedAt).toLocaleDateString("it-IT", { day: "numeric", month: "short", year: "numeric" })}`
-                  : ""}
-                {r.chaptersCount > 1 ? ` · ${r.chaptersCompleted}/${r.chaptersCount} capitoli completati` : null}
+            {showFilmFooter ? (
+            <div
+              style={{
+                padding: useShelfCell ? `${Math.max(6, Math.round(shelfCellH * 0.07))}px ${Math.max(8, Math.round(shelfCellH * 0.08))}px` : "12px 14px 14px",
+                flex: useShelfCell ? "0 0 auto" : 1,
+                display: "flex",
+                flexDirection: "column",
+                gap: useShelfCell ? Math.max(3, Math.round(shelfCellH * 0.04)) : 8,
+                minHeight: 0,
+                borderTop: "1px solid rgba(255,255,255,0.05)",
+              }}
+            >
+              <div
+                style={{
+                  fontSize: titleFont,
+                  fontWeight: 800,
+                  color: AX.text,
+                  lineHeight: 1.2,
+                  letterSpacing: "-0.02em",
+                  display: "-webkit-box",
+                  WebkitLineClamp: 2,
+                  WebkitBoxOrient: "vertical",
+                  overflow: "hidden",
+                  wordBreak: "break-word",
+                }}
+              >
+                {r.title}
               </div>
               <div
                 style={{
-                  padding: "8px 10px",
-                  borderRadius: 10,
-                  background: "rgba(74,222,128,0.06)",
-                  border: "1px solid rgba(74,222,128,0.25)",
+                  fontSize: metaFont,
+                  color: AX.muted,
+                  lineHeight: 1.3,
+                  display: "flex",
+                  flexWrap: "wrap",
+                  alignItems: "center",
+                  gap: "4px 8px",
                 }}
               >
-                <div style={{ fontSize: 11, fontWeight: 800, color: AX.muted, letterSpacing: "0.04em", textTransform: "uppercase" }}>
-                  Film finale · sintesi
-                </div>
-                <div style={{ fontSize: 15, fontWeight: 800, color: AX.text, lineHeight: 1.35, marginTop: 4 }}>{r.simple.primaryLine}</div>
-                {r.simple.detailLine ? (
-                  <div style={{ fontSize: 11, color: AX.text2, marginTop: 6, lineHeight: 1.45 }}>{r.simple.detailLine}</div>
+                {chLine ? <span>{chLine}</span> : null}
+                {chLine ? <span style={{ opacity: 0.35 }}>·</span> : null}
+                <span style={{ color: fin.ok ? "rgba(134,239,172,0.95)" : AX.text2 }}>Finale: {fin.label}</span>
+                {r.updatedAt ? (
+                  <span style={{ fontSize: Math.max(9, metaFont - 1), opacity: 0.75 }}>
+                    · {new Date(r.updatedAt).toLocaleDateString("it-IT", { day: "numeric", month: "short" })}
+                  </span>
                 ) : null}
-                {r.riskLine ? (
-                  <div style={{ fontSize: 10, color: "#fb923c", marginTop: 6, lineHeight: 1.4 }}>
-                    <strong>Attenzione:</strong> {r.riskLine}
-                  </div>
-                ) : null}
-                {r.simple.nextStepLine ? (
-                  <div style={{ fontSize: 11, color: AX.electric, marginTop: 6, lineHeight: 1.45 }}>
-                    <strong>Prossimo passo:</strong> {r.simple.nextStepLine}
-                  </div>
-                ) : null}
-                {r.simple.verificationLine ? (
-                  <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 6, lineHeight: 1.45 }}>
-                    <strong>Verifica reale:</strong> {r.simple.verificationLine}
-                    {r.filmVerificationEffective?.checkedAt ? (
-                      <span style={{ display: "block", fontSize: 10, color: AX.muted, marginTop: 4 }}>
-                        Ultimo controllo:{" "}
-                        {new Date(r.filmVerificationEffective.checkedAt).toLocaleString("it-IT")}
-                        {r.filmVerificationEffective.method ? ` · ${r.filmVerificationEffective.method}` : ""}
-                      </span>
-                    ) : null}
-                  </div>
-                ) : null}
-                <details style={{ marginTop: 8, fontSize: 10, color: AX.muted, lineHeight: 1.45 }}>
-                  <summary style={{ cursor: "pointer", fontWeight: 700, color: AX.text2, userSelect: "none" }}>
-                    Dettaglio tecnico
-                  </summary>
-                  <div style={{ marginTop: 6 }}>{r.simple.technicalHeadline}</div>
-                  {r.filmUserHint ? <div style={{ marginTop: 4 }}>{r.filmUserHint}</div> : null}
-                  <div style={{ marginTop: 4, fontSize: 9, opacity: 0.9 }}>
-                    {FILM_DELIVERY_LABEL_IT[r.filmDeliveryState] || r.filmDeliveryState} ·{" "}
-                    {filmReadinessBadgeLabel(r.filmOutputReadiness)}
-                  </div>
-                </details>
               </div>
-              {r.statusExplain ? (
-                <p style={{ fontSize: 10, color: AX.muted, margin: 0, lineHeight: 1.4 }}>{r.statusExplain}</p>
-              ) : null}
-              {!r.canTryPlayback ? (
-                <p style={{ fontSize: 10, color: "#fbbf24", margin: 0, lineHeight: 1.4 }}>
-                  {r.lastFilmWorkflowFailure?.errorMessageUser ||
-                    "Non disponibile da qui: apri il progetto o rigenera il montaggio."}
-                </p>
-              ) : null}
-              <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: "auto" }}>
+              <div
+                style={{
+                  display: "flex",
+                  flexWrap: "wrap",
+                  alignItems: "center",
+                  justifyContent: "flex-end",
+                  gap: useShelfCell ? 4 : 6,
+                  marginTop: "auto",
+                  paddingTop: useShelfCell ? 4 : 6,
+                }}
+                onClick={(e) => e.stopPropagation()}
+              >
                 {primaryKind === "verify_final" ? (
                   <button
                     type="button"
-                    onClick={() => void runCardVerification(r.id)}
+                    title={verifyBusyId === r.id ? "Verifica in corso…" : "Verifica file finale"}
+                    aria-label={verifyBusyId === r.id ? "Verifica in corso" : "Verifica file finale"}
                     disabled={verifyBusyId === r.id}
+                    onClick={() => void runCardVerification(r.id)}
                     style={{
-                      padding: "10px 14px",
-                      borderRadius: 10,
-                      border: "none",
-                      background: AX.gradPrimary,
-                      color: "#fff",
-                      fontWeight: 800,
-                      fontSize: 13,
-                      cursor: verifyBusyId === r.id ? "wait" : "pointer",
-                      opacity: verifyBusyId === r.id ? 0.85 : 1,
-                    }}
-                  >
-                    {verifyBusyId === r.id ? "Verifica in corso…" : "Verifica file finale"}
-                  </button>
-                ) : null}
-                {primaryKind === "watch" || primaryKind === "verify_final" ? (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setPlaybackError(null);
-                      setPlayerReloadKey((k) => k + 1);
-                      setPlayer({
-                        id: r.id,
-                        title: r.title,
-                        entries: r.playbackEntries && r.playbackEntries.length ? r.playbackEntries : [],
-                        activeIndex: 0,
-                        openedAtIso: new Date().toISOString(),
-                        filmOutputReadiness: r.filmOutputReadiness,
-                        montageDeepLink: r.montageDeepLink,
-                        primaryChapterId: r.primaryChapterId,
-                        playableSourceChapterId: r.playableSourceChapterId,
-                        showOpenChapterWithFile: r.showOpenChapterWithFile,
-                        simplePrimary: r.simple.primaryLine,
-                        playbackMoment: describeFinalFilmPlaybackMoment(
-                          r.simple.tier,
-                          r.filmOutputReadiness,
-                          r.filmVerificationEffective,
-                        ),
-                      });
-                    }}
-                    style={{
-                      padding: "10px 14px",
-                      borderRadius: 10,
-                      border: primaryKind === "verify_final" ? `1px solid ${AX.border}` : "none",
-                      background: primaryKind === "verify_final" ? "transparent" : AX.gradPrimary,
-                      color: primaryKind === "verify_final" ? AX.electric : "#fff",
-                      fontWeight: 800,
-                      fontSize: 13,
-                      cursor: "pointer",
+                      width: actionBtn,
+                      height: actionBtn,
+                      borderRadius: Math.max(8, Math.round(actionBtn * 0.22)),
+                      border: `1px solid rgba(41,182,255,0.45)`,
+                      background: "rgba(41,182,255,0.12)",
+                      color: AX.electric,
                       display: "flex",
                       alignItems: "center",
                       justifyContent: "center",
-                      gap: 8,
+                      cursor: verifyBusyId === r.id ? "wait" : "pointer",
+                      opacity: verifyBusyId === r.id ? 0.75 : 1,
+                      flexShrink: 0,
                     }}
                   >
-                    <HiPlay size={18} />
-                    Guarda ora
+                    <HiShieldCheck size={iconSz} />
+                  </button>
+                ) : null}
+                {(primaryKind === "watch" || primaryKind === "verify_final") && r.canTryPlayback ? (
+                  <button
+                    type="button"
+                    title="Riproduci"
+                    aria-label="Riproduci"
+                    onClick={() => openPlayerForRow(r)}
+                    style={{
+                      width: actionBtn,
+                      height: actionBtn,
+                      borderRadius: Math.max(8, Math.round(actionBtn * 0.22)),
+                      border: "none",
+                      background: AX.gradPrimary,
+                      color: "#fff",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      cursor: "pointer",
+                      flexShrink: 0,
+                    }}
+                  >
+                    <HiPlay size={iconSz} />
                   </button>
                 ) : null}
                 {primaryKind === "watch" && r.hasUrl ? (
                   <button
                     type="button"
-                    onClick={() => void runCardVerification(r.id)}
+                    title="Verifica file finale"
+                    aria-label="Verifica file finale"
                     disabled={verifyBusyId === r.id}
+                    onClick={() => void runCardVerification(r.id)}
                     style={{
-                      padding: "8px 12px",
-                      borderRadius: 10,
-                      border: `1px solid rgba(41,182,255,0.4)`,
+                      width: actionBtn,
+                      height: actionBtn,
+                      borderRadius: Math.max(8, Math.round(actionBtn * 0.22)),
+                      border: `1px solid rgba(41,182,255,0.35)`,
                       background: "rgba(41,182,255,0.08)",
                       color: AX.electric,
-                      fontWeight: 700,
-                      fontSize: 12,
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
                       cursor: verifyBusyId === r.id ? "wait" : "pointer",
+                      flexShrink: 0,
                     }}
                   >
-                    {verifyBusyId === r.id ? "Verifica…" : "Verifica file finale"}
+                    <HiShieldCheck size={Math.round(iconSz * 0.92)} />
                   </button>
                 ) : null}
-                {primaryKind === "verify" ? (
+                {primaryKind === "verify" && r.filmUrl ? (
                   <button
                     type="button"
+                    title="Apri file in nuova scheda"
+                    aria-label="Apri file in nuova scheda"
                     onClick={() => {
                       try {
                         window.open(r.filmUrl, "_blank", "noopener,noreferrer");
@@ -573,119 +855,27 @@ export default function ScenografieCompletedFilmsLibrary({ homeActive = true, on
                       }
                     }}
                     style={{
-                      padding: "10px 14px",
-                      borderRadius: 10,
+                      width: actionBtn,
+                      height: actionBtn,
+                      borderRadius: Math.max(8, Math.round(actionBtn * 0.22)),
                       border: "none",
                       background: AX.gradPrimary,
                       color: "#fff",
-                      fontWeight: 800,
-                      fontSize: 13,
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
                       cursor: "pointer",
+                      flexShrink: 0,
                     }}
                   >
-                    Verifica file
+                    <HiArrowTopRightOnSquare size={iconSz} />
                   </button>
-                ) : null}
-                {primaryKind === "montage" && typeof onOpenScenografieProject === "function" ? (
-                  <button
-                    type="button"
-                    onClick={() => onOpenScenografieProject(r.id, r.montageDeepLink)}
-                    style={{
-                      padding: "10px 14px",
-                      borderRadius: 10,
-                      border: "none",
-                      background: AX.gradPrimary,
-                      color: "#fff",
-                      fontWeight: 800,
-                      fontSize: 13,
-                      cursor: "pointer",
-                    }}
-                  >
-                    Vai al montaggio
-                  </button>
-                ) : null}
-                {primaryKind === "project" && typeof onOpenScenografieProject === "function" ? (
-                  <button
-                    type="button"
-                    onClick={() => onOpenScenografieProject(r.id, r.primaryChapterId ? { chapterId: r.primaryChapterId } : null)}
-                    style={{
-                      padding: "10px 14px",
-                      borderRadius: 10,
-                      border: "none",
-                      background: AX.gradPrimary,
-                      color: "#fff",
-                      fontWeight: 800,
-                      fontSize: 13,
-                      cursor: "pointer",
-                    }}
-                  >
-                    Apri progetto
-                  </button>
-                ) : null}
-
-                {typeof onOpenScenografieProject === "function" ? (
-                  <>
-                    {primaryKind !== "project" ? (
-                      <button
-                        type="button"
-                        onClick={() => onOpenScenografieProject(r.id, r.primaryChapterId ? { chapterId: r.primaryChapterId } : null)}
-                        style={{
-                          padding: "8px 12px",
-                          borderRadius: 10,
-                          border: `1px solid ${AX.border}`,
-                          background: "transparent",
-                          color: AX.electric,
-                          fontWeight: 700,
-                          fontSize: 12,
-                          cursor: "pointer",
-                        }}
-                      >
-                        Apri progetto
-                      </button>
-                    ) : null}
-                    {r.suggestMontageJump && primaryKind !== "montage" ? (
-                      <button
-                        type="button"
-                        onClick={() => onOpenScenografieProject(r.id, r.montageDeepLink)}
-                        style={{
-                          padding: "8px 12px",
-                          borderRadius: 10,
-                          border: `1px solid rgba(123,77,255,0.45)`,
-                          background: "rgba(123,77,255,0.08)",
-                          color: "#c4b5fd",
-                          fontWeight: 700,
-                          fontSize: 12,
-                          cursor: "pointer",
-                        }}
-                      >
-                        Vai al montaggio
-                      </button>
-                    ) : null}
-                    {r.showOpenChapterWithFile && r.playableSourceChapterId ? (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          onOpenScenografieProject(r.id, { chapterId: r.playableSourceChapterId, focus: "montage" })
-                        }
-                        style={{
-                          padding: "8px 12px",
-                          borderRadius: 10,
-                          border: `1px solid rgba(74,222,128,0.4)`,
-                          background: "rgba(74,222,128,0.06)",
-                          color: "#86efac",
-                          fontWeight: 700,
-                          fontSize: 12,
-                          cursor: "pointer",
-                        }}
-                      >
-                        Apri capitolo con il file
-                      </button>
-                    ) : null}
-                  </>
                 ) : null}
                 {primaryKind === "watch" && r.hasUrl ? (
                   <button
                     type="button"
+                    title="Apri link in nuova scheda"
+                    aria-label="Apri link in nuova scheda"
                     onClick={() => {
                       try {
                         window.open(r.filmUrl, "_blank", "noopener,noreferrer");
@@ -694,46 +884,152 @@ export default function ScenografieCompletedFilmsLibrary({ homeActive = true, on
                       }
                     }}
                     style={{
-                      padding: "8px 12px",
-                      borderRadius: 10,
+                      width: actionBtn,
+                      height: actionBtn,
+                      borderRadius: Math.max(8, Math.round(actionBtn * 0.22)),
                       border: `1px solid ${AX.border}`,
-                      background: "transparent",
+                      background: "rgba(20,20,28,0.75)",
                       color: AX.text2,
-                      fontWeight: 600,
-                      fontSize: 11,
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
                       cursor: "pointer",
+                      flexShrink: 0,
                     }}
                   >
-                    Apri link in nuova scheda
+                    <HiArrowTopRightOnSquare size={Math.round(iconSz * 0.9)} />
                   </button>
+                ) : null}
+                {typeof onOpenScenografieProject === "function" && r.showOpenChapterWithFile && r.playableSourceChapterId ? (
+                  <button
+                    type="button"
+                    title="Apri capitolo con il file"
+                    aria-label="Apri capitolo con il file"
+                    onClick={() => onOpenScenografieProject(r.id, { chapterId: r.playableSourceChapterId, focus: "montage" })}
+                    style={{
+                      width: actionBtn,
+                      height: actionBtn,
+                      borderRadius: Math.max(8, Math.round(actionBtn * 0.22)),
+                      border: "1px solid rgba(74,222,128,0.4)",
+                      background: "rgba(74,222,128,0.08)",
+                      color: "#86efac",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      cursor: "pointer",
+                      flexShrink: 0,
+                    }}
+                  >
+                    <HiFilm size={Math.round(iconSz * 0.92)} />
+                  </button>
+                ) : null}
+                {typeof onOpenScenografieProject === "function" ? (
+                  primaryKind === "montage" ? (
+                    <button
+                      type="button"
+                      title="Apri montaggio"
+                      aria-label="Apri montaggio"
+                      onClick={() => onOpenScenografieProject(r.id, r.montageDeepLink)}
+                      style={{
+                        width: actionBtn,
+                        height: actionBtn,
+                        borderRadius: Math.max(8, Math.round(actionBtn * 0.22)),
+                        border: `1px solid rgba(251,191,36,0.45)`,
+                        background: "rgba(251,191,36,0.08)",
+                        color: "#fcd34d",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        cursor: "pointer",
+                        flexShrink: 0,
+                      }}
+                    >
+                      <HiFilm size={iconSz} />
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      title="Apri progetto"
+                      aria-label="Apri progetto"
+                      onClick={() => onOpenScenografieProject(r.id, { focus: "project" })}
+                      style={{
+                        width: actionBtn,
+                        height: actionBtn,
+                        borderRadius: Math.max(8, Math.round(actionBtn * 0.22)),
+                        border: `1px solid ${AX.border}`,
+                        background: "rgba(20,20,28,0.85)",
+                        color: AX.text2,
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        cursor: "pointer",
+                        flexShrink: 0,
+                      }}
+                    >
+                      <HiRectangleStack size={iconSz} />
+                    </button>
+                  )
                 ) : null}
                 <button
                   type="button"
+                  title="Aggiorna stato"
+                  aria-label="Aggiorna stato film"
                   onClick={() => void refresh()}
                   style={{
-                    padding: "6px 10px",
-                    borderRadius: 8,
+                    width: actionBtn,
+                    height: actionBtn,
+                    borderRadius: Math.max(8, Math.round(actionBtn * 0.22)),
                     border: `1px solid ${AX.border}`,
                     background: "rgba(20,20,28,0.6)",
                     color: AX.muted,
-                    fontWeight: 600,
-                    fontSize: 11,
-                    cursor: "pointer",
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "center",
-                    gap: 6,
+                    cursor: "pointer",
+                    flexShrink: 0,
                   }}
                 >
-                  <HiArrowPath size={14} />
-                  Ricalcola stato
+                  <HiArrowPath size={Math.round(iconSz * 0.88)} />
                 </button>
               </div>
             </div>
+            ) : null}
           </div>
         );
         })}
-      </div>
+        </div>
+  );
+
+  return (
+    <>
+      {rowsToShow.length === 0 ? (
+        <div
+          style={{
+            ...(fixedFourColumnHomeGrid ? HOME_SHELF_EMPTY_WRAP : {}),
+            padding: "22px 16px",
+            textAlign: "center",
+            color: AX.muted,
+            fontSize: 13,
+            borderRadius: 14,
+            border: `1px dashed ${AX.border}`,
+            background: "rgba(10,10,15,0.4)",
+            boxSizing: "border-box",
+          }}
+        >
+          <HiMagnifyingGlass size={32} style={{ opacity: 0.45, marginBottom: 10 }} aria-hidden />
+          <p style={{ margin: 0, fontWeight: 700, color: AX.text2 }}>Nessun film in elenco</p>
+          <p style={{ margin: "8px 0 0", lineHeight: 1.5, maxWidth: 400, marginLeft: "auto", marginRight: "auto" }}>
+            Nessun titolo corrisponde a «{titleSearch.trim()}». Modifica la ricerca nella barra in alto.
+          </p>
+        </div>
+      ) : fixedFourColumnHomeGrid && homeViewMode === HOME_SHELF_VIEW_MODE.list ? (
+        listInner
+      ) : fixedFourColumnHomeGrid ? (
+        /* Scrollport esterno (Home): il genitore ha overflow-y; qui solo griglia misurata. */
+        homeShelfMetrics ? gridInner : null
+      ) : (
+        gridInner
+      )}
 
       {player && (
         <div
@@ -938,28 +1234,36 @@ export default function ScenografieCompletedFilmsLibrary({ homeActive = true, on
                             Apri in nuova scheda
                           </button>
                         ) : null}
-                        {typeof onOpenScenografieProject === "function" ? (
+                        {typeof onOpenScenografieProject === "function" &&
+                        simplifiedHomeCards &&
+                        player.showOpenChapterWithFile &&
+                        player.playableSourceChapterId ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              onOpenScenografieProject(player.id, {
+                                chapterId: player.playableSourceChapterId,
+                                focus: "montage",
+                              });
+                              setPlayer(null);
+                              setPlaybackError(null);
+                            }}
+                            style={{
+                              padding: "8px 14px",
+                              borderRadius: 10,
+                              border: "1px solid rgba(74,222,128,0.4)",
+                              background: "rgba(74,222,128,0.08)",
+                              color: "#86efac",
+                              fontWeight: 700,
+                              fontSize: 12,
+                              cursor: "pointer",
+                            }}
+                          >
+                            Apri capitolo con il file
+                          </button>
+                        ) : null}
+                        {typeof onOpenScenografieProject === "function" && !simplifiedHomeCards ? (
                           <>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                onOpenScenografieProject(player.id, player.montageDeepLink || { focus: "montage" });
-                                setPlayer(null);
-                                setPlaybackError(null);
-                              }}
-                              style={{
-                                padding: "8px 14px",
-                                borderRadius: 10,
-                                border: "1px solid rgba(196,181,253,0.5)",
-                                background: "rgba(123,77,255,0.2)",
-                                color: "#e9d5ff",
-                                fontWeight: 700,
-                                fontSize: 12,
-                                cursor: "pointer",
-                              }}
-                            >
-                              Vai al montaggio
-                            </button>
                             <button
                               type="button"
                               onClick={() => {

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo, useId, memo } from "react";
+import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, useId, memo } from "react";
 import { resolveVideoPresetFromImageMeta, resolveVideoPresetFromFilename, VALID_VIDEO_PRESET_IDS } from "./imageStyleToVideoPreset";
 import {
   ASSET_DOMAIN,
@@ -48,7 +48,6 @@ import {
   HiClock,
   HiPencil,
   HiEye,
-  HiChevronLeft,
   HiChevronRight,
   HiVideoCamera,
   HiEllipsisVertical,
@@ -65,6 +64,14 @@ import {
 import VideoEditor from "./editor/VideoEditor";
 import ScenografieSection from "./components/ScenografieSection.js";
 import ScenografieCompletedFilmsLibrary from "./components/ScenografieCompletedFilmsLibrary.js";
+import { HOME_SHELF_GRID_NORMAL, HOME_SHELF_GRID_FILM, shelfGridContentMinHeight } from "./home/shelfGridMetrics.js";
+import { HOME_SHELF_SCROLL_AREA, HOME_SHELF_EMPTY_WRAP } from "./home/shelfHomeLayoutStyles.js";
+import { HOME_SHELF_VIEW_MODE, parseHomeShelfViewMode } from "./home/homeShelfViewMode.js";
+import { HomeCatalogListRow } from "./home/HomeCatalogListRow.js";
+import { useAdaptiveShelfGrid } from "./home/useAdaptiveShelfGrid.js";
+import { buildHomeGridLayoutDebugPayload, logHomeGridLayoutDebug } from "./home/shelfLayoutDebug.js";
+import { logVisualDataBoot, logVisualDataReady, logVisualDataCommit } from "./home/visualDataBootLog.js";
+import { HomeShelfCatalogSkeleton } from "./home/HomeShelfCatalogSkeleton.js";
 import {
   callLLM,
   translatePrompt,
@@ -1397,9 +1404,6 @@ function resolveStyleCardSrc(preset, type) {
   return null;
 }
 
-/** Preset dimensione celle griglia “Ultimi risultati” (px, clamp 72–220 nel range input). */
-const GALLERY_THUMB_PRESETS = { large: 210, medium: 170, small: 100 };
-
 /** Anteprime sidebar destra (Immagine / Video / Progetto): 2 o 3 colonne + gap. */
 const STUDIO_SIDEBAR_DENSITY = { large: { cols: 2, gap: 9 }, medium: { cols: 3, gap: 7 }, small: { cols: 3, gap: 4 } };
 
@@ -1880,24 +1884,43 @@ function GalleryDensityGlyph({ variant, compact = false }) {
       </svg>
     );
   }
-  const g = 1.25;
-  const cw = 5.5;
-  const ch = 3.6;
+  /* Griglia densa (legacy glyph — non più usata in Home) */
+  const n = 4;
+  const g = 0.85;
+  const cw = (20 - (n - 1) * g) / n;
+  const ch = (14 - (n - 1) * g) / n;
   return (
     <svg width={w} height={h} viewBox="0 0 22 16" aria-hidden style={{ display: "block", opacity: 0.92 }}>
-      {[0, 1, 2].flatMap(row =>
-        [0, 1, 2].map(col => (
+      {Array.from({ length: n * n }, (_, i) => {
+        const row = Math.floor(i / n);
+        const col = i % n;
+        return (
           <rect
-            key={`${row}-${col}`}
+            key={i}
             x={1 + col * (cw + g)}
             y={1 + row * (ch + g)}
             width={cw}
             height={ch}
-            rx={0.65}
+            rx={0.35}
             fill={fg}
           />
-        ))
-      )}
+        );
+      })}
+    </svg>
+  );
+}
+
+/** Icona vista elenco Home: thumb + linee (stile minimale AX). */
+function GalleryListGlyph() {
+  const fg = "currentColor";
+  return (
+    <svg width={22} height={16} viewBox="0 0 22 16" aria-hidden style={{ display: "block", opacity: 0.92 }}>
+      <rect x="1" y="2" width="5" height="4.5" rx="0.6" fill={fg} opacity="0.9" />
+      <rect x="8" y="2.5" width="13" height="1.2" rx="0.4" fill={fg} opacity="0.55" />
+      <rect x="8" y="4.8" width="10" height="1.2" rx="0.4" fill={fg} opacity="0.35" />
+      <rect x="1" y="8.25" width="5" height="4.5" rx="0.6" fill={fg} opacity="0.9" />
+      <rect x="8" y="8.75" width="13" height="1.2" rx="0.4" fill={fg} opacity="0.55" />
+      <rect x="8" y="11.05" width="9" height="1.2" rx="0.4" fill={fg} opacity="0.35" />
     </svg>
   );
 }
@@ -2070,161 +2093,8 @@ function StylePresetTile({ preset, selected, onClick, variant, large }) {
   );
 }
 
-/** Media sceneggiatura in Home: niente striscia orizzontale a swipe — solo pulsanti Avanti/Indietro. */
-const HomeScreenplayMediaCarousel = React.memo(function HomeScreenplayMediaCarousel({ media, galleryThumbSize, onOpenPreview }) {
-  const PAGE = 4;
-  const [start, setStart] = useState(0);
-  const total = media.length;
-  const maxStart = Math.max(0, total - PAGE);
-  useEffect(() => {
-    setStart((s) => Math.min(s, maxStart));
-  }, [maxStart, total]);
-  const pageStart = Math.min(Math.max(0, start), maxStart);
-  const showNav = total > PAGE;
-  const visible = showNav ? media.slice(pageStart, pageStart + PAGE) : media;
-  const canPrev = showNav && pageStart > 0;
-  const canNext = showNav && pageStart + PAGE < total;
-  const navBtn = (disabled, aria, onClick, Icon) => (
-    <button
-      type="button"
-      aria-label={aria}
-      disabled={disabled}
-      onClick={onClick}
-      style={{
-        flexShrink: 0,
-        width: 38,
-        height: 38,
-        alignSelf: "center",
-        borderRadius: 10,
-        border: `1px solid ${AX.border}`,
-        background: AX.surface,
-        color: AX.text2,
-        cursor: disabled ? "not-allowed" : "pointer",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        padding: 0,
-        opacity: disabled ? 0.35 : 1,
-      }}
-    >
-      <Icon size={20} />
-    </button>
-  );
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-      <div style={{ display: "flex", alignItems: "stretch", gap: 10 }}>
-        {showNav ? navBtn(!canPrev, "Media precedenti", () => setStart((s) => Math.max(0, s - PAGE)), HiChevronLeft) : <div style={{ width: 38, flexShrink: 0 }} aria-hidden />}
-        <div style={{ flex: 1, minWidth: 0, display: "flex", gap: 10, overflow: "hidden", justifyContent: showNav ? "flex-start" : "flex-start" }}>
-          {visible.map((m, mi) => {
-            const idx = showNav ? pageStart + mi : mi;
-            return (
-              <div
-                key={m.url + idx}
-                style={{
-                  position: "relative",
-                  flex: showNav ? "1 1 0" : "0 0 auto",
-                  minWidth: showNav ? 0 : 100,
-                  width: showNav ? undefined : galleryThumbSize,
-                  maxWidth: galleryThumbSize,
-                }}
-              >
-                <button
-                  type="button"
-                  title={m.prompt || ""}
-                  onClick={() => m.entry && onOpenPreview(m.entry)}
-                  style={{
-                    position: "relative",
-                    width: "100%",
-                    aspectRatio: "1",
-                    borderRadius: 10,
-                    overflow: "hidden",
-                    border: `1px solid ${AX.border}`,
-                    background: AX.bg,
-                    padding: 0,
-                    cursor: "pointer",
-                    display: "block",
-                    transition: "transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease",
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.borderColor = AX.violet;
-                    e.currentTarget.style.transform = "scale(1.03)";
-                    e.currentTarget.style.boxShadow = "0 8px 24px rgba(0,0,0,0.35)";
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.borderColor = AX.border;
-                    e.currentTarget.style.transform = "scale(1)";
-                    e.currentTarget.style.boxShadow = "none";
-                  }}
-                >
-                  {m.type === "video" ? (
-                    <video
-                      src={m.url}
-                      muted
-                      playsInline
-                      preload="metadata"
-                      style={{ width: "100%", height: "100%", objectFit: "cover", objectPosition: THUMB_COVER_POSITION, pointerEvents: "none" }}
-                      onLoadedData={(e) => {
-                        try {
-                          const v = e.currentTarget;
-                          if (v.duration && !Number.isNaN(v.duration)) v.currentTime = Math.min(0.05, v.duration * 0.01);
-                        } catch (_) {
-                          /* noop */
-                        }
-                      }}
-                    />
-                  ) : (
-                    <img alt="" src={m.url} loading="lazy" decoding="async" style={{ width: "100%", height: "100%", objectFit: "cover", objectPosition: THUMB_COVER_POSITION }} />
-                  )}
-                  <span
-                    style={{
-                      position: "absolute",
-                      top: 5,
-                      left: 5,
-                      fontSize: 8,
-                      fontWeight: 700,
-                      padding: "2px 5px",
-                      borderRadius: 5,
-                      background: m.type === "video" ? "rgba(123,77,255,0.9)" : "rgba(41,182,255,0.9)",
-                      color: AX.bg,
-                    }}
-                  >
-                    {m.type === "video" ? "VIDEO" : "IMG"}
-                  </span>
-                  {m.clipIndex != null && (
-                    <span
-                      style={{
-                        position: "absolute",
-                        bottom: 5,
-                        right: 5,
-                        fontSize: 8,
-                        fontWeight: 700,
-                        padding: "2px 6px",
-                        borderRadius: 5,
-                        background: "rgba(0,0,0,0.7)",
-                        color: AX.text2,
-                      }}
-                    >
-                      #{m.clipIndex + 1}
-                    </span>
-                  )}
-                </button>
-              </div>
-            );
-          })}
-        </div>
-        {showNav ? navBtn(!canNext, "Media successivi", () => setStart((s) => Math.min(maxStart, s + PAGE)), HiChevronRight) : <div style={{ width: 38, flexShrink: 0 }} aria-hidden />}
-      </div>
-      {showNav ? (
-        <div style={{ fontSize: 11, color: AX.muted, textAlign: "center" }}>
-          {pageStart + 1}–{Math.min(pageStart + PAGE, total)} di {total}
-        </div>
-      ) : null}
-    </div>
-  );
-});
-
 /** Miniatura catalogo Home: anteprima file salvato in locale (Electron). */
-const HomeGalleryTile = React.memo(function HomeGalleryTile({ entry, onRequestDelete, onOpenPreview }) {
+const HomeGalleryTile = React.memo(function HomeGalleryTile({ entry, onRequestDelete, onOpenPreview, shelfFill, shelfCompact, shelfCellWidth }) {
   const isVideo = entry.type === "video";
   const fileUrl = entry.filePath ? mediaFileUrl(entry.filePath) : null;
   const [displaySrc, setDisplaySrc] = useState(fileUrl);
@@ -2265,8 +2135,47 @@ const HomeGalleryTile = React.memo(function HomeGalleryTile({ entry, onRequestDe
   };
   const src = displaySrc;
   const showRemove = Boolean(isElectron && entry.filePath && typeof onRequestDelete === "function");
+  const fillShelf = Boolean(shelfFill);
+  const mini = Boolean(shelfCompact);
+  const cw =
+    typeof shelfCellWidth === "number" && Number.isFinite(shelfCellWidth) && shelfCellWidth > 0
+      ? Math.floor(shelfCellWidth)
+      : null;
+  const fixedShelfCell = Boolean(fillShelf && cw != null);
   return (
-    <div style={{ position: "relative", width: "100%", minWidth: 0 }}>
+    <div
+      style={{
+        position: "relative",
+        boxSizing: "border-box",
+        ...(fixedShelfCell
+          ? {
+              width: cw,
+              minWidth: cw,
+              maxWidth: cw,
+              justifySelf: "start",
+              height: "100%",
+              minHeight: 0,
+              display: "flex",
+              flexDirection: "column",
+              overflow: "hidden",
+              borderRadius: mini ? 6 : 10,
+            }
+          : {
+              width: "100%",
+              minWidth: 0,
+              ...(fillShelf
+                ? {
+                    height: "100%",
+                    minHeight: 0,
+                    display: "flex",
+                    flexDirection: "column",
+                    overflow: "hidden",
+                    borderRadius: mini ? 6 : 10,
+                  }
+                : {}),
+            }),
+      }}
+    >
       {showRemove && (
         <button
           type="button"
@@ -2288,19 +2197,30 @@ const HomeGalleryTile = React.memo(function HomeGalleryTile({ entry, onRequestDe
       )}
       <button
         type="button"
+        data-ax-shelf-tile-main={fixedShelfCell ? true : undefined}
         onClick={onTileClick}
         title={(entry.params?.promptIT || entry.params?.userIdea || entry.prompt || "").trim() || entry.fileName || ""}
         style={{
-          position: "relative", aspectRatio: "1", borderRadius: 10, overflow: "hidden",
+          position: "relative",
+          ...(fixedShelfCell
+            ? { width: "100%", height: "100%", flex: "none", minHeight: 0, aspectRatio: "unset" }
+            : fillShelf
+              ? { flex: "1 1 0", minHeight: 0, height: "100%", aspectRatio: "unset" }
+              : { aspectRatio: "1" }),
+          borderRadius: fillShelf ? (mini ? 6 : 10) : 10,
+          overflow: "hidden",
           border: `1px solid ${AX.border}`, background: AX.bg, padding: 0,
           cursor: entry.filePath ? "pointer" : "default",
-          display: "block", width: "100%", minWidth: 0,
+          display: "block",
+          width: "100%",
+          minWidth: 0,
+          boxSizing: "border-box",
           transition: "transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease",
         }}
         onMouseEnter={e => {
           e.currentTarget.style.borderColor = AX.violet;
-          e.currentTarget.style.transform = "scale(1.03)";
-          e.currentTarget.style.boxShadow = "0 8px 24px rgba(0,0,0,0.35)";
+          e.currentTarget.style.transform = fillShelf ? "scale(1.02)" : "scale(1.03)";
+          e.currentTarget.style.boxShadow = fillShelf ? "0 4px 16px rgba(0,0,0,0.3)" : "0 8px 24px rgba(0,0,0,0.35)";
         }}
         onMouseLeave={e => {
           e.currentTarget.style.borderColor = AX.border;
@@ -2329,16 +2249,18 @@ const HomeGalleryTile = React.memo(function HomeGalleryTile({ entry, onRequestDe
         )}
         {(!src || mediaErr) && (
           <div style={{
-            width: "100%", height: "100%", minHeight: 72, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+            width: "100%", height: "100%", minHeight: fillShelf ? 0 : 72, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
             background: isVideo ? "linear-gradient(145deg, rgba(123,77,255,0.35), rgba(41,182,255,0.15))" : "linear-gradient(145deg, rgba(41,182,255,0.35), rgba(255,138,42,0.12))",
-            fontSize: 22, color: AX.text2,
+            fontSize: mini ? 14 : 22, color: AX.text2,
           }}>
-            <span style={{ display: "flex", opacity: 0.95 }}>{isVideo ? <HiFilm size={28} /> : <HiPhoto size={28} />}</span>
-            <span style={{ fontSize: 9, marginTop: 4, padding: "0 6px", textAlign: "center", color: AX.muted, lineHeight: 1.25, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{(entry.params?.promptIT || entry.params?.userIdea || entry.prompt || "").slice(0, 40)}{(entry.params?.promptIT || entry.params?.userIdea || entry.prompt || "").length > 40 ? "…" : ""}</span>
+            <span style={{ display: "flex", opacity: 0.95 }}>{isVideo ? <HiFilm size={mini ? 18 : 28} /> : <HiPhoto size={mini ? 18 : 28} />}</span>
+            {!mini ? (
+              <span style={{ fontSize: 9, marginTop: 4, padding: "0 6px", textAlign: "center", color: AX.muted, lineHeight: 1.25, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{(entry.params?.promptIT || entry.params?.userIdea || entry.prompt || "").slice(0, 40)}{(entry.params?.promptIT || entry.params?.userIdea || entry.prompt || "").length > 40 ? "…" : ""}</span>
+            ) : null}
           </div>
         )}
         <span style={{
-          position: "absolute", top: 6, left: 6, fontSize: 9, fontWeight: 700, padding: "2px 6px", borderRadius: 6,
+          position: "absolute", top: mini ? 3 : 6, left: mini ? 3 : 6, fontSize: mini ? 7 : 9, fontWeight: 700, padding: mini ? "1px 4px" : "2px 6px", borderRadius: mini ? 4 : 6,
           background: isVideo ? "rgba(123,77,255,0.9)" : "rgba(41,182,255,0.9)", color: AX.bg,
         }}>{isVideo ? "VIDEO" : "IMG"}</span>
       </button>
@@ -3492,6 +3414,37 @@ const storage = {
   },
 };
 
+/** Giorno e data estesa in italiano per l’header home (formato fisso: weekday + giorno + mese + anno). */
+function formatItalianHeaderWelcomeDate(date = new Date()) {
+  const s = date.toLocaleDateString("it-IT", {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  });
+  if (!s) return "";
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+function normalizeHomeCatalogSearch(q) {
+  return typeof q === "string" ? q.trim().toLowerCase() : "";
+}
+
+function homeCatalogEntryMatchesSearch(entry, needle) {
+  if (!needle) return true;
+  const hay = [
+    entry.fileName,
+    entry.prompt,
+    entry.params?.promptIT,
+    entry.params?.userIdea,
+    entry.params?.screenplayName,
+  ]
+    .filter(Boolean)
+    .join("\n")
+    .toLowerCase();
+  return hay.includes(needle);
+}
+
 // ── Main App ──
 export default function AIStudio() {
   const [view, setView] = useState("home");
@@ -3505,6 +3458,20 @@ export default function AIStudio() {
   /** Da Home film completati: apre capitolo (se possibile) + deep-link recovery in editor. */
   const [scenografieBootstrap, setScenografieBootstrap] = useState(null);
   const clearScenografieBootstrap = useCallback(() => setScenografieBootstrap(null), []);
+  /** Stabile tra render: evita loop «Maximum update depth» in ScenografieProjectEditor (header + snapshot copilot). */
+  const scenografieImageStylePresets = useMemo(
+    () =>
+      STYLE_PRESETS.map((s) => ({
+        id: s.id,
+        label: s.label,
+        prompt: s.prompt,
+        negative_prompt: s.negative_prompt || "",
+      })),
+    [],
+  );
+  const onScenografieGoToVideoProduction = useCallback(() => {
+    setView("free-video");
+  }, []);
   const [projects, setProjects] = useState([]);
   const [currentProject, setCurrentProject] = useState(null);
   const [showNewProject, setShowNewProject] = useState(false);
@@ -3586,38 +3553,41 @@ export default function AIStudio() {
   const [storageReady_myVoices, setStorageReady_myVoices] = useState(false);
 
   const [history, setHistory] = useState([]);
-  /** Home — galleria recenti: immagini | video | sceneggiature */
+  /** Home — Ultimi risultati: immagini libere | video liberi | locandine film Scenografie */
   const [homeGalleryFilter, setHomeGalleryFilter] = useState("image");
+  /** Ricerca da top bar: filtra titoli / prompt / nomi file nella griglia home */
+  const [homeCatalogSearch, setHomeCatalogSearch] = useState("");
+  /** Aggiornato da ScenografieCompletedFilmsLibrary: evita il placeholder se ci sono film in home */
+  const [homeCompletedFilmsMeta, setHomeCompletedFilmsMeta] = useState(() => ({ loading: true, hasFilms: false }));
+  const onHomeFilmsPresenceChange = useCallback((meta) => {
+    setHomeCompletedFilmsMeta(meta);
+  }, []);
   const [logoBroken, setLogoBroken] = useState(false);
   /** File img/vid su disco non ancora in history.json (Electron) */
   const [diskMediaEntries, setDiskMediaEntries] = useState([]);
-  /** Larghezza minima cella griglia miniature home (px); preset icone o valore salvato in localStorage */
-  const HOME_PATHS_GUIDE_LS = "axstudio_home_paths_guide_v1";
-  const [homePathsGuideOpen, setHomePathsGuideOpen] = useState(() => {
+  /** Home «Ultimi risultati»: griglia catalogo vs elenco righe (persistenza `axstudio.homeShelfView`). */
+  const [homeShelfViewMode, setHomeShelfViewMode] = useState(() => {
     try {
-      return localStorage.getItem(HOME_PATHS_GUIDE_LS) !== "hidden";
+      const v = localStorage.getItem("axstudio.homeShelfView");
+      if (v) return parseHomeShelfViewMode(v);
+      const legacy = localStorage.getItem("axstudio.galleryThumb");
+      if (legacy != null) {
+        const n = Number(legacy);
+        if (Number.isFinite(n) && n <= 135) return HOME_SHELF_VIEW_MODE.list;
+      }
+      return HOME_SHELF_VIEW_MODE.grid;
     } catch {
-      return true;
+      return HOME_SHELF_VIEW_MODE.grid;
     }
   });
-  const dismissHomePathsGuide = useCallback(() => {
-    try {
-      localStorage.setItem(HOME_PATHS_GUIDE_LS, "hidden");
-    } catch {
-      /* ignore */
-    }
-    setHomePathsGuideOpen(false);
-  }, []);
-
-  const [galleryThumbSize, setGalleryThumbSize] = useState(() => {
-    try {
-      const raw = localStorage.getItem("axstudio.galleryThumb");
-      const n = raw != null ? Number(raw) : GALLERY_THUMB_PRESETS.medium;
-      return Number.isFinite(n) ? Math.min(220, Math.max(72, n)) : GALLERY_THUMB_PRESETS.medium;
-    } catch {
-      return GALLERY_THUMB_PRESETS.medium;
-    }
-  });
+  /** Griglia Home: 4×4 per immagini/video; tab Film usa 3 colonne (card più larghe, più locandina). */
+  const homeResultsGridLayout = useMemo(
+    () => (homeGalleryFilter === "film" ? HOME_SHELF_GRID_FILM : HOME_SHELF_GRID_NORMAL),
+    [homeGalleryFilter],
+  );
+  const homeGalleryGridGap = homeResultsGridLayout.gap;
+  const homeShelfGrid = useAdaptiveShelfGrid(homeResultsGridLayout);
+  const homeCatalogShelfGridRef = useRef(null);
   const [galleryDeleteTarget, setGalleryDeleteTarget] = useState(null);
   const [galleryDeleteBusy, setGalleryDeleteBusy] = useState(false);
   /** Anteprima a schermo intero dalla galleria Home */
@@ -3626,6 +3596,44 @@ export default function AIStudio() {
 
   // ── Load persisted data on mount ──
   const [storageReady, setStorageReady] = useState(false);
+  /** Electron: prima scansione disco dopo `storageReady`; web: true subito (niente scan). */
+  const [homeCatalogBootstrapReady, setHomeCatalogBootstrapReady] = useState(() => !isElectron);
+  const homeCatalogVisualReady = storageReady && homeCatalogBootstrapReady;
+  const homeVisualHydrationTokenRef = useRef(`boot-${Date.now()}`);
+  useEffect(() => {
+    if (process.env.NODE_ENV !== "development") return;
+    logVisualDataBoot({
+      section: "app",
+      view: "home-bootstrap",
+      itemCount: null,
+      source: "mount",
+      sessionHydrationToken: homeVisualHydrationTokenRef.current,
+    });
+  }, []);
+  useEffect(() => {
+    if (process.env.NODE_ENV !== "development") return;
+    if (!storageReady) return;
+    logVisualDataReady({
+      section: "home-catalog",
+      view: "storage",
+      itemCount: history.length,
+      source: "history.json+projects.json",
+      sessionHydrationToken: homeVisualHydrationTokenRef.current,
+    });
+    // Intenzionalmente solo `storageReady`: log una volta al boot storage, non ad ogni history push.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [storageReady]);
+  useEffect(() => {
+    if (process.env.NODE_ENV !== "development") return;
+    if (!homeCatalogVisualReady) return;
+    logVisualDataCommit({
+      section: "home-catalog",
+      view: "ultimi-risultati",
+      itemCount: null,
+      source: isElectron ? "storage+disk-scan" : "storage",
+      sessionHydrationToken: homeVisualHydrationTokenRef.current,
+    });
+  }, [homeCatalogVisualReady]);
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -3737,8 +3745,13 @@ export default function AIStudio() {
   }, [sceneMode]);
 
   // ── Catalogo locale: elenco immagini/video in DATA_DIR (anche se history non li ha) ──
+  // Attende `storageReady` per evitare un frame con solo history e poi merge disco (flash lista).
   useEffect(() => {
-    if (!isElectron || typeof window.electronAPI?.listFiles !== "function") return;
+    if (!storageReady) return;
+    if (!isElectron || typeof window.electronAPI?.listFiles !== "function") {
+      setHomeCatalogBootstrapReady(true);
+      return;
+    }
     let cancelled = false;
     const imgExt = /\.(png|jpe?g|webp|gif)$/i;
     const vidExt = /\.(mp4|webm|mov)$/i;
@@ -3766,16 +3779,27 @@ export default function AIStudio() {
         scan("images", "image"),
         scan("videos", "video"),
       ]);
-      if (!cancelled) setDiskMediaEntries([...images, ...videos]);
+      if (cancelled) return;
+      setDiskMediaEntries([...images, ...videos]);
+      setHomeCatalogBootstrapReady(true);
+      if (process.env.NODE_ENV === "development") {
+        logVisualDataReady({
+          section: "home-catalog",
+          view: "disk-scan",
+          itemCount: images.length + videos.length,
+          source: "DATA_DIR listFiles",
+          sessionHydrationToken: homeVisualHydrationTokenRef.current,
+        });
+      }
     })();
     return () => { cancelled = true; };
-  }, [history]);
+  }, [history, storageReady]);
 
   useEffect(() => {
     try {
-      localStorage.setItem("axstudio.galleryThumb", String(galleryThumbSize));
+      localStorage.setItem("axstudio.homeShelfView", homeShelfViewMode);
     } catch { /* noop */ }
-  }, [galleryThumbSize]);
+  }, [homeShelfViewMode]);
 
   useEffect(() => {
     try {
@@ -4208,6 +4232,7 @@ export default function AIStudio() {
   );
 
   const homeRecentItems = useMemo(() => {
+    if (homeGalleryFilter === "film") return [];
     const knownPaths = new Set(mediaHistory.map(h => h.filePath).filter(Boolean));
     const scenoPaths = collectScenografieAssetFilePaths(history);
     const fromDisk = diskMediaEntries.filter(
@@ -4237,57 +4262,67 @@ export default function AIStudio() {
     return [...list].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
   }, [mediaHistory, homeGalleryFilter, diskMediaEntries, screenplayProjectIds, history, legacyProjectIds]);
 
-  const [homeExpandedSp, setHomeExpandedSp] = useState(new Set());
-  const homeScreenplayGroups = useMemo(() => {
-    const byId = new Map();
-    const assignedEntries = new Set();
-    for (const h of history) {
-      const spId = h.params?.screenplayId;
-      if (!spId || !h.filePath) continue;
-      if (!byId.has(spId)) {
-        byId.set(spId, {
-          id: spId,
-          projectId: h.projectId || null,
-          name: h.params?.screenplayName || "Sceneggiatura",
-          summary: h.params?.screenplaySummary || "",
-          media: [],
-          lastUpdated: h.createdAt,
-        });
-      }
-      const g = byId.get(spId);
-      const url = mediaFileUrl(h.filePath);
-      if (url) { g.media.push({ url, type: h.type, createdAt: h.createdAt, clipIndex: h.params?.clipIndex ?? null, prompt: h.prompt || "", entry: h }); assignedEntries.add(h.id); }
-      const t = h.createdAt ? new Date(h.createdAt).getTime() : 0;
-      if (t > new Date(g.lastUpdated || 0).getTime()) g.lastUpdated = h.createdAt;
-    }
-    for (const h of history) {
-      if (!h.filePath || assignedEntries.has(h.id) || h.params?.screenplayId) continue;
-      if (!h.projectId || !screenplayProjectIds.has(h.projectId)) continue;
-      let targetGroup = null;
-      for (const g of byId.values()) {
-        if (g.projectId === h.projectId) { targetGroup = g; break; }
-      }
-      if (!targetGroup) {
-        const projName = projects.find(p => p.id === h.projectId)?.name || "Progetto";
-        const fakeSpId = `proj-${h.projectId}`;
-        targetGroup = { id: fakeSpId, projectId: h.projectId, name: projName, summary: "", media: [], lastUpdated: h.createdAt };
-        byId.set(fakeSpId, targetGroup);
-      }
-      const url = mediaFileUrl(h.filePath);
-      if (url) { targetGroup.media.push({ url, type: h.type, createdAt: h.createdAt, clipIndex: null, prompt: h.prompt || "", entry: h }); assignedEntries.add(h.id); }
-      const t = h.createdAt ? new Date(h.createdAt).getTime() : 0;
-      if (t > new Date(targetGroup.lastUpdated || 0).getTime()) targetGroup.lastUpdated = h.createdAt;
-    }
-    return [...byId.values()]
-      .map(g => {
-        g.media.sort((a, b) => {
-          if (a.clipIndex != null && b.clipIndex != null) return a.clipIndex - b.clipIndex;
-          return new Date(a.createdAt || 0) - new Date(b.createdAt || 0);
-        });
-        return g;
-      })
-      .sort((a, b) => new Date(b.lastUpdated || 0) - new Date(a.lastUpdated || 0));
-  }, [history, screenplayProjectIds, projects]);
+  const homeCatalogSearchNeedle = useMemo(() => normalizeHomeCatalogSearch(homeCatalogSearch), [homeCatalogSearch]);
+
+  const homeRecentItemsFiltered = useMemo(() => {
+    if (!homeCatalogSearchNeedle) return homeRecentItems;
+    return homeRecentItems.filter((h) => homeCatalogEntryMatchesSearch(h, homeCatalogSearchNeedle));
+  }, [homeRecentItems, homeCatalogSearchNeedle]);
+
+  useLayoutEffect(() => {
+    if (process.env.NODE_ENV !== "development") return;
+    if (view !== "home") return;
+    if (homeGalleryFilter === "film") return;
+    if (homeShelfViewMode !== HOME_SHELF_VIEW_MODE.grid) return;
+    const m = homeShelfGrid.metrics;
+    if (!m) return;
+    const gridEl = homeCatalogShelfGridRef.current;
+    if (!gridEl) return;
+    const host = homeShelfGrid.hostRef.current;
+    const firstTile = gridEl.firstElementChild;
+    const firstInner = firstTile?.querySelector?.("[data-ax-shelf-tile-main]");
+    logHomeGridLayoutDebug(
+      buildHomeGridLayoutDebugPayload(
+        homeGalleryFilter,
+        homeRecentItemsFiltered.length,
+        homeResultsGridLayout.columns,
+        m.cellWidth,
+        gridEl,
+        firstTile instanceof HTMLElement ? firstTile : null,
+        firstInner instanceof HTMLElement ? firstInner : null,
+        { containerInnerWidth: host ? host.clientWidth : undefined },
+      ),
+    );
+  }, [
+    view,
+    homeGalleryFilter,
+    homeShelfViewMode,
+    homeRecentItemsFiltered.length,
+    homeShelfGrid.metrics,
+    homeResultsGridLayout.columns,
+  ]);
+
+  useEffect(() => {
+    if (view !== "home") setHomeCatalogSearch("");
+  }, [view]);
+
+  /** Tab Immagini / Video: nessun elemento e ricerca vuota. */
+  const showHomeCatalogPlaceholder = useMemo(
+    () =>
+      (homeGalleryFilter === "image" || homeGalleryFilter === "video") &&
+      homeRecentItems.length === 0 &&
+      !homeCatalogSearchNeedle,
+    [homeGalleryFilter, homeRecentItems.length, homeCatalogSearchNeedle],
+  );
+  /** Tab Film: nessuna locandina in elenco e ricerca vuota. */
+  const showHomeFilmPlaceholder = useMemo(
+    () =>
+      homeGalleryFilter === "film" &&
+      !homeCompletedFilmsMeta.loading &&
+      !homeCompletedFilmsMeta.hasFilms &&
+      !homeCatalogSearchNeedle,
+    [homeGalleryFilter, homeCompletedFilmsMeta.loading, homeCompletedFilmsMeta.hasFilms, homeCatalogSearchNeedle],
+  );
 
   /** Catalogo globale (storico + disco), nessun filtro progetto — usato per Home e viste libere. */
   const homeRecentCatalogBase = useMemo(() => {
@@ -4402,7 +4437,7 @@ export default function AIStudio() {
                 : view === "project" && currentProject ? currentProject.name
                   : "AXSTUDIO";
   const headerSubtitle = view === "home"
-    ? "Cosa vuoi creare oggi?"
+    ? formatItalianHeaderWelcomeDate()
     : view === "free-image" || view === "free-video" || view === "scenografie"
       ? getAppHeaderSubtitle(view, { scenografieProjectTitle: scenografieHeaderTitle })
       : view === "video-editor" ? (getRegistryForAppView("video-editor")?.ui?.headerSubtitle ?? "")
@@ -4426,26 +4461,10 @@ export default function AIStudio() {
   const studioSidebarKind =
     view === "free-image" || (view === "project" && activeTab === "image") ? "image" : "video";
 
-  const FalAiBadge = () => (
-    <a
-      href="https://fal.ai/dashboard/billing"
-      target="_blank"
-      rel="noopener noreferrer"
-      title="Apri dashboard fal.ai"
-      style={{
-        display: "inline-flex", alignItems: "center", gap: 8,
-        padding: "7px 14px 7px 12px", borderRadius: 999,
-        background: AX.bg, border: `1px solid ${AX.electric}`,
-        textDecoration: "none", color: AX.electric,
-        boxShadow: "0 0 10px 3px rgba(79,216,255,0.25)",
-      }}
-    >
-      <HiBolt size={14} aria-hidden />
-      <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: "0.04em" }}>fal.ai</span>
-    </a>
-  );
-
   const backHiddenOnScenografieHub = view === "scenografie" && !scenografieSectionStacked;
+
+  /** Badge fal.ai rimosso dalla topbar; no-op per eventuali `<FalAiBadge />` residui in merge/local. */
+  const FalAiBadge = () => null; // eslint-disable-line no-unused-vars -- definito solo se il JSX legacy è ancora presente
 
   const BackBtn = () =>
     view !== "home" &&
@@ -4471,6 +4490,8 @@ export default function AIStudio() {
           setCurrentProject(null);
         }}
         style={{
+          position: "relative",
+          zIndex: 5,
           background: AX.surface,
           border: `1px solid ${AX.border}`,
           color: AX.text2,
@@ -4479,6 +4500,7 @@ export default function AIStudio() {
           fontSize: 16,
           borderRadius: 10,
         }}
+        title={view === "scenografie" ? "Indietro: capitoli o lista progetti" : undefined}
       >
         ←
       </button>
@@ -4561,7 +4583,15 @@ export default function AIStudio() {
             mediaFileUrl={mediaFileUrl}
           />
         ) : (<>
-        <header style={st.hdr}>
+        <header
+          style={{
+            ...st.hdr,
+            display: "grid",
+            gridTemplateColumns: view === "home" ? "minmax(0, 1fr) minmax(200px, 440px) minmax(0, 1fr)" : "minmax(0, 1fr) auto",
+            alignItems: "center",
+            columnGap: 16,
+          }}
+        >
           <div style={{ display: "flex", alignItems: "center", gap: 14, minWidth: 0 }}>
             <BackBtn />
             <div style={{ minWidth: 0 }}>
@@ -4569,9 +4599,37 @@ export default function AIStudio() {
               {headerSubtitle && <p style={{ margin: "4px 0 0", fontSize: 13, color: AX.muted }}>{headerSubtitle}</p>}
             </div>
           </div>
-          <div style={{ flexShrink: 0, marginLeft: "auto", display: "flex", alignItems: "center", gap: 12 }}>
+          {view === "home" ? (
+            <div style={{ width: "100%", minWidth: 0, position: "relative" }}>
+              <HiMagnifyingGlass
+                size={18}
+                aria-hidden
+                style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", color: AX.muted, pointerEvents: "none" }}
+              />
+              <input
+                type="search"
+                value={homeCatalogSearch}
+                onChange={(e) => setHomeCatalogSearch(e.target.value)}
+                placeholder="Cerca per titolo, file o prompt…"
+                aria-label="Cerca in immagini, video e film"
+                autoComplete="off"
+                style={{
+                  width: "100%",
+                  boxSizing: "border-box",
+                  padding: "10px 14px 10px 40px",
+                  borderRadius: 12,
+                  border: `1px solid ${AX.border}`,
+                  background: AX.surface,
+                  color: AX.text,
+                  fontSize: 13,
+                  outline: "none",
+                  fontFamily: "'DM Sans', sans-serif",
+                }}
+              />
+            </div>
+          ) : null}
+          <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 12, minWidth: 0 }}>
             {view === "scenografie" && scenografieSectionStacked ? scenografieHeaderActions : null}
-            <FalAiBadge />
           </div>
         </header>
 
@@ -4605,318 +4663,238 @@ export default function AIStudio() {
         }>
         {/* ═══ HOME ═══ */}
         {view === "home" && <>
-          <h2 style={{ fontSize: 13, fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", color: AX.muted, margin: "0 0 8px", flexShrink: 0 }}>Cosa vuoi creare oggi?</h2>
-          <p style={{ fontSize: 12, color: AX.text2, margin: "0 0 16px", lineHeight: 1.5, maxWidth: 720, flexShrink: 0 }}>
-            <strong style={{ color: AX.text }}>Film Studio</strong> è il percorso strutturato verso un film (progetto e montaggio finale).{" "}
-            <strong style={{ color: AX.text }}>Immagine libera</strong> e <strong style={{ color: AX.text }}>Video libero</strong> sono strumenti rapidi e separati.{" "}
-            <strong style={{ color: AX.text }}>Video Editor</strong> serve solo a montare file video già esistenti.
-          </p>
-          {homePathsGuideOpen ? (
-            <div
-              style={{
-                marginBottom: 16,
-                padding: 14,
-                borderRadius: 14,
-                border: `1px solid ${AX.border}`,
-                background: AX.surface,
-                flexShrink: 0,
-              }}
-            >
-              <div style={{ display: "flex", flexWrap: "wrap", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
-                <div style={{ flex: "1 1 240px", minWidth: 0 }}>
-                  <div style={{ fontSize: 13, fontWeight: 800, color: AX.text, marginBottom: 8 }}>Dove entrare nel prodotto</div>
-                  <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: AX.text2, lineHeight: 1.55 }}>
-                    <li>
-                      <strong style={{ color: AX.text }}>Film Studio</strong> — percorso guidato per progetto/film (capitoli, clip, montaggio finale). «Film completati» in Home usa gli stessi file progetto.
-                    </li>
-                    <li>
-                      <strong style={{ color: AX.text }}>Immagine libera</strong> — crea o modifica immagini da prompt; modulo rapido, non il percorso film.
-                    </li>
-                    <li>
-                      <strong style={{ color: AX.text }}>Video libero</strong> — video rapidi o sperimentali da prompt; non è la produzione strutturata di Film Studio.
-                    </li>
-                    <li>
-                      <strong style={{ color: AX.text }}>Video Editor</strong> — monta e rifinisce video MP4 già esistenti; editing, non generazione guidata.
-                    </li>
-                  </ul>
-                </div>
-                <button
-                  type="button"
-                  onClick={dismissHomePathsGuide}
-                  style={{
-                    padding: "8px 12px",
-                    borderRadius: 10,
-                    border: `1px solid ${AX.border}`,
-                    background: "transparent",
-                    color: AX.muted,
-                    fontSize: 11,
-                    fontWeight: 700,
-                    cursor: "pointer",
-                    flexShrink: 0,
-                  }}
-                >
-                  Non mostrare più
-                </button>
-              </div>
-            </div>
-          ) : (
-            <button
-              type="button"
-              onClick={() => setHomePathsGuideOpen(true)}
-              style={{
-                alignSelf: "flex-start",
-                marginBottom: 14,
-                padding: "6px 12px",
-                borderRadius: 10,
-                border: `1px dashed ${AX.border}`,
-                background: "transparent",
-                color: AX.muted,
-                fontSize: 11,
-                fontWeight: 600,
-                cursor: "pointer",
-                flexShrink: 0,
-              }}
-            >
-              Mostra guida moduli
-            </button>
-          )}
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 16, marginBottom: 24, flexShrink: 0 }}>
-            {[
-              {
-                v: "scenografie",
-                thumb: "linear-gradient(135deg, #7B4DFF 0%, #29B6FF 100%)",
-                title: MODULE_REGISTRY[MODULE_IDS.SCENOGRAFIE]?.ui?.homeCardTitle || "Film Studio",
-                desc: MODULE_REGISTRY[MODULE_IDS.SCENOGRAFIE]?.ui?.homeCardDescription || "Percorso guidato: progetto, clip e film finito strutturato.",
-                tag: "Percorso film",
-                CardIcon: HiFilm,
-                onClick: () => {
-                  setView("scenografie");
-                  setCurrentProject(null);
-                },
-              },
-              { v: "free-image", thumb: AX.gradPrimary, title: MODULE_REGISTRY[MODULE_IDS.FREE_IMAGE].ui.homeCardTitle || "Immagine libera", desc: MODULE_REGISTRY[MODULE_IDS.FREE_IMAGE].ui.homeCardDescription || "Genera un’immagine da prompt", CardIcon: HiPhoto, onClick: () => setView("free-image") },
-              { v: "free-video", thumb: AX.gradCreative, title: MODULE_REGISTRY[MODULE_IDS.FREE_VIDEO].ui.homeCardTitle || "Video libero", desc: MODULE_REGISTRY[MODULE_IDS.FREE_VIDEO].ui.homeCardDescription || "Animazione e motion da prompt", CardIcon: HiPlayCircle, onClick: () => setView("free-video") },
-              {
-                v: "video-editor",
-                thumb: "linear-gradient(135deg, #1A1F2B 0%, #3d4a63 100%)",
-                title: MODULE_REGISTRY[MODULE_IDS.VIDEO_EDITOR]?.ui?.homeCardTitle || "Video Editor",
-                desc: MODULE_REGISTRY[MODULE_IDS.VIDEO_EDITOR]?.ui?.homeCardDescription || "Montaggio e taglio su file video.",
-                CardIcon: HiVideoCamera,
-                onClick: () => {
-                  setView("video-editor");
-                  setCurrentProject(null);
-                },
-              },
-              ...(LEGACY_PROJECTS_UI_ENABLED
-                ? [{ v: "new-project", thumb: AX.gradAccent, title: "Nuovo progetto", desc: "Personaggi, scene e coerenza", CardIcon: HiSparkles, onClick: () => setShowNewProject(true) }]
-                : []),
-            ].map(q => (
-              <button key={q.v} type="button" onClick={q.onClick} style={{ display: "flex", alignItems: "stretch", gap: 16, textAlign: "left", padding: 18, borderRadius: 18, border: `1px solid ${AX.border}`, background: AX.surface, cursor: "pointer", transition: "background 0.2s ease, border-color 0.2s ease, transform 0.15s ease" }}
-                onMouseEnter={e => { e.currentTarget.style.borderColor = AX.violet; e.currentTarget.style.background = AX.hover; }}
-                onMouseLeave={e => { e.currentTarget.style.borderColor = AX.border; e.currentTarget.style.background = AX.surface; }}>
-                <div style={{ width: 88, minHeight: 88, flexShrink: 0, borderRadius: 14, background: q.thumb, display: "flex", alignItems: "center", justifyContent: "center", color: AX.text, boxShadow: `inset 0 0 0 1px ${AX.border}` }}><q.CardIcon size={34} /></div>
-                <div style={{ display: "flex", flexDirection: "column", justifyContent: "center", minWidth: 0 }}>
-                  <span style={{ fontSize: 17, fontWeight: 700, color: AX.text, marginBottom: 6 }}>{q.title}</span>
-                  {q.tag ? (
-                    <span
-                      style={{
-                        alignSelf: "flex-start",
-                        fontSize: 10,
-                        fontWeight: 800,
-                        letterSpacing: "0.06em",
-                        textTransform: "uppercase",
-                        color: "#86efac",
-                        background: "rgba(74,222,128,0.12)",
-                        border: "1px solid rgba(74,222,128,0.35)",
-                        padding: "4px 8px",
-                        borderRadius: 8,
-                        marginBottom: 6,
-                      }}
-                    >
-                      {q.tag}
-                    </span>
-                  ) : null}
-                  <span style={{ fontSize: 13, color: AX.muted, lineHeight: 1.45 }}>{q.desc}</span>
-                  <span style={{ fontSize: 11, color: AX.muted, marginTop: 8, fontWeight: 700 }}>
-                    {q.v === "scenografie"
-                      ? "Apri →"
-                      : q.v === "video-editor"
-                        ? "Monta file →"
-                        : "Apri strumento →"}
-                  </span>
-                </div>
-              </button>
-            ))}
-          </div>
+          <h2 style={{ fontSize: 13, fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", color: AX.muted, margin: "0 0 16px", flexShrink: 0 }}>Cosa vuoi creare oggi?</h2>
 
-          <ScenografieCompletedFilmsLibrary
-            homeActive={view === "home"}
-            onOpenScenografieProject={(id, deepLink) => {
-              if (!id) return;
-              const d = deepLink && typeof deepLink === "object" ? deepLink : null;
-              const chapterRaw = d?.chapterId != null ? String(d.chapterId).trim() : "";
-              setScenografieBootstrap({
-                workspaceId: String(id),
-                chapterId: chapterRaw || undefined,
-                deepLink: d,
-              });
-              setView("scenografie");
+          <div
+            style={{
+              flex: 1,
+              minHeight: 0,
+              display: "flex",
+              flexDirection: "column",
+              borderRadius: 18,
+              border: `1px dashed ${AX.border}`,
+              background: "rgba(26,31,43,0.5)",
+              overflow: "hidden",
+              boxSizing: "border-box",
             }}
-          />
-
-          <div style={{ marginBottom: 12, flexShrink: 0 }}>
-            <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 16, marginBottom: 10 }}>
-              <h2 style={{ fontSize: 13, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: AX.muted, margin: 0 }}>Ultimi risultati</h2>
-              <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 4, padding: "4px 6px", borderRadius: 12, border: `1px solid ${AX.border}`, background: "rgba(10,10,15,0.6)" }} role="group" aria-label="Densità miniature">
-                  {[
-                    { id: "large", label: "Miniature grandi", glyph: "large" },
-                    { id: "medium", label: "Miniature medie", glyph: "medium" },
-                    { id: "small", label: "Miniature piccole", glyph: "small" },
-                  ].map(d => {
-                    const target = GALLERY_THUMB_PRESETS[d.id];
-                    const active = Math.abs(galleryThumbSize - target) <= 6;
-                    return (
-                      <button
-                        key={d.id}
-                        type="button"
-                        onClick={() => setGalleryThumbSize(target)}
-                        title={d.label}
-                        aria-label={d.label}
-                        aria-pressed={active}
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          width: 36,
-                          height: 32,
-                          padding: 0,
-                          borderRadius: 8,
-                          cursor: "pointer",
-                          border: `1px solid ${active ? AX.violet : "transparent"}`,
-                          background: active ? "rgba(123,77,255,0.22)" : "transparent",
-                          color: active ? AX.electric : AX.muted,
-                        }}
-                      >
-                        <GalleryDensityGlyph variant={d.glyph} />
-                      </button>
-                    );
-                  })}
-                </div>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                  {[
-                    { id: "image", label: "Immagini" },
-                    { id: "video", label: "Video" },
-                    { id: "screenplay", label: "Sceneggiature" },
-                  ].map(f => (
-                    <button key={f.id} type="button" onClick={() => setHomeGalleryFilter(f.id)} style={{
-                      padding: "8px 14px", borderRadius: 999, fontSize: 12, fontWeight: 600, cursor: "pointer", border: `1px solid ${homeGalleryFilter === f.id ? AX.violet : AX.border}`,
-                      background: homeGalleryFilter === f.id ? "rgba(123,77,255,0.2)" : AX.bg, color: homeGalleryFilter === f.id ? AX.text : AX.muted,
-                    }}>{f.label}</button>
-                  ))}
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {homeGalleryFilter === "screenplay" ? (
-            homeScreenplayGroups.length === 0 ? (
-              <div style={{ flex: 1, minHeight: 0, display: "flex", alignItems: "center", justifyContent: "center", textAlign: "center", padding: "32px 24px", borderRadius: 18, border: `1px dashed ${AX.border}`, background: "rgba(26,31,43,0.5)", color: AX.muted }}>
-                <div>
-                  <div style={{ display: "flex", justifyContent: "center", marginBottom: 12, opacity: 0.9, color: AX.text2 }}><HiClipboardDocumentList size={44} /></div>
-                  <p style={{ margin: 0, fontSize: 15, fontWeight: 600, color: AX.text2 }}>Nessuna sceneggiatura</p>
-                  <p style={{ margin: "10px auto 0", fontSize: 13, maxWidth: 420, lineHeight: 1.55 }}>Genera video da una sceneggiatura per vederli raggruppati qui.</p>
-                </div>
-              </div>
-            ) : (
-              <div style={{ flex: 1, minHeight: 0, overflowY: "auto", overflowX: "hidden", padding: "2px 4px 8px 0", display: "flex", flexDirection: "column", gap: 14 }}>
-                {homeScreenplayGroups.map(group => {
-                  const isOpen = homeExpandedSp.has(group.id);
-                  const coverItem = group.media[0];
-                  const nClips = group.media.length;
-                  const nVid = group.media.filter(m => m.type === "video").length;
-                  const nImg = group.media.filter(m => m.type === "image").length;
-                  const dateLabel = group.lastUpdated
-                    ? new Date(group.lastUpdated).toLocaleDateString("it-IT", { day: "numeric", month: "short", year: "numeric" })
-                    : "";
-                  const statsLabel = [nVid > 0 && `${nVid} video`, nImg > 0 && `${nImg} img`].filter(Boolean).join(" · ");
-                  return (
-                    <div key={group.id} style={{ borderRadius: 16, border: `1px solid ${isOpen ? "rgba(123,77,255,0.35)" : AX.border}`, background: isOpen ? "rgba(123,77,255,0.04)" : AX.surface, overflow: "hidden", transition: "border-color 0.2s, background 0.2s" }}>
-                      <button
-                        type="button"
-                        onClick={() => setHomeExpandedSp(prev => { const next = new Set(prev); if (next.has(group.id)) next.delete(group.id); else next.add(group.id); return next; })}
-                        style={{ width: "100%", display: "flex", alignItems: "center", gap: 14, padding: "14px 16px", border: "none", background: "transparent", cursor: "pointer", textAlign: "left" }}
-                      >
-                        {coverItem ? (
-                          coverItem.type === "video" ? (
-                            <video src={coverItem.url} muted playsInline preload="metadata" style={{ width: 56, height: 36, objectFit: "cover", objectPosition: THUMB_COVER_POSITION, borderRadius: 8, flexShrink: 0, background: AX.bg, display: "block", pointerEvents: "none" }} />
-                          ) : (
-                            <img alt="" src={coverItem.url} style={{ width: 56, height: 36, objectFit: "cover", objectPosition: THUMB_COVER_POSITION, borderRadius: 8, flexShrink: 0, background: AX.bg, display: "block" }} />
-                          )
-                        ) : (
-                          <div style={{ width: 56, height: 36, borderRadius: 8, flexShrink: 0, background: AX.bg, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                            <HiClipboardDocumentList size={18} style={{ color: AX.muted }} />
-                          </div>
-                        )}
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ fontSize: 14, fontWeight: 700, color: AX.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                            {group.name}{dateLabel ? ` — ${dateLabel}` : ""}
-                          </div>
-                          {group.summary && (
-                            <div style={{ fontSize: 11, color: AX.text2, marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", fontStyle: "italic" }}>
-                              {group.summary}
-                            </div>
-                          )}
-                          <div style={{ fontSize: 11, color: AX.muted, marginTop: 3 }}>
-                            {nClips} clip{statsLabel ? ` — ${statsLabel}` : ""}
-                          </div>
-                        </div>
-                        <HiChevronRight
-                          size={18}
-                          style={{ color: AX.muted, flexShrink: 0, transform: isOpen ? "rotate(90deg)" : "rotate(0deg)", transition: "transform 0.2s ease" }}
-                        />
-                      </button>
-                      {isOpen && group.media.length > 0 && (
-                        <div style={{ padding: "4px 16px 14px" }}>
-                          <HomeScreenplayMediaCarousel
-                            media={group.media}
-                            galleryThumbSize={galleryThumbSize}
-                            onOpenPreview={setGalleryPreviewEntry}
-                          />
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            )
-          ) : homeRecentItems.length === 0 ? (
-            <div style={{ flex: 1, minHeight: 0, display: "flex", alignItems: "center", justifyContent: "center", textAlign: "center", padding: "32px 24px", borderRadius: 18, border: `1px dashed ${AX.border}`, background: "rgba(26,31,43,0.5)", color: AX.muted }}>
-              <div>
-                <div style={{ display: "flex", justifyContent: "center", marginBottom: 12, opacity: 0.9, color: AX.text2 }}>{homeGalleryFilter === "video" ? <HiFilm size={44} /> : <HiPhoto size={44} />}</div>
-                <p style={{ margin: 0, fontSize: 15, fontWeight: 600, color: AX.text2 }}>{homeGalleryFilter === "video" ? "Nessun video" : "Nessuna immagine"}</p>
-                <p style={{ margin: "10px auto 0", fontSize: 13, maxWidth: 420, lineHeight: 1.55 }}>Genera e salva in app desktop: qui vedrai il catalogo di tutte le miniature sul disco.</p>
-              </div>
-            </div>
-          ) : (
+          >
             <div
               style={{
                 flex: 1,
                 minHeight: 0,
-                display: "grid",
-                gridTemplateColumns: `repeat(auto-fill, minmax(${galleryThumbSize}px, 1fr))`,
-                gap: 10,
-                alignContent: "start",
-                overflowY: "auto",
-                overflowX: "hidden",
-                padding: "2px 4px 8px 0",
+                overflow: "hidden",
+                padding: "18px 18px 20px",
+                display: "flex",
+                flexDirection: "column",
+                gap: 20,
+                boxSizing: "border-box",
               }}
             >
-              {homeRecentItems.map(h => (
-                <HomeGalleryTile key={h.id} entry={h} onOpenPreview={setGalleryPreviewEntry} />
-              ))}
+              <div style={{ flexShrink: 0 }}>
+                <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 16 }}>
+                  <h2 style={{ fontSize: 13, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: AX.muted, margin: 0 }}>Ultimi risultati</h2>
+                  <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 4, padding: "4px 6px", borderRadius: 12, border: `1px solid ${AX.border}`, background: "rgba(10,10,15,0.6)" }} role="group" aria-label="Vista contenuti: griglia o elenco">
+                      {[
+                        { id: HOME_SHELF_VIEW_MODE.grid, label: "Vista griglia (catalogo visuale)", glyph: "grid" },
+                        { id: HOME_SHELF_VIEW_MODE.list, label: "Vista elenco (righe compatte)", glyph: "list" },
+                      ].map(d => {
+                        const active = homeShelfViewMode === d.id;
+                        return (
+                          <button
+                            key={d.id}
+                            type="button"
+                            onClick={() => setHomeShelfViewMode(d.id)}
+                            title={d.label}
+                            aria-label={d.label}
+                            aria-pressed={active}
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              width: 36,
+                              height: 32,
+                              padding: 0,
+                              borderRadius: 8,
+                              cursor: "pointer",
+                              border: `1px solid ${active ? AX.violet : "transparent"}`,
+                              background: active ? "rgba(123,77,255,0.22)" : "transparent",
+                              color: active ? AX.electric : AX.muted,
+                            }}
+                          >
+                            {d.glyph === "grid" ? <GalleryDensityGlyph variant="medium" /> : <GalleryListGlyph />}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                      {[
+                        { id: "image", label: "Immagini" },
+                        { id: "video", label: "Video" },
+                        { id: "film", label: "Film" },
+                      ].map(f => (
+                        <button key={f.id} type="button" onClick={() => setHomeGalleryFilter(f.id)} style={{
+                          padding: "8px 14px", borderRadius: 999, fontSize: 12, fontWeight: 600, cursor: "pointer", border: `1px solid ${homeGalleryFilter === f.id ? AX.violet : AX.border}`,
+                          background: homeGalleryFilter === f.id ? "rgba(123,77,255,0.2)" : AX.bg, color: homeGalleryFilter === f.id ? AX.text : AX.muted,
+                        }}>{f.label}</button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+              {/* Vetrina: scroll solo quando il contenuto supera le righe visibili; empty state senza min-height % (evita scrollbar fantasma). */}
+              <div ref={homeShelfGrid.hostRef} style={HOME_SHELF_SCROLL_AREA}>
+                {homeGalleryFilter !== "film" && !homeCatalogVisualReady ? (
+                  <HomeShelfCatalogSkeleton />
+                ) : homeGalleryFilter === "film" ? (
+                  <>
+                    {homeCompletedFilmsMeta.loading ? (
+                      <div
+                        style={{
+                          ...HOME_SHELF_EMPTY_WRAP,
+                          padding: "32px 16px",
+                          color: AX.muted,
+                          fontSize: 14,
+                        }}
+                      >
+                        Caricamento film…
+                      </div>
+                    ) : null}
+                    {showHomeFilmPlaceholder ? (
+                      <div
+                        style={{
+                          ...HOME_SHELF_EMPTY_WRAP,
+                          padding: "16px 8px",
+                          color: AX.muted,
+                        }}
+                      >
+                        <div>
+                          <div style={{ display: "flex", justifyContent: "center", marginBottom: 12, opacity: 0.9, color: AX.text2 }}><HiTv size={44} /></div>
+                          <p style={{ margin: 0, fontSize: 15, fontWeight: 600, color: AX.text2 }}>Nessuna locandina</p>
+                          <p style={{ margin: "10px auto 0", fontSize: 13, maxWidth: 420, lineHeight: 1.55 }}>
+                            I film completati in Scenografie compariranno qui con poster e azioni rapide. Apri Scenografie per creare o completare un progetto.
+                          </p>
+                        </div>
+                      </div>
+                    ) : null}
+                  </>
+                ) : showHomeCatalogPlaceholder ? (
+                  <div
+                    style={{
+                      ...HOME_SHELF_EMPTY_WRAP,
+                      padding: "16px 8px",
+                      color: AX.muted,
+                    }}
+                  >
+                    <div>
+                      <div style={{ display: "flex", justifyContent: "center", marginBottom: 12, opacity: 0.9, color: AX.text2 }}>{homeGalleryFilter === "video" ? <HiFilm size={44} /> : <HiPhoto size={44} />}</div>
+                      <p style={{ margin: 0, fontSize: 15, fontWeight: 600, color: AX.text2 }}>
+                        {homeGalleryFilter === "video" ? "Nessun video libero" : "Nessuna immagine libera"}
+                      </p>
+                      <p style={{ margin: "10px auto 0", fontSize: 13, maxWidth: 420, lineHeight: 1.55 }}>
+                        {homeGalleryFilter === "video"
+                          ? "Qui trovi solo i video salvati fuori dalle sceneggiature e da Scenografie. Genera in VidGen e salva in app desktop per vederli in questa griglia."
+                          : "Qui trovi solo le immagini libere (non legate a sceneggiature o progetti Scenografie). Genera in ImgGen e salva in app desktop per vederle in questa griglia."}
+                      </p>
+                    </div>
+                  </div>
+                ) : homeRecentItems.length > 0 && homeRecentItemsFiltered.length === 0 && homeCatalogSearchNeedle ? (
+                  <div
+                    style={{
+                      ...HOME_SHELF_EMPTY_WRAP,
+                      padding: "28px 16px",
+                      color: AX.muted,
+                    }}
+                  >
+                    <HiMagnifyingGlass size={36} style={{ opacity: 0.5, marginBottom: 12 }} aria-hidden />
+                    <p style={{ margin: 0, fontSize: 15, fontWeight: 600, color: AX.text2 }}>Nessun risultato</p>
+                    <p style={{ margin: "8px 0 0", fontSize: 13, maxWidth: 420, lineHeight: 1.55 }}>
+                      Nessuna {homeGalleryFilter === "video" ? "clip video" : "immagine"} corrisponde a «{homeCatalogSearch.trim()}». Prova altre parole o svuota la ricerca.
+                    </p>
+                  </div>
+                ) : homeShelfViewMode === HOME_SHELF_VIEW_MODE.list && homeRecentItemsFiltered.length > 0 ? (
+                  <div
+                    key={`home-shelf-list-${homeGalleryFilter}`}
+                    style={{
+                      flex: "0 0 auto",
+                      alignSelf: "stretch",
+                      boxSizing: "border-box",
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 6,
+                    }}
+                  >
+                    {homeRecentItemsFiltered.map(h => (
+                      <HomeCatalogListRow key={h.id} entry={h} onOpenPreview={setGalleryPreviewEntry} ax={AX} />
+                    ))}
+                  </div>
+                ) : homeShelfViewMode === HOME_SHELF_VIEW_MODE.grid && homeShelfGrid.metrics ? (
+                  <div
+                    key={`home-shelf-catalog-${homeGalleryFilter}-${homeShelfViewMode}`}
+                    ref={homeCatalogShelfGridRef}
+                    data-ax-home-shelf-grid="catalog"
+                    style={{
+                      flex: "0 0 auto",
+                      alignSelf: "flex-start",
+                      boxSizing: "border-box",
+                      width: "max-content",
+                      display: "grid",
+                      gridTemplateColumns: `repeat(${homeResultsGridLayout.columns}, ${homeShelfGrid.metrics.cellWidth}px)`,
+                      gridAutoRows: `${homeShelfGrid.metrics.cellHeight}px`,
+                      gap: homeGalleryGridGap,
+                      justifyContent: "start",
+                      alignContent: "start",
+                      justifyItems: "start",
+                      minHeight: shelfGridContentMinHeight(
+                        homeRecentItemsFiltered.length,
+                        homeResultsGridLayout.columns,
+                        homeShelfGrid.metrics.cellHeight,
+                        homeGalleryGridGap,
+                      ),
+                    }}
+                  >
+                    {homeRecentItemsFiltered.map(h => (
+                      <HomeGalleryTile
+                        key={h.id}
+                        entry={h}
+                        onOpenPreview={setGalleryPreviewEntry}
+                        shelfFill
+                        shelfCompact={false}
+                        shelfCellWidth={homeShelfGrid.metrics.cellWidth}
+                      />
+                    ))}
+                  </div>
+                ) : null}
+
+                <ScenografieCompletedFilmsLibrary
+                  key={homeGalleryFilter === "film" ? "home-shelf-film-active" : "home-shelf-film-parked"}
+                  homeActive={view === "home"}
+                  suppressWhenTabNotFilm={homeGalleryFilter !== "film"}
+                  simplifiedHomeCards
+                  fixedFourColumnHomeGrid
+                  homeViewMode={homeShelfViewMode}
+                  homeGridCols={homeResultsGridLayout.columns}
+                  homeGridVisibleRows={homeResultsGridLayout.visibleRows}
+                  homeGridGap={homeGalleryGridGap}
+                  homeShelfMetrics={homeShelfViewMode === HOME_SHELF_VIEW_MODE.grid ? homeShelfGrid.metrics : null}
+                  homeShelfViewportInnerW={homeShelfGrid.viewportClientSize.width}
+                  titleSearch={homeCatalogSearch}
+                  onFilmsPresenceChange={onHomeFilmsPresenceChange}
+                  onOpenScenografieProject={(id, deepLink) => {
+                    if (!id) return;
+                    const d = deepLink && typeof deepLink === "object" ? deepLink : null;
+                    const chapterRaw = d?.chapterId != null ? String(d.chapterId).trim() : "";
+                    setScenografieBootstrap({
+                      workspaceId: String(id),
+                      chapterId: chapterRaw || undefined,
+                      deepLink: d,
+                    });
+                    setView("scenografie");
+                  }}
+                />
+              </div>
             </div>
-          )}
+          </div>
         </>}
 
         {/* ═══ PROJECTS (lista) — solo se LEGACY_PROJECTS_UI_ENABLED ═══ */}
@@ -5726,14 +5704,22 @@ export default function AIStudio() {
         {/* ═══ Modulo: Immagine libera (preset: studio/presets/imageStylePresets.js; LLM: openRouterFreeStudio; FAL: falTransport) ═══ */}
         {view === "free-image" && (
           <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflowY: "auto", overflowX: "hidden" }}>
-            <ImgGen {...{ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setResolution, generating, setGenerating, generatedImages, setGeneratedImages, selectedCharacter: null, setSelectedCharacter: null, projectCharacters: [], scenes: scenePresets, onSave: saveGeneratedImage, previewImg: genPreviewImg, setPreviewImg: setGenPreviewImg, layoutFill: true, history: historyForFreeStudio, recallImageUrl, setRecallImageUrl, selectedStyles: imgSelectedStyles, setSelectedStyles: setImgSelectedStyles, aspect: imgAspect, setAspect: setImgAspect, steps: imgSteps, setSteps: setImgSteps, cfg: imgCfg, setCfg: setImgCfg, adv: imgAdv, setAdv: setImgAdv, imgSessionPromptMap, imageStatus, setImageStatus, imageProgress, setImageProgress }} />
+            {!homeCatalogVisualReady ? (
+              <HomeShelfCatalogSkeleton label="Caricamento libreria immagini…" />
+            ) : (
+              <ImgGen {...{ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setResolution, generating, setGenerating, generatedImages, setGeneratedImages, selectedCharacter: null, setSelectedCharacter: null, projectCharacters: [], scenes: scenePresets, onSave: saveGeneratedImage, previewImg: genPreviewImg, setPreviewImg: setGenPreviewImg, layoutFill: true, history: historyForFreeStudio, recallImageUrl, setRecallImageUrl, selectedStyles: imgSelectedStyles, setSelectedStyles: setImgSelectedStyles, aspect: imgAspect, setAspect: setImgAspect, steps: imgSteps, setSteps: setImgSteps, cfg: imgCfg, setCfg: setImgCfg, adv: imgAdv, setAdv: setImgAdv, imgSessionPromptMap, imageStatus, setImageStatus, imageProgress, setImageProgress }} />
+            )}
           </div>
         )}
 
         {/* ═══ Modulo: Video libero (preset: studio/presets/videoStylePresets.js; scene/direction: studio/freeVideo/*; stack Kling O3 + lipsync in generateVideo) ═══ */}
         {view === "free-video" && (
           <div className="ax-hide-scrollbar" style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflowY: "auto", overflowX: "hidden" }}>
-            <VidGen {...{ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, videoResolution, setVideoResolution, generating, setGenerating, selectedCharacter: null, vidTemplates: videoStylePresets, onSaveVideo: saveGeneratedVideo, generatedVideos, setGeneratedVideos, previewVideo: genPreviewVideo, setPreviewVideo: setGenPreviewVideo, layoutFill: true, history: historyForFreeStudio, diskMediaEntries, generatedImages, freeSourceImg: vidFreeSourceImg, setFreeSourceImg: setVidFreeSourceImg, selectedVideoStyles: vidSelectedStyles, setSelectedVideoStyles: setVidSelectedStyles, selectedDirectionStyles: vidSelectedDirectionStyles, setSelectedDirectionStyles: setVidSelectedDirectionStyles, vidAspect, setVidAspect, vidSteps, setVidSteps, recallVideoUrl, setRecallVideoUrl, videoStatus, setVideoStatus, directionRecommendation: vidDirectionRecommendation, setDirectionRecommendation: setVidDirectionRecommendation, directionRecLoading: vidDirectionRecLoading, setDirectionRecLoading: setVidDirectionRecLoading, imgSessionPromptMap, videoSidebarMode, setVideoSidebarMode, expandedScreenplays, setExpandedScreenplays, voiceLibrary, elFavorites, myVoices, videosRendering, setVideosRendering }} />
+            {!homeCatalogVisualReady ? (
+              <HomeShelfCatalogSkeleton label="Caricamento libreria video…" />
+            ) : (
+              <VidGen {...{ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, videoResolution, setVideoResolution, generating, setGenerating, selectedCharacter: null, vidTemplates: videoStylePresets, onSaveVideo: saveGeneratedVideo, generatedVideos, setGeneratedVideos, previewVideo: genPreviewVideo, setPreviewVideo: setGenPreviewVideo, layoutFill: true, history: historyForFreeStudio, diskMediaEntries, generatedImages, freeSourceImg: vidFreeSourceImg, setFreeSourceImg: setVidFreeSourceImg, selectedVideoStyles: vidSelectedStyles, setSelectedVideoStyles: setVidSelectedStyles, selectedDirectionStyles: vidSelectedDirectionStyles, setSelectedDirectionStyles: setVidSelectedDirectionStyles, vidAspect, setVidAspect, vidSteps, setVidSteps, recallVideoUrl, setRecallVideoUrl, videoStatus, setVideoStatus, directionRecommendation: vidDirectionRecommendation, setDirectionRecommendation: setVidDirectionRecommendation, directionRecLoading: vidDirectionRecLoading, setDirectionRecLoading: setVidDirectionRecLoading, imgSessionPromptMap, videoSidebarMode, setVideoSidebarMode, expandedScreenplays, setExpandedScreenplays, voiceLibrary, elFavorites, myVoices, videosRendering, setVideosRendering }} />
+            )}
           </div>
         )}
 
@@ -5748,21 +5734,14 @@ export default function AIStudio() {
               onHeaderTitleChange={setScenografieHeaderTitle}
               onHeaderActionsChange={setScenografieHeaderActions}
               onSave={saveGeneratedImage}
-              onGoToVideoProduction={() => {
-                setView("free-video");
-              }}
+              onGoToVideoProduction={onScenografieGoToVideoProduction}
               generatedImages={generatedImages}
               setGeneratedImages={setGeneratedImages}
               imageStatus={imageStatus}
               setImageStatus={setImageStatus}
               imageProgress={imageProgress}
               setImageProgress={setImageProgress}
-              imageStylePresets={STYLE_PRESETS.map((s) => ({
-                id: s.id,
-                label: s.label,
-                prompt: s.prompt,
-                negative_prompt: s.negative_prompt || "",
-              }))}
+              imageStylePresets={scenografieImageStylePresets}
             />
           </div>
         )}

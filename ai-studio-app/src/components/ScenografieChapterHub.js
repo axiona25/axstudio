@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useCallback, useEffect, useMemo } from "react";
-import { HiFilm, HiPlus, HiBars3, HiTrash, HiPlay, HiArrowPath } from "react-icons/hi2";
+import { HiFilm, HiPlus, HiBars3, HiTrash, HiPlay, HiArrowPath, HiEllipsisVertical } from "react-icons/hi2";
 import {
   loadScenografiaProjectById,
   saveScenografiaProjectById,
@@ -27,8 +27,6 @@ import {
   FILM_DELIVERY_LABEL_IT,
   FILM_DELIVERY_STATE,
   FILM_OUTPUT_READINESS,
-  buildFinalFilmPlaybackCandidates,
-  mergePlaybackEntriesChapterFirst,
   describeFinalFilmPlaybackMoment,
 } from "../services/scenografieConsumerReliability.js";
 import { computeChapterCompletionGaps } from "../services/scenografieOperationalReadiness.js";
@@ -105,6 +103,15 @@ const btnSecondary = {
   gap: 6,
 };
 
+/** Shell card capitoli — allineato a modali AXSTUDIO (Film Studio). */
+const chapterCardShell = {
+  borderRadius: 20,
+  border: "1px solid rgba(41,182,255,0.18)",
+  background: "linear-gradient(165deg, rgba(22,22,32,0.92) 0%, rgba(12,12,18,0.98) 100%)",
+  boxShadow:
+    "0 12px 40px rgba(0,0,0,0.45), 0 0 0 1px rgba(123,77,255,0.08), 0 0 36px rgba(41,182,255,0.06)",
+};
+
 /**
  * @param {{ workspaceId: string, onOpenChapter: (chapterId: string, ordinal: number, deepLink?: object|null) => void }} props
  */
@@ -113,6 +120,26 @@ export default function ScenografieChapterHub({ workspaceId, onOpenChapter }) {
   const [loading, setLoading] = useState(true);
   const [dragIndex, setDragIndex] = useState(null);
   const [filmVerifyBusy, setFilmVerifyBusy] = useState(false);
+  /** Menu «altre azioni» per capitolo (id capitolo o null). */
+  const [chapterMoreMenuId, setChapterMoreMenuId] = useState(null);
+
+  useEffect(() => {
+    if (!chapterMoreMenuId) return undefined;
+    const onDocMouseDown = (e) => {
+      const el = e.target;
+      if (el && typeof el.closest === "function" && el.closest("[data-chapter-more-menu]")) return;
+      setChapterMoreMenuId(null);
+    };
+    const onKey = (e) => {
+      if (e.key === "Escape") setChapterMoreMenuId(null);
+    };
+    document.addEventListener("mousedown", onDocMouseDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDocMouseDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [chapterMoreMenuId]);
 
   const refresh = useCallback(async () => {
     if (!workspaceId) return;
@@ -139,11 +166,6 @@ export default function ScenografieChapterHub({ workspaceId, onOpenChapter }) {
   const workspaceFilm = useMemo(() => {
     if (!workspace || !ensureWorkspace(workspace)) return null;
     return reconcileWorkspaceFilmOutputState(workspace);
-  }, [workspace]);
-
-  const workspacePlaybackCandidates = useMemo(() => {
-    if (!workspace || !ensureWorkspace(workspace)) return { entries: [] };
-    return buildFinalFilmPlaybackCandidates(workspace);
   }, [workspace]);
 
   const workspaceFilmSummary = useMemo(() => {
@@ -370,11 +392,6 @@ export default function ScenografieChapterHub({ workspaceId, onOpenChapter }) {
               montage.readiness,
               workspaceFilmSummary?.filmVerificationEffective ?? null,
             );
-            const chapterPlaybackMerged = mergePlaybackEntriesChapterFirst(
-              montage.outputUrl,
-              ch.id,
-              workspacePlaybackCandidates,
-            );
             const homeFilmUrl =
               workspaceFilm?.completedFilmUrl != null && String(workspaceFilm.completedFilmUrl).trim()
                 ? String(workspaceFilm.completedFilmUrl).trim()
@@ -419,6 +436,23 @@ export default function ScenografieChapterHub({ workspaceId, onOpenChapter }) {
               montage.filmDeliveryState === FILM_DELIVERY_STATE.DELIVERED_MISSING_OUTPUT ||
               montage.filmDeliveryState === FILM_DELIVERY_STATE.MONTAGE_IN_PROGRESS;
 
+            const moreOpen = chapterMoreMenuId === ch.id;
+            const menuItemBase = {
+              width: "100%",
+              textAlign: "left",
+              padding: "10px 12px",
+              border: "none",
+              borderRadius: 8,
+              background: "transparent",
+              color: AX.text2,
+              fontSize: 13,
+              fontWeight: 600,
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+            };
+
             return (
               <div
                 key={ch.id}
@@ -436,29 +470,29 @@ export default function ScenografieChapterHub({ workspaceId, onOpenChapter }) {
                 onDragEnd={() => setDragIndex(null)}
                 style={{
                   display: "grid",
-                  gridTemplateColumns: "auto 52px minmax(0, 1fr) minmax(152px, 192px)",
-                  gap: 12,
+                  gridTemplateColumns: "auto minmax(108px, 132px) minmax(0, 1fr) minmax(200px, 240px)",
+                  gap: 16,
                   alignItems: "stretch",
-                  padding: "14px 16px",
-                  borderRadius: 14,
-                  border: `1px solid ${AX.border}`,
-                  background: AX.card,
+                  padding: "18px 20px",
                   cursor: "grab",
+                  ...chapterCardShell,
                 }}
               >
                 <span style={{ color: AX.muted, display: "flex", alignItems: "center" }} title="Trascina per riordinare">
                   <HiBars3 size={20} />
                 </span>
                 <div
-                  title={posterUrl ? "Anteprima capitolo" : "Nessuna immagine ancora"}
+                  title={posterUrl ? "Locandina capitolo" : "Nessuna immagine ancora"}
                   style={{
-                    width: 52,
-                    height: 72,
-                    flexShrink: 0,
-                    borderRadius: 10,
+                    width: "100%",
+                    maxWidth: 132,
+                    aspectRatio: "2 / 3",
+                    minHeight: 168,
+                    borderRadius: 14,
                     overflow: "hidden",
-                    border: `1px solid ${AX.border}`,
-                    background: posterUrl ? "#000" : `linear-gradient(160deg, rgba(41,182,255,0.35), rgba(123,77,255,0.45))`,
+                    border: "1px solid rgba(41,182,255,0.22)",
+                    background: posterUrl ? "#08080c" : `linear-gradient(160deg, rgba(41,182,255,0.35), rgba(123,77,255,0.45))`,
+                    boxShadow: "inset 0 1px 0 rgba(255,255,255,0.06), 0 8px 24px rgba(0,0,0,0.35)",
                     alignSelf: "center",
                   }}
                 >
@@ -471,207 +505,97 @@ export default function ScenografieChapterHub({ workspaceId, onOpenChapter }) {
                     />
                   ) : null}
                 </div>
-                <div style={{ minWidth: 0, display: "flex", flexDirection: "column", gap: 10 }}>
-                  <div
-                    style={{
-                      fontSize: 15,
-                      fontWeight: 800,
-                      color: AX.text,
-                      display: "flex",
-                      flexWrap: "wrap",
-                      alignItems: "center",
-                      gap: 6,
-                    }}
-                  >
-                    <span style={{ color: AX.electric, fontWeight: 800 }}>Capitolo {idx + 1}</span>
-                    <span style={{ color: AX.text2, fontWeight: 800 }} aria-hidden>
-                      —
-                    </span>
-                    <input
-                      type="text"
-                      value={ch.chapterTitle || ""}
-                      onChange={(e) => {
-                        const v = e.target.value;
-                        setWorkspace((prev) => {
-                          if (!prev) return prev;
-                          return {
-                            ...prev,
-                            chapters: prev.chapters.map((c) => (c.id === ch.id ? { ...c, chapterTitle: v } : c)),
-                          };
-                        });
-                      }}
-                      onBlur={(e) => void updateChapterTitle(ch.id, e.target.value.trim())}
-                      placeholder={sum.displayTitle || "Nome capitolo"}
-                      title="Modifica nome capitolo"
-                      onClick={(e) => e.stopPropagation()}
+                <div style={{ minWidth: 0, display: "flex", flexDirection: "column", gap: 12 }}>
+                  <div>
+                    <div
                       style={{
-                        flex: "1 1 140px",
-                        minWidth: 120,
-                        maxWidth: "min(100%, 420px)",
-                        padding: "4px 8px",
-                        borderRadius: 8,
-                        border: `1px solid ${AX.border}`,
-                        background: AX.surface,
-                        color: AX.text,
-                        fontSize: 14,
-                        fontWeight: 700,
+                        fontSize: 10,
+                        fontWeight: 800,
+                        color: AX.muted,
+                        letterSpacing: "0.12em",
+                        marginBottom: 8,
                       }}
-                    />
-                    {st !== "clip_approval" && (
-                      <span
-                        style={{
-                          fontSize: 10,
-                          fontWeight: 700,
-                          padding: "2px 8px",
-                          borderRadius: 999,
-                          background: `${stColor}22`,
-                          color: stColor,
-                          border: `1px solid ${stColor}44`,
+                    >
+                      AXSTUDIO · CAPITOLO {idx + 1}
+                    </div>
+                    <div
+                      style={{
+                        display: "flex",
+                        flexWrap: "wrap",
+                        alignItems: "center",
+                        gap: 10,
+                      }}
+                    >
+                      <input
+                        type="text"
+                        value={ch.chapterTitle || ""}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          setWorkspace((prev) => {
+                            if (!prev) return prev;
+                            return {
+                              ...prev,
+                              chapters: prev.chapters.map((c) => (c.id === ch.id ? { ...c, chapterTitle: v } : c)),
+                            };
+                          });
                         }}
-                      >
-                        {stLabel}
-                      </span>
-                    )}
-                  </div>
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 10, fontSize: 11, color: AX.muted }}>
-                    <span>
-                      <strong style={{ color: AX.text2 }}>{sum.scenesInPlan ?? 0}</strong> scene
-                    </span>
-                    <span>
-                      <strong style={{ color: AX.text2 }}>{sum.characterCount ?? 0}</strong> personaggi
-                    </span>
-                    <span>
-                      <strong style={{ color: AX.text2 }}>{sum.clipsCount ?? 0}</strong> clip
-                    </span>
-                    <span>
-                      <strong style={{ color: AX.text2 }}>{sum.videoSecondsApprox || 0}</strong>s timeline
-                    </span>
-                    <span style={{ color: AX.text2 }}>
-                      Dettaglio consegna: <strong style={{ color: AX.text }}>{montage.deliveryLabelIt}</strong>
-                    </span>
-                  </div>
-
-                  <div
-                    style={{
-                      padding: "10px 12px",
-                      borderRadius: 12,
-                      background: "rgba(41,182,255,0.06)",
-                      border: `1px solid rgba(41,182,255,0.22)`,
-                    }}
-                  >
-                    <div
-                      style={{
-                        fontSize: 10,
-                        fontWeight: 800,
-                        color: AX.muted,
-                        letterSpacing: "0.06em",
-                        textTransform: "uppercase",
-                        marginBottom: 4,
-                      }}
-                    >
-                      Percorso capitolo
+                        onBlur={(e) => void updateChapterTitle(ch.id, e.target.value.trim())}
+                        placeholder={sum.displayTitle || "Nome capitolo"}
+                        title="Modifica nome capitolo"
+                        onClick={(e) => e.stopPropagation()}
+                        style={{
+                          flex: "1 1 min(100%, 380px)",
+                          minWidth: 160,
+                          padding: "10px 12px",
+                          borderRadius: 12,
+                          border: "1px solid rgba(41,182,255,0.15)",
+                          background: "linear-gradient(180deg, rgba(22,22,30,0.98) 0%, rgba(13,13,18,1) 100%)",
+                          color: AX.text,
+                          fontSize: 22,
+                          fontWeight: 800,
+                          letterSpacing: "-0.02em",
+                          outline: "none",
+                          boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04)",
+                        }}
+                      />
+                      {st !== "clip_approval" && (
+                        <span
+                          style={{
+                            fontSize: 10,
+                            fontWeight: 700,
+                            padding: "4px 10px",
+                            borderRadius: 999,
+                            background: `${stColor}22`,
+                            color: stColor,
+                            border: `1px solid ${stColor}44`,
+                          }}
+                        >
+                          {stLabel}
+                        </span>
+                      )}
                     </div>
-                    <div style={{ fontSize: 12, color: AX.text2, lineHeight: 1.45 }}>{gaps.headline}</div>
-                    {pendingFirst?.nextHint ? (
-                      <div style={{ fontSize: 12, color: AX.electric, marginTop: 6, lineHeight: 1.45 }}>
-                        <strong>Prossimo passo:</strong> {pendingFirst.nextHint}
-                      </div>
-                    ) : (
-                      <div style={{ fontSize: 12, color: "#86efac", marginTop: 6, lineHeight: 1.45 }}>
-                        Controlli principali ok per questo capitolo.
-                      </div>
-                    )}
-                  </div>
-
-                  <div
-                    style={{
-                      padding: "10px 12px",
-                      borderRadius: 12,
-                      background: "rgba(74,222,128,0.06)",
-                      border: `1px solid rgba(74,222,128,0.28)`,
-                    }}
-                  >
-                    <div
-                      style={{
-                        fontSize: 10,
-                        fontWeight: 800,
-                        color: AX.muted,
-                        letterSpacing: "0.06em",
-                        textTransform: "uppercase",
-                        marginBottom: 4,
-                      }}
-                    >
-                      Film finale (capitolo) · sintesi
-                    </div>
-                    <div style={{ fontSize: 15, fontWeight: 800, color: AX.text, lineHeight: 1.35 }}>
-                      {montageSimple.primaryLine}
-                    </div>
-                    {montageSimple.detailLine ? (
-                      <div style={{ fontSize: 11, color: AX.text2, marginTop: 4, lineHeight: 1.45 }}>
-                        {montageSimple.detailLine}
-                      </div>
-                    ) : null}
-                    {montage.hasExecutionWarnings ? (
-                      <div style={{ fontSize: 11, color: "#fb923c", marginTop: 6, lineHeight: 1.45 }}>
-                        <strong>Attenzione:</strong> piano di montaggio con avvisi su questo capitolo.
-                      </div>
-                    ) : null}
-                    <div style={{ fontSize: 11, color: AX.electric, marginTop: 6, lineHeight: 1.45 }}>
-                      <strong>Prossimo passo:</strong> {montageSimple.nextStepLine || montage.confidence.nextStep}
-                    </div>
-                    <div style={{ fontSize: 10, color: AX.muted, marginTop: 4, lineHeight: 1.45 }}>
-                      Montaggio: {montage.montageNextStep}
-                    </div>
-                    <details style={{ marginTop: 8, fontSize: 10, color: AX.muted, lineHeight: 1.45 }}>
-                      <summary style={{ cursor: "pointer", fontWeight: 700, color: AX.text2, userSelect: "none" }}>
-                        Dettaglio tecnico
-                      </summary>
-                      <div style={{ marginTop: 6 }}>{montageSimple.technicalHeadline}</div>
-                      {montage.userHint ? <div style={{ marginTop: 4 }}>{montage.userHint}</div> : null}
-                    </details>
-                  </div>
-
-                  <div
-                    style={{
-                      padding: "8px 10px",
-                      borderRadius: 10,
-                      background: "rgba(41,182,255,0.07)",
-                      border: "1px solid rgba(41,182,255,0.25)",
-                      fontSize: 11,
-                      color: AX.text2,
-                      lineHeight: 1.45,
-                    }}
-                  >
-                    <strong style={{ color: "#7dd3fc" }}>Playback:</strong> {montagePlaybackMoment.headline}
-                    <div style={{ marginTop: 4, fontSize: 10, color: AX.muted }}>{montagePlaybackMoment.subline}</div>
-                    {chapterPlaybackMerged.entries.length > 1 ? (
-                      <div style={{ marginTop: 6, fontSize: 10, color: AX.muted }}>
-                        {chapterPlaybackMerged.entries.length} indirizzi MP4 distinti risultano salvati nel progetto: «Guarda
-                        output» apre questo capitolo; dalla Home puoi provare la sintesi o altre sorgenti.
-                      </div>
-                    ) : null}
                   </div>
 
                   {roleHint ? (
                     <div
                       style={{
-                        fontSize: 11,
-                        color: AX.muted,
-                        lineHeight: 1.45,
-                        padding: "8px 10px",
-                        borderRadius: 10,
-                        background: "rgba(123,77,255,0.06)",
-                        border: `1px solid rgba(123,77,255,0.22)`,
+                        fontSize: 13,
+                        color: AX.text2,
+                        lineHeight: 1.5,
+                        padding: "12px 14px",
+                        borderRadius: 14,
+                        background: "rgba(123,77,255,0.07)",
+                        border: "1px solid rgba(123,77,255,0.22)",
                       }}
                     >
-                      <strong style={{ color: AX.text2 }}>Nel film del progetto:</strong> {roleHint}
+                      <strong style={{ color: AX.text }}>Nel film del progetto:</strong> {roleHint}
                     </div>
                   ) : null}
 
                   {chaptersCount > 1 && workspaceFilm && !roleHint ? (
-                    <div style={{ fontSize: 10, color: AX.muted, lineHeight: 1.45 }}>
+                    <div style={{ fontSize: 13, color: AX.text2, lineHeight: 1.5 }}>
                       Film complessivo:{" "}
-                      <strong style={{ color: AX.text2 }}>
+                      <strong style={{ color: AX.text }}>
                         {FILM_DELIVERY_LABEL_IT[workspaceFilm.filmDeliveryState] || workspaceFilm.filmDeliveryState}
                       </strong>
                       {workspaceFilm.multiChapterFilmHint ? ` · ${workspaceFilm.multiChapterFilmHint}` : ""}
@@ -683,26 +607,178 @@ export default function ScenografieChapterHub({ workspaceId, onOpenChapter }) {
                   style={{
                     display: "flex",
                     flexDirection: "column",
-                    gap: 8,
+                    gap: 10,
                     justifyContent: "flex-start",
                     alignItems: "stretch",
+                    minWidth: 0,
                   }}
                 >
-                  <button
-                    type="button"
-                    draggable={false}
-                    onClick={() => onOpenChapter(ch.id, idx + 1, null)}
-                    style={{
-                      ...btnSecondary,
-                      border: "none",
-                      background: AX.gradPrimary,
-                      color: "#fff",
-                      fontWeight: 800,
-                      fontSize: 12,
-                    }}
-                  >
-                    Apri capitolo
-                  </button>
+                  <div style={{ display: "flex", gap: 8, alignItems: "stretch" }}>
+                    <button
+                      type="button"
+                      draggable={false}
+                      onClick={() => onOpenChapter(ch.id, idx + 1, null)}
+                      style={{
+                        ...btnSecondary,
+                        flex: 1,
+                        minWidth: 0,
+                        border: "none",
+                        background: AX.gradPrimary,
+                        color: "#fff",
+                        fontWeight: 800,
+                        fontSize: 13,
+                        padding: "10px 14px",
+                        boxShadow: "0 4px 20px rgba(41,182,255,0.3), 0 0 18px rgba(123,77,255,0.12)",
+                      }}
+                    >
+                      Apri capitolo
+                    </button>
+                    <div data-chapter-more-menu style={{ position: "relative", flexShrink: 0 }}>
+                      <button
+                        type="button"
+                        draggable={false}
+                        aria-label="Altre azioni capitolo"
+                        aria-expanded={moreOpen}
+                        title="Altre azioni"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setChapterMoreMenuId((id) => (id === ch.id ? null : ch.id));
+                        }}
+                        style={{
+                          width: 44,
+                          height: 44,
+                          borderRadius: 12,
+                          border: `1px solid rgba(41,182,255,0.25)`,
+                          background: AX.surface,
+                          color: AX.text2,
+                          cursor: "pointer",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                        }}
+                      >
+                        <HiEllipsisVertical size={22} />
+                      </button>
+                      {moreOpen ? (
+                        <div
+                          role="menu"
+                          style={{
+                            position: "absolute",
+                            right: 0,
+                            top: "calc(100% + 6px)",
+                            zIndex: 80,
+                            minWidth: 220,
+                            padding: 6,
+                            borderRadius: 14,
+                            border: "1px solid rgba(41,182,255,0.2)",
+                            background: "linear-gradient(165deg, rgba(26,26,36,0.98) 0%, rgba(15,15,22,0.99) 100%)",
+                            boxShadow:
+                              "0 20px 50px rgba(0,0,0,0.55), 0 0 0 1px rgba(123,77,255,0.1), 0 0 32px rgba(41,182,255,0.08)",
+                          }}
+                        >
+                          <button
+                            type="button"
+                            role="menuitem"
+                            draggable={false}
+                            onClick={() => {
+                              setChapterMoreMenuId(null);
+                              void refresh();
+                            }}
+                            style={menuItemBase}
+                            onMouseEnter={(e) => {
+                              e.currentTarget.style.background = "rgba(41,182,255,0.1)";
+                            }}
+                            onMouseLeave={(e) => {
+                              e.currentTarget.style.background = "transparent";
+                            }}
+                          >
+                            <HiArrowPath size={16} style={{ color: AX.electric }} />
+                            Ricalcola stato
+                          </button>
+                          {showHomeFilmLink ? (
+                            <button
+                              type="button"
+                              role="menuitem"
+                              draggable={false}
+                              onClick={() => {
+                                setChapterMoreMenuId(null);
+                                try {
+                                  window.open(homeFilmUrl, "_blank", "noopener,noreferrer");
+                                } catch {
+                                  /* ignore */
+                                }
+                              }}
+                              style={menuItemBase}
+                              onMouseEnter={(e) => {
+                                e.currentTarget.style.background = "rgba(41,182,255,0.1)";
+                              }}
+                              onMouseLeave={(e) => {
+                                e.currentTarget.style.background = "transparent";
+                              }}
+                            >
+                              <HiFilm size={16} style={{ color: AX.electric }} />
+                              Link sintesi Home
+                            </button>
+                          ) : null}
+                          {montage.outputUrl && !canTryPlayback ? (
+                            <button
+                              type="button"
+                              role="menuitem"
+                              draggable={false}
+                              title="Apre il file in una nuova scheda per verificarlo al di fuori di AXSTUDIO."
+                              onClick={() => {
+                                setChapterMoreMenuId(null);
+                                try {
+                                  window.open(montage.outputUrl, "_blank", "noopener,noreferrer");
+                                } catch {
+                                  /* ignore */
+                                }
+                              }}
+                              style={menuItemBase}
+                              onMouseEnter={(e) => {
+                                e.currentTarget.style.background = "rgba(41,182,255,0.1)";
+                              }}
+                              onMouseLeave={(e) => {
+                                e.currentTarget.style.background = "transparent";
+                              }}
+                            >
+                              <HiPlay size={16} style={{ color: AX.text2 }} />
+                              Verifica file
+                            </button>
+                          ) : null}
+                          <div style={{ height: 1, margin: "4px 4px", background: "rgba(255,255,255,0.08)" }} />
+                          <button
+                            type="button"
+                            role="menuitem"
+                            draggable={false}
+                            disabled={sortedChapters.length <= 1}
+                            onClick={() => {
+                              if (sortedChapters.length <= 1) return;
+                              setChapterMoreMenuId(null);
+                              void deleteChapter(ch.id, idx + 1);
+                            }}
+                            style={{
+                              ...menuItemBase,
+                              color: sortedChapters.length <= 1 ? AX.muted : "#f87171",
+                              cursor: sortedChapters.length <= 1 ? "not-allowed" : "pointer",
+                              opacity: sortedChapters.length <= 1 ? 0.5 : 1,
+                            }}
+                            onMouseEnter={(e) => {
+                              if (sortedChapters.length <= 1) return;
+                              e.currentTarget.style.background = "rgba(248,113,113,0.12)";
+                            }}
+                            onMouseLeave={(e) => {
+                              e.currentTarget.style.background = "transparent";
+                            }}
+                          >
+                            <HiTrash size={16} />
+                            Elimina capitolo
+                          </button>
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+
                   {resumeDeepLink ? (
                     <button
                       type="button"
@@ -710,6 +786,8 @@ export default function ScenografieChapterHub({ workspaceId, onOpenChapter }) {
                       onClick={() => onOpenChapter(ch.id, idx + 1, resumeDeepLink)}
                       style={{
                         ...btnSecondary,
+                        fontSize: 12,
+                        padding: "9px 12px",
                         border: `1px solid rgba(41,182,255,0.45)`,
                         background: "rgba(41,182,255,0.08)",
                         color: AX.electric,
@@ -725,6 +803,8 @@ export default function ScenografieChapterHub({ workspaceId, onOpenChapter }) {
                       onClick={() => onOpenChapter(ch.id, idx + 1, { focus: "montage" })}
                       style={{
                         ...btnSecondary,
+                        fontSize: 12,
+                        padding: "9px 12px",
                         border: `1px solid rgba(123,77,255,0.45)`,
                         background: "rgba(123,77,255,0.08)",
                         color: "#c4b5fd",
@@ -747,6 +827,8 @@ export default function ScenografieChapterHub({ workspaceId, onOpenChapter }) {
                       }}
                       style={{
                         ...btnSecondary,
+                        fontSize: 12,
+                        padding: "9px 12px",
                         color: "#86efac",
                         border: `1px solid rgba(74,222,128,0.35)`,
                       }}
@@ -755,69 +837,6 @@ export default function ScenografieChapterHub({ workspaceId, onOpenChapter }) {
                       Guarda output
                     </button>
                   ) : null}
-                  {montage.outputUrl && !canTryPlayback ? (
-                    <button
-                      type="button"
-                      draggable={false}
-                      title="Apre il file in una nuova scheda per verificarlo al di fuori di AXSTUDIO."
-                      onClick={() => {
-                        try {
-                          window.open(montage.outputUrl, "_blank", "noopener,noreferrer");
-                        } catch {
-                          /* ignore */
-                        }
-                      }}
-                      style={btnSecondary}
-                    >
-                      Verifica file
-                    </button>
-                  ) : null}
-                  {showHomeFilmLink ? (
-                    <button
-                      type="button"
-                      draggable={false}
-                      title="Link sintetizzato per la Home (può differire dal file di questo capitolo)."
-                      onClick={() => {
-                        try {
-                          window.open(homeFilmUrl, "_blank", "noopener,noreferrer");
-                        } catch {
-                          /* ignore */
-                        }
-                      }}
-                      style={{
-                        ...btnSecondary,
-                        border: `1px solid rgba(41,182,255,0.4)`,
-                        background: "rgba(41,182,255,0.08)",
-                        color: AX.electric,
-                      }}
-                    >
-                      Apri link sintesi Home
-                    </button>
-                  ) : null}
-                  <button type="button" draggable={false} onClick={() => void refresh()} style={btnSecondary}>
-                    <HiArrowPath size={14} />
-                    Ricalcola stato
-                  </button>
-                  <button
-                    type="button"
-                    draggable={false}
-                    onClick={() => void deleteChapter(ch.id, idx + 1)}
-                    disabled={sortedChapters.length <= 1}
-                    aria-label="Elimina capitolo"
-                    title={
-                      sortedChapters.length <= 1 ? "Serve almeno un capitolo nel progetto" : "Elimina capitolo"
-                    }
-                    style={{
-                      ...btnSecondary,
-                      color: sortedChapters.length <= 1 ? AX.muted : "#f87171",
-                      borderColor: sortedChapters.length <= 1 ? `${AX.border}88` : "rgba(248,113,113,0.35)",
-                      cursor: sortedChapters.length <= 1 ? "not-allowed" : "pointer",
-                      opacity: sortedChapters.length <= 1 ? 0.45 : 1,
-                    }}
-                  >
-                    <HiTrash size={14} />
-                    Elimina
-                  </button>
                 </div>
               </div>
             );

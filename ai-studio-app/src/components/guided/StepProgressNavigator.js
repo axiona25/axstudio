@@ -100,7 +100,7 @@ export function StepProgressNavigator({
           title={
             guidedMode
               ? "Mostra solo il flusso (AXSTUDIO AI resta disponibile dall’icona in alto a destra)"
-              : "Attiva scelte guidate e preset (assistente dall’icona AXSTUDIO accanto al badge Fal.ai)"
+              : "Attiva scelte guidate e preset (assistente dall’icona AXSTUDIO in alto a destra)"
           }
           style={{
             display: "inline-flex",

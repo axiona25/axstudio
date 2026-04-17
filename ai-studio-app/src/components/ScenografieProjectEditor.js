@@ -2,7 +2,7 @@
  * Editor singolo progetto Scenografie — piano, master, scene, approvazioni, passaggio video.
  */
 
-import React, { useState, useRef, useCallback, useLayoutEffect, useEffect, useMemo } from "react";
+import React, { useState, useRef, useCallback, useLayoutEffect, useEffect, useMemo, useId } from "react";
 import {
   HiSparkles,
   HiCheck,
@@ -54,6 +54,7 @@ import {
   summarizeScenografiaWorkspaceForIndex,
   SCENOGRAFIA_WORKSPACE_VERSION,
   runAndPersistFilmOutputVerification,
+  fingerprintScenografiaEditorChapterPayload,
 } from "../services/scenografieProjectPersistence.js";
 import {
   syncDerivedMasterCachesFromCanonical,
@@ -175,6 +176,53 @@ const AX = {
   gradPrimary: "linear-gradient(135deg, #29b6ff 0%, #7b4dff 100%)",
   gradLogo: "linear-gradient(135deg,#29b6ff,#7b4dff,#ff4fa3)",
 };
+
+/** Topbar Film Studio: solo icona diamante, nessuna azione / link (placeholder). */
+function ScenografieTopbarDiamondMark() {
+  const gradId = useId().replace(/:/g, "");
+  return (
+    <span
+      aria-hidden="true"
+      title=""
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        width: 40,
+        height: 40,
+        borderRadius: 12,
+        border: `1px solid ${AX.border}`,
+        background: AX.surface,
+        boxSizing: "border-box",
+        flexShrink: 0,
+        pointerEvents: "none",
+        userSelect: "none",
+      }}
+    >
+      <svg width={22} height={22} viewBox="0 0 24 24" style={{ display: "block" }} aria-hidden>
+        <defs>
+          <linearGradient id={`ax-tb-dm-${gradId}`} x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stopColor="#29b6ff" />
+            <stop offset="55%" stopColor="#7b4dff" />
+            <stop offset="100%" stopColor="#4fd8ff" />
+          </linearGradient>
+        </defs>
+        <path
+          d="M12 2.25L20.25 12 12 21.75 3.75 12 12 2.25z"
+          fill={`url(#ax-tb-dm-${gradId})`}
+          opacity={0.95}
+        />
+        <path
+          d="M12 2.25L20.25 12 12 21.75 3.75 12 12 2.25z"
+          fill="none"
+          stroke="rgba(79,216,255,0.4)"
+          strokeWidth="0.75"
+          strokeLinejoin="round"
+        />
+      </svg>
+    </span>
+  );
+}
 
 /** Blocco fase Scenografie: token AX + accento per step (workflow premium, non “admin panel”). */
 function phaseUi(phaseNum) {
@@ -777,6 +825,8 @@ export function ScenografieProjectEditor({
   const [copilotAckDigest, setCopilotAckDigest] = useState("");
   const axCopilotLauncherRef = useRef(null);
   const [wizardPrefsReady, setWizardPrefsReady] = useState(false);
+  /** Evita save ripetuti identici su storage dopo load/sync (non collegato al loop header, ma riduce I/O inutile). */
+  const lastPersistedWizardPrefsRef = useRef(null);
   const [modifyDraftPrompt, setModifyDraftPrompt] = useState("");
   const [sceneEditBusyId, setSceneEditBusyId] = useState(null);
   /** Anteprima ingrandita (solo doppio click su immagine / miniatura). */
@@ -802,6 +852,9 @@ export function ScenografieProjectEditor({
   const lastCharCardDebugSigRef = useRef("");
   /** Incrementato ad ogni nuovo save programmato o su cleanup: invalida save async obsoleti (no coda serializzata). */
   const currentSaveIdRef = useRef(0);
+  /** Impronta ultimo payload riconosciuto come persistito; evita save+load hook in cascata se i deps React oscillano senza cambiamento semantico. */
+  const lastChapterPayloadPersistFingerprintRef = useRef("");
+  const [chapterPersistSeq, setChapterPersistSeq] = useState(0);
 
   const sceneGenFlightActive =
     scenePipelineFlight != null &&
@@ -842,6 +895,8 @@ export function ScenografieProjectEditor({
   useEffect(() => {
     let cancelled = false;
     setPersistReady(false);
+    lastChapterPayloadPersistFingerprintRef.current = "";
+    setChapterPersistSeq(0);
     void (async () => {
       try {
         const raw = projectId ? await loadScenografiaProjectById(projectId) : null;
@@ -1222,8 +1277,51 @@ export function ScenografieProjectEditor({
     ],
   );
 
+  /**
+   * Fan-in: incrementa solo se il payload capitolo cambia davvero (impronta semantica).
+   * Così l'effect debounced non dipende da 20+ stati e non si riallinea a ogni reference nuova identica.
+   */
   useEffect(() => {
     if (!persistReady || !projectId || !chapterId) return;
+    const payload = buildCurrentChapterPayload();
+    const fp = fingerprintScenografiaEditorChapterPayload(payload);
+    if (fp === lastChapterPayloadPersistFingerprintRef.current) return;
+    lastChapterPayloadPersistFingerprintRef.current = fp;
+    setChapterPersistSeq((s) => s + 1);
+  }, [
+    persistReady,
+    projectId,
+    chapterId,
+    prompt,
+    projectTitle,
+    plan,
+    projectStyle,
+    projectStyleLocked,
+    masterImages,
+    masterByCharName,
+    projectCharacterMasters,
+    sceneResults,
+    executionLog,
+    enableRepair,
+    selectedSceneIds,
+    deletedSceneIds,
+    scenografiaPhase,
+    characterApprovalMap,
+    scenografiaVideoPhase,
+    sceneVideoClips,
+    characterVoiceMasters,
+    projectNarrators,
+    finalMontagePhase,
+    finalMontagePlan,
+    finalFilmMontage,
+    finalRenderSettings,
+    timelinePlan,
+    buildCurrentChapterPayload,
+  ]);
+
+  useEffect(() => {
+    if (!persistReady || !projectId || !chapterId) return;
+    if (chapterPersistSeq === 0) return;
     const t = setTimeout(() => {
       void (async () => {
         currentSaveIdRef.current += 1;
@@ -1275,36 +1373,7 @@ export function ScenografieProjectEditor({
       clearTimeout(t);
       currentSaveIdRef.current += 1;
     };
-  }, [
-    persistReady,
-    projectId,
-    chapterId,
-    prompt,
-    projectTitle,
-    plan,
-    projectStyle,
-    projectStyleLocked,
-    masterImages,
-    masterByCharName,
-    projectCharacterMasters,
-    sceneResults,
-    executionLog,
-    enableRepair,
-    selectedSceneIds,
-    deletedSceneIds,
-    scenografiaPhase,
-    characterApprovalMap,
-    scenografiaVideoPhase,
-    sceneVideoClips,
-    characterVoiceMasters,
-    projectNarrators,
-    finalMontagePhase,
-    finalMontagePlan,
-    finalFilmMontage,
-    finalRenderSettings,
-    timelinePlan,
-    buildCurrentChapterPayload,
-  ]);
+  }, [persistReady, projectId, chapterId, chapterPersistSeq, buildCurrentChapterPayload]);
 
   useEffect(() => {
     persistSnapshotRef.current = {
@@ -4045,23 +4114,41 @@ export function ScenografieProjectEditor({
     ],
   );
 
+  const handleScenografieTopbarCopilotOpen = useCallback(() => {
+    setCopilotAckDigest(axCopilotDigest);
+    setAxCopilotModalOpen(true);
+  }, [axCopilotDigest]);
+
+  const handleScenografieCopilotModalClose = useCallback(() => {
+    setAxCopilotModalOpen(false);
+  }, []);
+
+  const handleScenografieCopilotToggleAdvanced = useCallback(() => {
+    setAxGuideAdvancedExpanded((v) => !v);
+  }, []);
+
+  /**
+   * Sincronizza azioni header app (Film Studio). Se `imageStylePresets` dal parent non è memoizzato,
+   * `axWizardSnapshot` / `axCopilotModel` cambiano a ogni render → questo effect richiama
+   * `setScenografieHeaderActions` → loop «Maximum update depth» (fix principale: preset stabili in App.js).
+   */
   useEffect(() => {
     if (!onScenografieHeaderActionsChange) return undefined;
     onScenografieHeaderActionsChange(
       <>
-        <AxstudioCopilotLauncher
-          ref={axCopilotLauncherRef}
-          ax={AX}
-          attention={launcherCopilotAttention}
-          ariaExpanded={axCopilotModalOpen}
-          onClick={() => {
-            setCopilotAckDigest(axCopilotDigest);
-            setAxCopilotModalOpen(true);
-          }}
-        />
+        <div style={{ display: "inline-flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+          <ScenografieTopbarDiamondMark />
+          <AxstudioCopilotLauncher
+            ref={axCopilotLauncherRef}
+            ax={AX}
+            attention={launcherCopilotAttention}
+            ariaExpanded={axCopilotModalOpen}
+            onClick={handleScenografieTopbarCopilotOpen}
+          />
+        </div>
         <AxstudioCopilotModal
           open={axCopilotModalOpen}
-          onClose={() => setAxCopilotModalOpen(false)}
+          onClose={handleScenografieCopilotModalClose}
           launcherRef={axCopilotLauncherRef}
           ax={AX}
           stepId={axWizardStepId}
@@ -4070,7 +4157,7 @@ export function ScenografieProjectEditor({
           guidedMode={axGuidedMode}
           onGuideAction={handleAxstudioGuideAction}
           advancedExpanded={axGuideAdvancedExpanded}
-          onToggleAdvanced={() => setAxGuideAdvancedExpanded((v) => !v)}
+          onToggleAdvanced={handleScenografieCopilotToggleAdvanced}
         />
       </>,
     );
@@ -4086,34 +4173,61 @@ export function ScenografieProjectEditor({
     axGuidedMode,
     handleAxstudioGuideAction,
     axGuideAdvancedExpanded,
+    handleScenografieTopbarCopilotOpen,
+    handleScenografieCopilotModalClose,
+    handleScenografieCopilotToggleAdvanced,
   ]);
 
   useEffect(() => {
     setWizardPrefsReady(false);
+    lastPersistedWizardPrefsRef.current = null;
   }, [projectId, chapterId]);
 
   useEffect(() => {
     if (!persistReady || !chapterId) return;
     const p = loadWizardPrefs(projectId, chapterId);
     if (typeof p.activeStepId === "string" && WIZARD_STEP_IDS.includes(p.activeStepId)) {
-      setAxWizardStepId(p.activeStepId);
+      setAxWizardStepId((prev) => (prev === p.activeStepId ? prev : p.activeStepId));
     }
-    if (typeof p.guidedMode === "boolean") setAxGuidedMode(p.guidedMode);
-    if (typeof p.renderIntentId === "string") setAxCopilotRenderIntentId(p.renderIntentId);
-    if (typeof p.guidedSubmode === "string") setAxGuidedSubmode(p.guidedSubmode);
-    if (typeof p.audioMode === "string") setAxCopilotAudioMode(p.audioMode);
+    if (typeof p.guidedMode === "boolean") {
+      setAxGuidedMode((prev) => (prev === p.guidedMode ? prev : p.guidedMode));
+    }
+    if (typeof p.renderIntentId === "string") {
+      setAxCopilotRenderIntentId((prev) => (prev === p.renderIntentId ? prev : p.renderIntentId));
+    }
+    if (typeof p.guidedSubmode === "string") {
+      setAxGuidedSubmode((prev) => (prev === p.guidedSubmode ? prev : p.guidedSubmode));
+    }
+    if (typeof p.audioMode === "string") {
+      setAxCopilotAudioMode((prev) => (prev === p.audioMode ? prev : p.audioMode));
+    }
     setWizardPrefsReady(true);
   }, [persistReady, projectId, chapterId]);
 
   useEffect(() => {
     if (!wizardPrefsReady || !chapterId) return;
-    saveWizardPrefs(projectId, chapterId, {
+    const payload = {
       activeStepId: axWizardStepId,
       guidedMode: axGuidedMode,
       renderIntentId: axCopilotRenderIntentId,
       guidedSubmode: axGuidedSubmode,
       audioMode: axCopilotAudioMode,
-    });
+    };
+    const prev = lastPersistedWizardPrefsRef.current;
+    if (
+      prev &&
+      prev.projectId === projectId &&
+      prev.chapterId === chapterId &&
+      prev.activeStepId === payload.activeStepId &&
+      prev.guidedMode === payload.guidedMode &&
+      prev.renderIntentId === payload.renderIntentId &&
+      prev.guidedSubmode === payload.guidedSubmode &&
+      prev.audioMode === payload.audioMode
+    ) {
+      return;
+    }
+    lastPersistedWizardPrefsRef.current = { projectId, chapterId, ...payload };
+    saveWizardPrefs(projectId, chapterId, payload);
   }, [
     wizardPrefsReady,
     projectId,

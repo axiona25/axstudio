@@ -29,6 +29,40 @@ export async function falRequest(endpoint, payload) {
   return data;
 }
 
+/**
+ * Saldo crediti account fal (Platform API v1).
+ * @returns {Promise<{ ok: true, balance: number, currency: string } | { ok: false, error: string }>}
+ */
+export async function fetchFalAccountCredits() {
+  const key = getFalApiKey();
+  if (!String(key).trim()) return { ok: false, error: "no_key" };
+  try {
+    const res = await fetch("https://api.fal.ai/v1/account/billing?expand=credits", {
+      method: "GET",
+      headers: {
+        Authorization: `Key ${key}`,
+        Accept: "application/json",
+      },
+    });
+    if (!res.ok) {
+      const t = await res.text().catch(() => "");
+      return { ok: false, error: t || `http_${res.status}` };
+    }
+    const data = await res.json();
+    const c = data?.credits;
+    if (!c || typeof c.current_balance !== "number" || Number.isNaN(c.current_balance)) {
+      return { ok: false, error: "no_balance" };
+    }
+    return {
+      ok: true,
+      balance: c.current_balance,
+      currency: typeof c.currency === "string" && c.currency.trim() ? c.currency.trim() : "USD",
+    };
+  } catch (e) {
+    return { ok: false, error: e?.message || "network" };
+  }
+}
+
 export async function falQueueRequest(endpoint, payload, onProgress) {
   const start = Date.now();
   const submitRes = await fetch(`${FAL_QUEUE_URL}/${endpoint}`, {

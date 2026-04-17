@@ -1,0 +1,80 @@
+const { app, BrowserWindow, ipcMain } = require("electron");
+const path = require("path");
+const fs = require("fs");
+
+const STORE_DIR = path.join(app.getPath("documents"), "AI-Studio-Data");
+if (!fs.existsSync(STORE_DIR)) fs.mkdirSync(STORE_DIR, { recursive: true });
+
+let mainWindow;
+
+function createWindow() {
+  mainWindow = new BrowserWindow({
+    width: 1400,
+    height: 900,
+    minWidth: 900,
+    minHeight: 600,
+    title: "AI Studio",
+    titleBarStyle: "hiddenInset",
+    backgroundColor: "#0a0a0f",
+    webPreferences: {
+      preload: path.join(__dirname, "preload.js"),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+
+  const isDev = process.argv.includes("--dev");
+  if (isDev) {
+    mainWindow.loadURL("http://localhost:3000");
+  } else {
+    mainWindow.loadFile(path.join(__dirname, "../build/index.html"));
+  }
+}
+
+// IPC handlers for local storage
+ipcMain.handle("save-file", async (_, { folder, filename, data, encoding }) => {
+  const dir = path.join(STORE_DIR, folder);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  const filePath = path.join(dir, filename);
+  if (encoding === "base64") {
+    fs.writeFileSync(filePath, Buffer.from(data, "base64"));
+  } else {
+    fs.writeFileSync(filePath, data);
+  }
+  return filePath;
+});
+
+ipcMain.handle("read-file", async (_, filePath) => {
+  if (!fs.existsSync(filePath)) return null;
+  return fs.readFileSync(filePath, "base64");
+});
+
+ipcMain.handle("list-files", async (_, folder) => {
+  const dir = path.join(STORE_DIR, folder);
+  if (!fs.existsSync(dir)) return [];
+  return fs.readdirSync(dir);
+});
+
+ipcMain.handle("delete-file", async (_, filePath) => {
+  if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+  return true;
+});
+
+ipcMain.handle("save-json", async (_, { folder, filename, data }) => {
+  const dir = path.join(STORE_DIR, folder);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, filename), JSON.stringify(data, null, 2));
+  return true;
+});
+
+ipcMain.handle("load-json", async (_, { folder, filename }) => {
+  const filePath = path.join(STORE_DIR, folder, filename);
+  if (!fs.existsSync(filePath)) return null;
+  return JSON.parse(fs.readFileSync(filePath, "utf8"));
+});
+
+ipcMain.handle("get-store-path", async () => STORE_DIR);
+
+app.whenReady().then(createWindow);
+app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });
+app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });

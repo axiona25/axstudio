@@ -3,7 +3,7 @@
  */
 
 import React, { useState, useCallback, useEffect, useMemo } from "react";
-import { HiXMark, HiSparkles, HiArrowLeft, HiArrowPath, HiChevronRight, HiPhoto } from "react-icons/hi2";
+import { HiSparkles, HiArrowLeft, HiArrowPath, HiChevronRight, HiPhoto } from "react-icons/hi2";
 import { planScenografia, validatePlan, characterRoleLabelIt } from "../services/scenografiePlanner.js";
 import { buildProjectStyleFromImagePreset } from "../services/scenografieProjectStyle.js";
 import {
@@ -20,18 +20,21 @@ import {
   SUGGESTED_ACTION_LABEL_IT,
 } from "../services/scenografieConsumerReliability.js";
 import { enrichWizardChecklistTaskRuntime } from "../services/scenografieOperationalReadiness.js";
-const AX = {
-  bg: "#0a0a0f",
-  surface: "#13131a",
-  card: "#1a1a24",
-  border: "#23232e",
-  text: "#f4f4f8",
-  text2: "#a1a1b5",
-  muted: "#6b6b80",
-  electric: "#29b6ff",
-  violet: "#7b4dff",
-  gradPrimary: "linear-gradient(135deg, #29b6ff 0%, #7b4dff 100%)",
-};
+import {
+  ProjectCreationModalHeader,
+  ProjectStylePresetGrid,
+  modalOverlayStyle,
+  modalDialogStyle,
+  modalGradientBarStyle,
+  labelStyle,
+  inputFieldStyle,
+  textareaFieldStyle,
+  btnSecondaryFooter,
+  btnPrimaryFooter,
+  PC_AX,
+} from "./ProjectCreationModalUi.js";
+
+const AX = PC_AX;
 
 const DURATION_PRESETS = [
   { sec: 120, label: "~2 min" },
@@ -339,48 +342,24 @@ export default function ScenografieStoryProjectWizard({ open, onClose, imageStyl
   );
 
   return (
-    <div
-      className="ax-modal-touch-lock"
-      style={{
-        position: "fixed",
-        inset: 0,
-        zIndex: 2000,
-        background: "rgba(6,6,12,0.82)",
-        backdropFilter: "blur(10px)",
-        display: "flex",
-        alignItems: "stretch",
-        justifyContent: "center",
-        padding: "24px 16px",
-        overflow: "auto",
-      }}
-    >
-      <div
-        style={{
-          width: "min(960px, 100%)",
-          margin: "auto",
-          background: AX.surface,
-          borderRadius: 20,
-          border: `1px solid ${AX.border}`,
-          boxShadow: "0 24px 80px rgba(0,0,0,0.45)",
-          display: "flex",
-          flexDirection: "column",
-          maxHeight: "min(92vh, 900px)",
-        }}
-      >
-        <div style={{ padding: "18px 22px", borderBottom: `1px solid ${AX.border}`, display: "flex", alignItems: "center", gap: 14, flexShrink: 0 }}>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 11, fontWeight: 800, color: AX.electric, letterSpacing: "0.1em", textTransform: "uppercase" }}>
-              Nuovo progetto · da traccia
-            </div>
-            <div style={{ fontSize: 18, fontWeight: 800, color: AX.text, marginTop: 4 }}>Pre-produzione guidata</div>
-            <div style={{ fontSize: 12, color: AX.muted, marginTop: 4 }}>Passo {step} di 9 — AXSTUDIO Scenografie</div>
-          </div>
-          <button type="button" onClick={() => !busy && onClose()} style={{ ...btnGhost(), opacity: busy ? 0.5 : 1 }} disabled={busy}>
-            <HiXMark size={22} />
-          </button>
-        </div>
+    <div className="ax-modal-touch-lock" style={{ ...modalOverlayStyle, alignItems: "center", overflow: "auto" }}>
+      <div style={{ ...modalDialogStyle(720), margin: "auto", width: "100%" }}>
+        <div style={modalGradientBarStyle} />
+        <ProjectCreationModalHeader
+          eyebrow="AXSTUDIO · FILM STUDIO"
+          badge={step === 1 ? "Guidata · assistita da AI" : undefined}
+          title="Nuovo progetto guidato"
+          titleAdornment={<HiSparkles size={26} style={{ color: AX.violet, flexShrink: 0 }} aria-hidden />}
+          subtitle={
+            <>
+              Passo <strong style={{ color: AX.text }}>{step}</strong> di 9 — percorso assistito con analisi AI del testo; gli step successivi allineano piano, cast e conferma al flusso standard Film Studio.
+            </>
+          }
+          onClose={() => !busy && onClose()}
+          closeDisabled={busy}
+        />
 
-        <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "20px 22px 24px" }}>
+        <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "8px 24px 0" }}>
           {wizardError ? (
             <div
               style={{
@@ -429,71 +408,63 @@ export default function ScenografieStoryProjectWizard({ open, onClose, imageStyl
             </div>
           ) : null}
 
-          <div
-            style={{
-              marginBottom: 16,
-              padding: 12,
-              borderRadius: 12,
-              border: "1px solid rgba(123,77,255,0.35)",
-              background: "rgba(123,77,255,0.08)",
-              fontSize: 12,
-              color: AX.text2,
-              lineHeight: 1.55,
-            }}
-          >
-            <strong style={{ color: AX.text }}>Proposta iniziale</strong> — questo wizard prepara piano, cast e checklist come bozza da confermare. Lo{" "}
-            <strong style={{ color: AX.electric }}>stato operativo vero</strong> (approvazioni, clip, errori, montaggio) vive nell&apos;editor Scenografie dopo la creazione del progetto.
-          </div>
-
           {/* Step 1 */}
           {step === 1 && (
-            <div>
-              <p style={{ fontSize: 13, color: AX.text2, lineHeight: 1.55, margin: "0 0 18px" }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 16, paddingBottom: 8 }}>
+              <p style={{ fontSize: 14, color: AX.text2, lineHeight: 1.55, margin: 0 }}>
                 Inserisci i dati base e la <strong style={{ color: AX.text }}>traccia completa</strong> del film: trama, personaggi, tono, ambiente, finale, stile narrativo.
               </p>
-              <div style={{ display: "grid", gap: 14 }}>
-                <label style={{ display: "block" }}>
-                  <span style={{ fontSize: 11, fontWeight: 700, color: AX.muted, textTransform: "uppercase" }}>Titolo progetto</span>
-                  <input value={title} onChange={(e) => setTitle(e.target.value)} style={{ marginTop: 6, width: "100%", padding: 12, borderRadius: 10, border: `1px solid ${AX.border}`, background: AX.bg, color: AX.text, fontSize: 14, boxSizing: "border-box" }} />
+              <div>
+                <label htmlFor="wiz-guided-title" style={labelStyle}>
+                  Titolo progetto <span style={{ color: "#f87171" }}>*</span>
                 </label>
-                <label style={{ display: "block" }}>
-                  <span style={{ fontSize: 11, fontWeight: 700, color: AX.muted, textTransform: "uppercase" }}>Descrizione breve</span>
-                  <input value={description} onChange={(e) => setDescription(e.target.value)} style={{ marginTop: 6, width: "100%", padding: 12, borderRadius: 10, border: `1px solid ${AX.border}`, background: AX.bg, color: AX.text, fontSize: 14, boxSizing: "border-box" }} />
+                <input
+                  id="wiz-guided-title"
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  placeholder="Es. Il faro nella nebbia"
+                  disabled={busy}
+                  style={{ ...inputFieldStyle, opacity: busy ? 0.7 : 1 }}
+                />
+              </div>
+              <div>
+                <label htmlFor="wiz-guided-desc" style={labelStyle}>
+                  Descrizione breve <span style={{ color: "#f87171" }}>*</span>
                 </label>
-                <label style={{ display: "block" }}>
-                  <span style={{ fontSize: 11, fontWeight: 700, color: AX.muted, textTransform: "uppercase" }}>Stile grafico</span>
-                  <select value={presetId} onChange={(e) => setPresetId(e.target.value)} style={{ marginTop: 6, width: "100%", padding: 12, borderRadius: 10, border: `1px solid ${AX.border}`, background: AX.bg, color: AX.text, fontSize: 14 }}>
-                    {imageStylePresets.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.label}
-                      </option>
-                    ))}
-                  </select>
+                <input
+                  id="wiz-guided-desc"
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
+                  placeholder="Una riga sul tema e sul pubblico…"
+                  disabled={busy}
+                  style={{ ...inputFieldStyle, opacity: busy ? 0.7 : 1 }}
+                />
+              </div>
+              <div>
+                <div style={{ ...labelStyle, marginBottom: 10 }}>
+                  Stile grafico globale <span style={{ color: "#f87171" }}>*</span>
+                </div>
+                <ProjectStylePresetGrid presets={imageStylePresets} value={presetId} onChange={setPresetId} disabled={busy} maxHeight={200} />
+              </div>
+              <div>
+                <label htmlFor="wiz-guided-story" style={{ ...labelStyle, color: AX.electric }}>
+                  Traccia completa del film <span style={{ color: "#f87171" }}>*</span>
                 </label>
-                <label style={{ display: "block" }}>
-                  <span style={{ fontSize: 11, fontWeight: 700, color: AX.electric, textTransform: "uppercase" }}>Traccia completa del film</span>
-                  <textarea
-                    value={storyPrompt}
-                    onChange={(e) => setStoryPrompt(e.target.value)}
-                    placeholder="Scrivi qui tutta la storia che vuoi realizzare…"
-                    rows={14}
-                    style={{
-                      marginTop: 8,
-                      width: "100%",
-                      padding: 14,
-                      borderRadius: 14,
-                      border: `1px solid rgba(41,182,255,0.35)`,
-                      background: "#0d1118",
-                      color: AX.text,
-                      fontSize: 14,
-                      lineHeight: 1.5,
-                      resize: "vertical",
-                      minHeight: 220,
-                      boxSizing: "border-box",
-                      fontFamily: "inherit",
-                    }}
-                  />
-                </label>
+                <textarea
+                  id="wiz-guided-story"
+                  value={storyPrompt}
+                  onChange={(e) => setStoryPrompt(e.target.value)}
+                  placeholder="Scrivi qui tutta la storia che vuoi realizzare…"
+                  rows={12}
+                  disabled={busy}
+                  style={{
+                    ...textareaFieldStyle,
+                    minHeight: 200,
+                    marginTop: 4,
+                    border: "1px solid rgba(41,182,255,0.28)",
+                    opacity: busy ? 0.7 : 1,
+                  }}
+                />
               </div>
             </div>
           )}
@@ -1018,50 +989,91 @@ export default function ScenografieStoryProjectWizard({ open, onClose, imageStyl
           </div>
         )}
 
-        <div style={{ padding: "16px 22px", borderTop: `1px solid ${AX.border}`, display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center", flexShrink: 0 }}>
+        <div
+          style={{
+            padding: "16px 24px 20px",
+            display: "flex",
+            flexWrap: "wrap",
+            gap: 10,
+            alignItems: "center",
+            flexShrink: 0,
+            borderTop: "1px solid rgba(255,255,255,0.06)",
+          }}
+        >
           {step > 1 && step !== 2 && (
-            <button type="button" style={{ ...btnGhost(), display: "flex", alignItems: "center", gap: 8 }} disabled={busy} onClick={() => setStep((s) => Math.max(1, s - 1))}>
+            <button
+              type="button"
+              style={{ ...btnSecondaryFooter, display: "inline-flex", alignItems: "center", gap: 8, cursor: busy ? "not-allowed" : "pointer" }}
+              disabled={busy}
+              onClick={() => setStep((s) => Math.max(1, s - 1))}
+            >
               <HiArrowLeft /> Indietro
             </button>
           )}
           {step === 2 && (
-            <button type="button" style={{ ...btnGhost(), display: "flex", alignItems: "center", gap: 8 }} disabled={busy} onClick={() => setStep(1)}>
+            <button
+              type="button"
+              style={{ ...btnSecondaryFooter, display: "inline-flex", alignItems: "center", gap: 8, cursor: busy ? "not-allowed" : "pointer" }}
+              disabled={busy}
+              onClick={() => setStep(1)}
+            >
               <HiArrowLeft /> Torna allo step 1
             </button>
           )}
           <div style={{ flex: 1 }} />
-          <button type="button" style={btnGhost()} disabled={busy} onClick={saveDraft}>
+          <button type="button" style={{ ...btnSecondaryFooter, cursor: busy ? "not-allowed" : "pointer" }} disabled={busy} onClick={saveDraft}>
             Salva bozza
           </button>
           {step === 1 && (
-            <button type="button" style={{ ...btnPrimary(busy || !title.trim() || !storyPrompt.trim()), display: "flex", alignItems: "center", gap: 8 }} disabled={busy || !title.trim() || !storyPrompt.trim()} onClick={runAnalyze}>
+            <button
+              type="button"
+              style={{
+                ...btnPrimaryFooter(busy || !title.trim() || !storyPrompt.trim()),
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 8,
+              }}
+              disabled={busy || !title.trim() || !storyPrompt.trim()}
+              onClick={runAnalyze}
+            >
               <HiSparkles /> Analizza storia
             </button>
           )}
           {step === 2 && (
             <>
-              <button type="button" style={{ ...btnGhost(), display: "flex", alignItems: "center", gap: 8 }} disabled={busy || !plan} onClick={runRegenerateAnalysis}>
+              <button
+                type="button"
+                style={{ ...btnSecondaryFooter, display: "inline-flex", alignItems: "center", gap: 8, cursor: busy || !plan ? "not-allowed" : "pointer" }}
+                disabled={busy || !plan}
+                onClick={runRegenerateAnalysis}
+              >
                 <HiArrowPath /> Rigenera analisi
               </button>
-              <button type="button" style={btnPrimary(!plan)} disabled={!plan || busy} onClick={() => setStep(3)}>
+              <button type="button" style={btnPrimaryFooter(!plan || busy)} disabled={!plan || busy} onClick={() => setStep(3)}>
                 Accetta analisi
               </button>
             </>
           )}
           {step >= 3 && step < 9 && (
-            <button type="button" style={btnPrimary(false)} disabled={busy} onClick={() => setStep((s) => s + 1)}>
+            <button type="button" style={btnPrimaryFooter(busy)} disabled={busy} onClick={() => setStep((s) => s + 1)}>
               Continua <HiChevronRight />
             </button>
           )}
           {step === 9 && (
             <>
-              <button type="button" style={btnGhost()} disabled={busy} onClick={() => setStep(8)}>
+              <button type="button" style={{ ...btnSecondaryFooter, cursor: busy ? "not-allowed" : "pointer" }} disabled={busy} onClick={() => setStep(8)}>
                 Modifica
               </button>
-              <button type="button" style={btnPrimary(busy)} disabled={busy} onClick={() => commitWorkspace(false)}>
+              <button type="button" style={btnPrimaryFooter(busy)} disabled={busy} onClick={() => commitWorkspace(false)}>
                 Conferma progetto
               </button>
-              <button type="button" style={btnPrimary(busy)} disabled={busy} onClick={() => commitWorkspace(true)} title="Apre il workspace con solo la prima scena selezionata per batch mirato">
+              <button
+                type="button"
+                style={btnPrimaryFooter(busy)}
+                disabled={busy}
+                onClick={() => commitWorkspace(true)}
+                title="Apre il workspace con solo la prima scena selezionata per batch mirato"
+              >
                 Conferma e avvia prima scena
               </button>
             </>

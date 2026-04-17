@@ -1,17 +1,25 @@
 /**
  * Locandina ufficiale progetto Scenografie — key art da catalogo streaming (non scena narrativa).
- * Prompt dedicato: titolo, descrizione, stile globale, protagonisti opzionali, keyword planner opzionali.
+ * Il prompt è costruito da buildPosterPromptFromProjectContext a partire dal workspace (stile globale + stato reale).
  */
 
 import { falRequest, MODELS } from "./imagePipeline.js";
+import { PROJECT_POSTER_STATUS } from "./scenografieProjectPosterConstants.js";
+import {
+  buildProjectPosterGenerationContext,
+  buildProjectPosterGenerationContextFromLegacy,
+  derivePosterVisualStyleLock,
+  derivePosterCompositionOnlyHint,
+  logPosterGenerationContextDev,
+} from "./scenografieProjectPosterContext.js";
 
-export const PROJECT_POSTER_STATUS = {
-  NONE: "none",
-  PENDING: "pending",
-  GENERATING: "generating",
-  READY: "ready",
-  FAILED: "failed",
-};
+export { PROJECT_POSTER_STATUS };
+export {
+  buildProjectPosterGenerationContext,
+  buildProjectPosterGenerationContextFromLegacy,
+  derivePosterVisualStyleLock,
+  derivePosterReferenceAssets,
+} from "./scenografieProjectPosterContext.js";
 
 function extractFluxImageUrl(result) {
   return result?.images?.[0]?.url || result?.image?.url || null;
@@ -40,12 +48,6 @@ function normBrief(s) {
     .trim();
 }
 
-/**
- * Quanto il nome del personaggio è legato a titolo/descrizione progetto (evita "primo della lista").
- * @param {object} c
- * @param {string} title
- * @param {string} description
- */
 function characterBriefAffinityScore(c, title, description) {
   const blob = normBrief(`${title} ${description}`);
   if (!blob) return 0;
@@ -62,13 +64,8 @@ function characterBriefAffinityScore(c, title, description) {
 
 /**
  * Protagonisti / ricorrenti come riferimento mood (no identity lock in questa fase).
- * Ordine: affinità nome↔titolo/descrizione, poi ruolo narrativo — mai l'ordine grezzo del piano.
- * @param {object[]|null|undefined} characters
- * @param {number} max
- * @param {string} [projectTitle]
- * @param {string} [projectDescription]
  */
-function pickKeyCharacters(characters, max = 3, projectTitle = "", projectDescription = "") {
+function pickKeyCharacters(characters, max = 4, projectTitle = "", projectDescription = "") {
   const list = Array.isArray(characters) ? characters : [];
   const t = String(projectTitle || "");
   const d = String(projectDescription || "");
@@ -106,89 +103,152 @@ function pickKeyCharacters(characters, max = 3, projectTitle = "", projectDescri
 }
 
 /**
- * Raffinamento visivo per preset (locandina iconica, non storyboard frame).
- * @param {string} presetId
+ * Prompt locandina da contesto progetto centralizzato.
+ * @param {ReturnType<typeof buildProjectPosterGenerationContext>} ctx
  */
-function posterStyleTreatment(presetId) {
-  const id = String(presetId || "").toLowerCase();
-  if (/disney|pixar|family|cartoon|anime|ghibli|chibi/.test(id)) {
-    return "Premium streaming animated movie key art: appealing shapes, clear silhouette, polished theatrical one-sheet composition, family blockbuster poster (no text).";
-  }
-  if (/noir|bw|monochrome/.test(id)) {
-    return "Moody high-contrast noir streaming key art: dramatic shadows, single focal subject, cinematic poster lighting.";
-  }
-  if (/fantasy|epic|magic/.test(id)) {
-    return "Epic fantasy streaming key art: mythic scale, iconic hero presence, painterly cinematic poster.";
-  }
-  if (/cyber|neon|sci/.test(id)) {
-    return "Futuristic streaming key art: neon atmosphere, iconic silhouette, clean blockbuster composition.";
-  }
-  if (/horror|dark/.test(id)) {
-    return "Dark thriller streaming key art: uneasy atmosphere, restrained detail, iconic focal dread, poster-grade clarity.";
-  }
-  if (/watercolor|painting|oil/.test(id)) {
-    return "Illustrated prestige streaming key art: rich painterly treatment, strong focal read, collectible poster feel.";
-  }
-  return "Photoreal cinematic streaming key art: premium film one-sheet, natural materials, dramatic but readable lighting.";
-}
-
-/**
- * Costruisce prompt locandina (cover ufficiale, non scena).
- *
- * @param {{
- *   projectTitle: string,
- *   projectDescription: string,
- *   projectStyle: object|null,
- *   characters?: object[]|null,
- *   plannerKeywords?: string[]|null,
- *   conceptualOnly?: boolean
- * }} input
- * @returns {{ positivePrompt: string, negativePrompt: string, metadata: object }}
- */
-export function buildProjectPosterPromptPack(input) {
-  const title = String(input.projectTitle || "").trim();
-  const description = String(input.projectDescription || "").trim();
-  const ps = input.projectStyle && typeof input.projectStyle === "object" ? input.projectStyle : {};
+export function buildPosterPromptFromProjectContext(ctx) {
+  const title = String(ctx.projectTitle || "").trim();
+  const description = String(ctx.projectDescription || "").trim();
+  const ps = ctx.projectStyle && typeof ctx.projectStyle === "object" ? ctx.projectStyle : {};
   const presetId = String(ps.presetId || "").trim();
-  const styleLine = [ps.stylePrompt, ps.plannerVisualNotes, ps.label].filter(Boolean).join(" · ");
-  const keyChars = pickKeyCharacters(input.characters, 3, title, description);
-  const charLines = keyChars.map(characterOneLiner).filter(Boolean);
-  const conceptual = input.conceptualOnly === true || charLines.length === 0;
-  const kw = (Array.isArray(input.plannerKeywords) ? input.plannerKeywords : [])
+  const approvedSceneImageCount = Number(ctx.approvedSceneImageCount) || 0;
+  const scenePrimary = approvedSceneImageCount > 0;
+  const lock = derivePosterVisualStyleLock(ctx.projectStyle, { supportingOnly: scenePrimary });
+
+  const chars = pickKeyCharacters(ctx.aggregatedCharacters || [], 4, title, description);
+  const charLines = chars.map(characterOneLiner).filter(Boolean);
+  const conceptual = ctx.legacyConceptualOnly === true || charLines.length === 0;
+  const approvedMastersCount = Number(ctx.approvedMastersCount) || 0;
+  const hasApprovedMasters = approvedMastersCount > 0;
+
+  const kw = (Array.isArray(ctx.legacyPlannerKeywords) ? ctx.legacyPlannerKeywords : [])
     .map((k) => String(k || "").trim())
     .filter(Boolean)
-    .slice(0, 12);
+    .slice(0, 14);
 
-  const toneBlock = description.slice(0, 1400);
-  const keywordBlock = kw.length ? `Narrative keywords (mood only): ${kw.join(", ")}.` : "";
+  const toneBlock = description.slice(0, 1600);
+  const keywordBlock = kw.length
+    ? `Narrative keywords from planner (mood only — after visual lock; do not override scene continuity): ${kw.join(", ")}.`
+    : "";
 
   const characterBlock = conceptual
-    ? "No named cast locked yet: create evocative iconic key art that suggests the world and tone without specific likenesses. One or two symbolic silhouettes or environmental focal hero moment is OK; avoid portrait-ID accuracy."
-    : `Key cast reference (mood and silhouette only — this is NOT a storyboard frame, NOT an identity-lock composite): ${charLines.join(" | ")}. Suggest presence and scale; do not reproduce exact faces as documentary stills.`;
+    ? scenePrimary
+      ? "Symbolic silhouettes or environmental focal moment OK only inside the locked visual world of approved scenes; avoid portrait-ID accuracy; no cast that implies a different medium or art direction."
+      : "No finalized cast references required: create evocative iconic key art that matches the project's tone and style lock without specific likenesses. Symbolic silhouettes or environmental focal moment OK; avoid portrait-ID accuracy."
+    : hasApprovedMasters
+      ? `Preserve identity and style consistency with approved character masters (mood and silhouette — NOT a storyboard frame, NOT documentary still): ${charLines.join(" | ")}. Wardrobe/scale must match masters and the scene visual lock.`
+      : `Key cast reference (mood and silhouette only — NOT a storyboard frame, NOT identity-lock): ${charLines.join(" | ")}. Reflect wardrobe/scale suggested by approved masters and plan; do not paste faces as documentary stills.`;
 
-  const primaryContract = [
-    "PRIMARY NARRATIVE CONTRACT (overrides cast list order, first scene, or first chapter thumbnail): this poster must sell the ENTIRE project from the Italian TITLE and DESCRIPTION.",
-    "The dominant figure, symbolic center, or emotional promise MUST match who/what the title and description imply (e.g. a biography or family series named after one figure must foreground that figure or clear iconography for them — not a different relative or side character unless the title explicitly names them).",
-    "Never use 'first character in JSON', 'first scene still', or 'first chapter default' as the creative guide. The poster is catalog key art for the whole work, not chapter 1 production art.",
-  ].join(" ");
+  const primaryContract = scenePrimary
+    ? [
+        "Narrative contract (secondary to visual continuity): communicate the whole multi-chapter work from the Italian TITLE and DESCRIPTION only within the locked visual world of existing approved scenes.",
+        "Emotional promise must align with title + description without genre, medium, or art-direction shift — never sacrifice scene continuity for a more dramatic poster read.",
+        "Never use 'first character in JSON' or 'first chapter default' as the main creative guide; catalog key art for the whole work, same visual family as chapter imagery.",
+      ].join(" ")
+    : [
+        "PRIMARY NARRATIVE CONTRACT: this poster must sell the ENTIRE multi-chapter work from the Italian TITLE and DESCRIPTION (and existing narrative summaries when present).",
+        "The dominant emotional promise must match title + description (e.g. a children's religious biography must read gentle, age-appropriate, and faithful to that brief — not a different genre).",
+        "Never use 'first character in JSON', 'first scene still', or 'first chapter default' as the main creative guide. The poster is catalog key art for the whole work.",
+      ].join(" ");
+
+  const multiChapterBlock =
+    ctx.chaptersCount > 1
+      ? `This is a multi-chapter project (${ctx.chaptersCount} chapters). The image must feel like ONE unified film/series key art for the whole catalog entry, not a random chapter thumbnail or genre shift.`
+      : "";
+
+  const summaryBits = (ctx.chapterSummaries || [])
+    .map((s) => `Chapter ${s.ordinal} synopsis (Italian): ${String(s.summaryIt || "").slice(0, 700)}`)
+    .filter(Boolean);
+  const summaryBlock = summaryBits.length ? summaryBits.join(" \n ") : "";
+
+  const sceneRefBlock =
+    ctx.sceneReferenceLines && ctx.sceneReferenceLines.length
+      ? scenePrimary
+        ? `Approved scene anchors (mood/setting — same world as finalized chapter imagery): ${ctx.sceneReferenceLines.slice(0, 18).join(" | ")}.`
+        : `Approved scene visual anchors (secondary — mood/setting only, not literal frame copy): ${ctx.sceneReferenceLines.slice(0, 18).join(" | ")}.`
+      : "";
+
+  const storyBlock = ctx.storyPrompt ? `Original full story / treatment excerpt (tone anchor): ${ctx.storyPrompt.slice(0, 3500)}` : "";
+
+  const audienceBlock = ctx.targetAudience
+    ? `Target audience / tone guardrail: ${ctx.targetAudience}. The poster must remain appropriate and visually aligned with this audience.`
+    : "";
+
+  const styleFallback =
+    !lock.hasFullStylePrompt && !String(ps.label || "").trim()
+      ? "If style fields are thin, default to a restrained premium catalog look that still follows any preset label available — do not invent an unrelated genre."
+      : "";
+
+  const sectionA =
+    scenePrimary && ctx.approvedSceneStyleEvidence
+      ? [
+          "A. VISUAL CONTINUITY LOCK (strongest — official poster of an already visually defined project):",
+          String(ctx.approvedSceneStyleEvidence || "").trim(),
+          "The poster MUST match existing approved generated scenes: same rendering language, stylistic family, visual world, tone, and artistic treatment.",
+          "No style drift; no reinterpretation into a different genre or look; no 'fresh' art direction that breaks chapter imagery.",
+          "ANTI-DRIFT (mandatory):",
+          "- Do not reinterpret the project into a different visual style or medium.",
+          "- Do not switch illustrated/storybook/soft family language into generic cinematic photoreal or dramatic adult blockbuster poster language.",
+          "- Do not switch photoreal/cinematic language into cartoon, anime, or juvenile illustration unless approved scene evidence clearly supports that family.",
+          "- Do not introduce unrelated poster aesthetics; preserve continuity with established chapter imagery.",
+          sceneRefBlock,
+        ]
+          .filter(Boolean)
+          .join(" ")
+      : scenePrimary
+        ? [
+            "A. VISUAL CONTINUITY LOCK (strongest): approved scenes exist — match their visual world; no drift.",
+            sceneRefBlock,
+          ]
+            .filter(Boolean)
+            .join(" ")
+        : "";
+
+  const sectionB = ["B. CHARACTER CONTINUITY / CAST:", characterBlock].join(" ");
+
+  const sectionC = scenePrimary
+    ? [
+        "C. PROJECT STYLE (supporting refinement only — cannot override A; preset may refine palette and finish but must not break scene continuity):",
+        lock.styleLockBlock,
+        styleFallback,
+      ]
+        .filter(Boolean)
+        .join(" ")
+    : [
+        "C. PROJECT STYLE LOCK (highest priority when no approved scene imagery lock):",
+        lock.styleLockBlock,
+        styleFallback,
+      ]
+        .filter(Boolean)
+        .join(" ");
+
+  const sectionD = [
+    "D. NARRATIVE POSTER COMPOSITION (only after visual lock is fixed):",
+    primaryContract,
+    multiChapterBlock,
+    derivePosterCompositionOnlyHint(),
+    "— Narrative & world (Italian brief — do not paint text on the image):",
+    title ? `Title mood: ${title}.` : "",
+    toneBlock ? `Story world / tone / concept: ${toneBlock}` : "",
+    storyBlock,
+    summaryBlock,
+    !scenePrimary ? sceneRefBlock : "",
+    audienceBlock,
+    keywordBlock,
+  ]
+    .filter(Boolean)
+    .join(" ");
 
   const positivePrompt = [
-    "OFFICIAL STREAMING SERVICE KEY ART / THEATRICAL ONE-SHEET for a fictional series or film.",
-    primaryContract,
-    "Must read as a premium Netflix / Disney+ / Prime Video catalog cover: bold, clean, iconic, high legibility at thumbnail size.",
-    "NOT a random film still, NOT a busy storyboard panel, NOT a cluttered ensemble scene.",
-    "Composition: one dominant focal subject OR one hero + one secondary at most; strong silhouette; clear negative space reserved for future title treatment (absolutely NO text, letters, logos, watermarks, or UI in the image).",
-    "Visual hierarchy: atmosphere and iconic pose over fine detail; readable shapes; cinematic poster lighting; full-bleed vertical poster.",
-    posterStyleTreatment(presetId),
-    "Global art direction (must dominate):",
-    styleLine || "cinematic photorealistic blockbuster",
-    ps.isAnimated ? "Output: top-tier animated feature key art finish." : "",
-    "Italian project brief (theme and tone only — do not render as overlaid text):",
-    title ? `Title mood: ${title}.` : "",
-    toneBlock ? `Story world / tone: ${toneBlock}` : "",
-    keywordBlock,
-    characterBlock,
-    "Avoid: many simultaneous actions, crowded cast, tiny illegible details, infographic look, comic panel layout, amateur snapshot.",
+    "OFFICIAL STREAMING CATALOG KEY ART / THEATRICAL ONE-SHEET (poster-oriented, not a single scene frame).",
+    sectionA,
+    sectionB,
+    sectionC,
+    sectionD,
+    !scenePrimary && ps.isAnimated === true ? "Animated / illustrative finish consistent with the style lock above." : "",
+    scenePrimary
+      ? "Avoid: any medium or style drift vs approved scenes, crowded ensemble chaos, comic panels, UI, watermarks, subtitles."
+      : "Avoid: style drift into a different medium than the lock, crowded ensemble chaos, comic panels, UI, watermarks, subtitles.",
   ]
     .filter(Boolean)
     .join(" ");
@@ -196,6 +256,9 @@ export function buildProjectPosterPromptPack(input) {
   const baseNeg = String(ps.negativePrompt || "").trim();
   const posterNeg = [
     baseNeg,
+    scenePrimary
+      ? "visual style drift, genre shift, different art direction than established chapter scenes, unrelated blockbuster poster clichés, photoreal overhaul of illustrated work, illustration overhaul of photoreal work"
+      : "",
     "text, title, caption, watermark, logo, typography, letters, numbers, subtitles, UI, interface",
     "multiple disconnected focal points, chaotic collage, messy clutter, overcrowded composition",
     "storyboard, sequential panels, split screen, contact sheet, film strip",
@@ -206,14 +269,25 @@ export function buildProjectPosterPromptPack(input) {
     .join(", ");
 
   const metadata = {
-    kind: "official_project_poster",
+    kind: "official_project_poster_v2",
     presetId: presetId || null,
     styleLabel: ps.label || null,
     conceptualOnly: conceptual,
     keyCharacterCount: charLines.length,
     plannerKeywordCount: kw.length,
     positiveCharCount: positivePrompt.length,
+    posterStyleSource: lock.posterStyleSource,
+    visualContinuitySource: ctx.visualContinuitySource || null,
+    posterVisualLockStrength: ctx.posterVisualLockStrength || null,
+    approvedSceneImageCount,
+    scenesOverrideGenericStyle: ctx.scenesOverrideGenericStyle === true,
+    chaptersCount: ctx.chaptersCount,
+    approvedScenesCount: ctx.approvedScenesCount,
+    approvedMastersCount: ctx.approvedMastersCount,
+    posterContextDev: ctx.devLog || {},
   };
+
+  logPosterGenerationContextDev(ctx);
 
   return {
     positivePrompt,
@@ -223,18 +297,35 @@ export function buildProjectPosterPromptPack(input) {
 }
 
 /**
- * Genera la locandina (FLUX 2 Pro, 2:3) e restituisce URL + pacchetto prompt.
+ * Costruisce il pacchetto prompt locandina.
+ * Preferire `{ workspace }` per rispettare stile e stato reali del progetto.
  *
  * @param {{
- *   projectTitle: string,
- *   projectDescription: string,
- *   projectStyle: object|null,
+ *   workspace?: object,
+ *   projectTitle?: string,
+ *   projectDescription?: string,
+ *   projectStyle?: object|null,
  *   characters?: object[]|null,
  *   plannerKeywords?: string[]|null,
- *   conceptualOnly?: boolean,
- *   onProgress?: (msg: string) => void
- * }} opts
+ *   conceptualOnly?: boolean
+ * }} input
  */
+export function buildProjectPosterPromptPack(input) {
+  if (input?.workspace) {
+    const ctx = buildProjectPosterGenerationContext(input.workspace);
+    return buildPosterPromptFromProjectContext(ctx);
+  }
+  const ctx = buildProjectPosterGenerationContextFromLegacy({
+    projectTitle: input.projectTitle,
+    projectDescription: input.projectDescription,
+    projectStyle: input.projectStyle,
+    characters: input.characters,
+    plannerKeywords: input.plannerKeywords,
+    conceptualOnly: input.conceptualOnly,
+  });
+  return buildPosterPromptFromProjectContext(ctx);
+}
+
 /**
  * Solo chiamata FLUX da pacchetto prompt già calcolato (salvataggio prompt prima del job).
  * @param {{ positivePrompt: string, negativePrompt: string, metadata?: object }} pack
@@ -260,14 +351,16 @@ export async function executeOfficialProjectPosterFlux(pack, onProgress) {
 }
 
 export async function generateOfficialProjectPoster(opts) {
-  const pack = buildProjectPosterPromptPack({
-    projectTitle: opts.projectTitle,
-    projectDescription: opts.projectDescription,
-    projectStyle: opts.projectStyle,
-    characters: opts.characters,
-    plannerKeywords: opts.plannerKeywords,
-    conceptualOnly: opts.conceptualOnly,
-  });
+  const pack = opts.workspace
+    ? buildProjectPosterPromptPack({ workspace: opts.workspace })
+    : buildProjectPosterPromptPack({
+        projectTitle: opts.projectTitle,
+        projectDescription: opts.projectDescription,
+        projectStyle: opts.projectStyle,
+        characters: opts.characters,
+        plannerKeywords: opts.plannerKeywords,
+        conceptualOnly: opts.conceptualOnly,
+      });
   const { imageUrl } = await executeOfficialProjectPosterFlux(pack, opts.onProgress);
   return {
     imageUrl,
@@ -280,6 +373,7 @@ export async function generateOfficialProjectPoster(opts) {
 /** @deprecated Usare generateOfficialProjectPoster */
 export async function generateScenografiaProjectPosterUrl(opts) {
   const r = await generateOfficialProjectPoster({
+    workspace: opts.workspace,
     projectTitle: opts.title,
     projectDescription: opts.description,
     projectStyle: opts.projectStyle,

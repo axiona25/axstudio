@@ -2,7 +2,7 @@
  * Scenografie — hub Progetti → Capitoli → editor Capitolo.
  */
 
-import React, { useState, useCallback, useEffect, useRef } from "react";
+import React, { useState, useCallback, useEffect, useLayoutEffect, useRef } from "react";
 import ScenografieProjectHub from "./ScenografieProjectHub.js";
 import ScenografieChapterHub from "./ScenografieChapterHub.js";
 import { ScenografieProjectEditor } from "./ScenografieProjectEditor.js";
@@ -42,10 +42,27 @@ export default function ScenografieSection({
   /** Ref condiviso: sopravvive allo smontaggio dell'editor così il loop async e «Interrompi» restano allineati. */
   const sharedPipelineAbortRef = useRef(false);
 
-  useEffect(() => {
+  /** Prima del paint: la topbar deve mostrare il «←» appena si esce dall'hub (non dopo un frame in ritardo). */
+  useLayoutEffect(() => {
     onEditorOpenChange?.(route.type !== "hub");
-    return () => onEditorOpenChange?.(false);
   }, [route.type, onEditorOpenChange]);
+
+  /** Prima del paint: il «←» app deve sempre chiamare tryBackToHub reale (routeRef aggiornato al click). */
+  useLayoutEffect(() => {
+    if (!scenografieNavRef?.current) return;
+    scenografieNavRef.current.tryBackToHub = () => {
+      const r = routeRef.current;
+      if (r.type === "chapter") {
+        setRoute({ type: "workspace", workspaceId: r.workspaceId, projectNumber: r.projectNumber ?? 1 });
+        return true;
+      }
+      if (r.type === "workspace") {
+        setRoute({ type: "hub" });
+        return true;
+      }
+      return false;
+    };
+  }, [scenografieNavRef]);
 
   useEffect(() => {
     if (route.type !== "chapter") onHeaderActionsChange?.(null);
@@ -138,18 +155,6 @@ export default function ScenografieSection({
 
   useEffect(() => {
     if (!scenografieNavRef) return undefined;
-    scenografieNavRef.current.tryBackToHub = () => {
-      const r = routeRef.current;
-      if (r.type === "chapter") {
-        setRoute({ type: "workspace", workspaceId: r.workspaceId, projectNumber: r.projectNumber });
-        return true;
-      }
-      if (r.type === "workspace") {
-        setRoute({ type: "hub" });
-        return true;
-      }
-      return false;
-    };
     return () => {
       if (scenografieNavRef?.current) {
         scenografieNavRef.current.tryBackToHub = () => false;

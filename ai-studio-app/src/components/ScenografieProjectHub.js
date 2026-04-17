@@ -2,8 +2,8 @@
  * Hub principale Scenografie — griglia Progetti (workspace) stile locandine.
  */
 
-import React, { useState, useCallback, useEffect, useMemo } from "react";
-import { HiFilm, HiPlus, HiArrowPath, HiTrash, HiXMark, HiSparkles, HiPencilSquare } from "react-icons/hi2";
+import React, { useState, useCallback, useEffect, useMemo, useRef } from "react";
+import { HiFilm, HiPlus, HiTrash, HiXMark, HiSparkles, HiPencilSquare } from "react-icons/hi2";
 import {
   loadScenografiaProjectsIndex,
   migrateLegacyScenografiaToMultiIfNeeded,
@@ -11,21 +11,12 @@ import {
   loadScenografiaProjectById,
   saveScenografiaProjectById,
   upsertScenografiaProjectInIndex,
-  SCENOGRAFIA_UI_STATUS_LABEL,
   deleteScenografiaProjectById,
   buildScenografiaWorkspaceFromWizard,
   ensureWorkspace,
-  mergeChapterDataWithProjectCharacterPool,
   indexSummaryNeedsLightReconcile,
 } from "../services/scenografieProjectPersistence.js";
-import {
-  FILM_DELIVERY_STATE,
-  FILM_OUTPUT_READINESS,
-  deriveConsumerFilmConfidence,
-  deriveFinalOutputSimplePresentation,
-  FINAL_OUTPUT_SIMPLE_TIER,
-  describeFinalFilmPlaybackMoment,
-} from "../services/scenografieConsumerReliability.js";
+import { FILM_DELIVERY_STATE, FILM_OUTPUT_READINESS } from "../services/scenografieConsumerReliability.js";
 import { buildProjectStyleFromImagePreset } from "../services/scenografieProjectStyle.js";
 import {
   buildProjectPosterPromptPack,
@@ -34,6 +25,20 @@ import {
 } from "../services/scenografieProjectPoster.js";
 import { MODULE_REGISTRY, MODULE_IDS } from "../config/moduleProviderRegistry.js";
 import ScenografieStoryProjectWizard from "./ScenografieStoryProjectWizard.js";
+import ScenografieProjectStartChoiceModal from "./ScenografieProjectStartChoiceModal.js";
+import {
+  ProjectCreationModalHeader,
+  ProjectStylePresetGrid,
+  modalOverlayStyle,
+  modalDialogStyle,
+  modalGradientBarStyle,
+  labelStyle,
+  inputFieldStyle,
+  textareaFieldStyle,
+  footerDividerStyle,
+  btnSecondaryFooter,
+  btnPrimaryFooter,
+} from "./ProjectCreationModalUi.js";
 
 const AX = {
   bg: "#0a0a0f",
@@ -50,18 +55,19 @@ const AX = {
   gradLogo: "linear-gradient(135deg,#29b6ff,#7b4dff,#ff4fa3)",
 };
 
-const STATUS_COLOR = {
-  planning: AX.muted,
-  character_approval: "#c084fc",
-  scene_approval: "#fbbf24",
-  clip_approval: "#fb923c",
-  timeline_approval: "#22d3ee",
-  final_film_ready: "#4ade80",
-  video_ready: "#4ade80",
-  video_production: AX.electric,
-  final_montage: "#38bdf8",
-  completed: "#94a3b8",
-};
+/** Catalogo hub: una sola riga sintetica sul film finale (niente copy consumer lungo). */
+function hubCardFilmFinaleLine(summary) {
+  const s = summary && typeof summary === "object" ? summary : {};
+  const filmDel = s.filmDeliveryState != null ? String(s.filmDeliveryState).trim() : "";
+  if (!filmDel || filmDel === FILM_DELIVERY_STATE.NOT_READY) return null;
+  const hasFilmUrl = Boolean(s.completedFilmUrl != null && String(s.completedFilmUrl).trim());
+  const filmReadiness = String(s.filmOutputReadiness || "").trim() || FILM_OUTPUT_READINESS.MISSING_OUTPUT;
+  const canPlay =
+    hasFilmUrl &&
+    filmReadiness !== FILM_OUTPUT_READINESS.MONTAGE_FAILED &&
+    filmReadiness !== FILM_OUTPUT_READINESS.MISSING_OUTPUT;
+  return `Film finale: ${canPlay ? "disponibile" : "non disponibile"}`;
+}
 
 /**
  * @param {{ onOpenWorkspace: (workspaceId: string, projectNumber: number) => void, imageStylePresets?: Array<{ id: string, label: string, prompt: string, negative_prompt?: string }> }} props
@@ -78,6 +84,10 @@ export default function ScenografieProjectHub({ onOpenWorkspace, imageStylePrese
   /** @type {'idle'|'saving'|'poster'|'done'} */
   const [createPhase, setCreatePhase] = useState("idle");
   const [storyWizardOpen, setStoryWizardOpen] = useState(false);
+  /** Primo bivio: Film guidato vs Film libero (prima della modale creazione o del wizard). */
+  const [startChoiceModalOpen, setStartChoiceModalOpen] = useState(false);
+  /** Dopo commit wizard riuscito: onClose del wizard non deve riaprire la modale di scelta (navigazione verso progetto). */
+  const suppressStartChoiceAfterWizardCommitRef = useRef(false);
 
   const defaultPresetId = useMemo(() => {
     const list = imageStylePresets || [];
@@ -145,10 +155,41 @@ export default function ScenografieProjectHub({ onOpenWorkspace, imageStylePrese
     setCreateModalOpen(true);
   }, [defaultPresetId]);
 
+  const openStartChoiceModal = useCallback(() => {
+    if (creating || !imageStylePresets.length) return;
+    setCreateError("");
+    setStartChoiceModalOpen(true);
+  }, [creating, imageStylePresets.length]);
+
+  const closeStartChoiceModal = useCallback(() => {
+    if (creating) return;
+    setStartChoiceModalOpen(false);
+  }, [creating]);
+
+  const handleStartChoiceGuided = useCallback(() => {
+    setStartChoiceModalOpen(false);
+    if (!creating) setStoryWizardOpen(true);
+  }, [creating]);
+
+  const handleStartChoiceFree = useCallback(() => {
+    setStartChoiceModalOpen(false);
+    openCreateModal();
+  }, [openCreateModal]);
+
   const cancelCreateModal = useCallback(() => {
     if (creating) return;
     setCreatePhase("idle");
     setCreateModalOpen(false);
+    setStartChoiceModalOpen(true);
+  }, [creating]);
+
+  const closeStoryWizardModal = useCallback(() => {
+    if (creating) return;
+    setStoryWizardOpen(false);
+    if (!suppressStartChoiceAfterWizardCommitRef.current) {
+      setStartChoiceModalOpen(true);
+    }
+    suppressStartChoiceAfterWizardCommitRef.current = false;
   }, [creating]);
 
   const cancelDeleteProject = useCallback(() => {
@@ -212,22 +253,7 @@ export default function ScenografieProjectHub({ onOpenWorkspace, imageStylePrese
           ws.projectPosterOutdated = true;
         }
         if (regeneratePoster) {
-          const ch0 = ws.chapters?.[0];
-          const merged = mergeChapterDataWithProjectCharacterPool(ch0?.data || {}, ws);
-          const plan0 = merged.plan;
-          const characters = Array.isArray(plan0?.characters) ? plan0.characters : null;
-          const plannerKeywords =
-            typeof plan0?.summary_it === "string" && plan0.summary_it.trim()
-              ? plan0.summary_it.trim().split(/\s+/).filter((w) => w.length > 3).slice(0, 14)
-              : null;
-          const pack = buildProjectPosterPromptPack({
-            projectTitle: title,
-            projectDescription: description,
-            projectStyle: ws.globalProjectStyle,
-            characters,
-            plannerKeywords,
-            conceptualOnly: !characters?.length,
-          });
+          const pack = buildProjectPosterPromptPack({ workspace: ws });
           const gStyle = ws.globalProjectStyle;
           const posterStyleSnap = gStyle
             ? { presetId: gStyle.presetId, label: gStyle.label, isAnimated: gStyle.isAnimated === true }
@@ -314,20 +340,7 @@ export default function ScenografieProjectHub({ onOpenWorkspace, imageStylePrese
       await saveScenografiaProjectById(id, workspace);
       await upsertScenografiaProjectInIndex(id, workspace);
 
-      const plan0 = workspace.chapters[0]?.data?.plan;
-      const characters = Array.isArray(plan0?.characters) ? plan0.characters : null;
-      const plannerKeywords =
-        typeof plan0?.summary_it === "string" && plan0.summary_it.trim()
-          ? plan0.summary_it.trim().split(/\s+/).filter((w) => w.length > 3).slice(0, 14)
-          : null;
-      const pack = buildProjectPosterPromptPack({
-        projectTitle: title,
-        projectDescription: description,
-        projectStyle,
-        characters,
-        plannerKeywords,
-        conceptualOnly: !characters?.length,
-      });
+      const pack = buildProjectPosterPromptPack({ workspace });
       const posterStyleSnap = {
         presetId: projectStyle.presetId,
         label: projectStyle.label,
@@ -403,20 +416,7 @@ export default function ScenografieProjectHub({ onOpenWorkspace, imageStylePrese
         await saveScenografiaProjectById(id, ws);
         await upsertScenografiaProjectInIndex(id, ws);
 
-        const plan0 = ws.chapters[0]?.data?.plan;
-        const characters = Array.isArray(plan0?.characters) ? plan0.characters : null;
-        const plannerKeywords =
-          typeof plan0?.summary_it === "string" && plan0.summary_it.trim()
-            ? plan0.summary_it.trim().split(/\s+/).filter((w) => w.length > 3).slice(0, 14)
-            : null;
-        const pack = buildProjectPosterPromptPack({
-          projectTitle: title,
-          projectDescription: description,
-          projectStyle,
-          characters,
-          plannerKeywords,
-          conceptualOnly: !characters?.length,
-        });
+        const pack = buildProjectPosterPromptPack({ workspace: ws });
         const posterStyleSnap = projectStyle
           ? {
               presetId: projectStyle.presetId,
@@ -469,6 +469,7 @@ export default function ScenografieProjectHub({ onOpenWorkspace, imageStylePrese
         setCreatePhase("idle");
         const idxAfter = await loadScenografiaProjectsIndex();
         const ord = Math.max(1, (idxAfter.projects || []).length);
+        suppressStartChoiceAfterWizardCommitRef.current = true;
         onOpenWorkspace(id, ord);
       } catch (e) {
         setCreateError(e?.message || "Creazione da traccia non riuscita.");
@@ -487,11 +488,39 @@ export default function ScenografieProjectHub({ onOpenWorkspace, imageStylePrese
 
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, padding: "0 24px 28px" }}>
+      <style>
+        {`
+        .scenografie-hub-catalog-grid {
+          display: grid;
+          width: 100%;
+          box-sizing: border-box;
+          gap: 10px;
+          align-content: start;
+          justify-items: stretch;
+          grid-template-columns: 1fr;
+        }
+        @media (min-width: 420px) {
+          .scenografie-hub-catalog-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        }
+        @media (min-width: 720px) {
+          .scenografie-hub-catalog-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+        }
+        @media (min-width: 960px) {
+          .scenografie-hub-catalog-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+        }
+        @media (min-width: 1200px) {
+          .scenografie-hub-catalog-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+        }
+        @media (min-width: 1440px) {
+          .scenografie-hub-catalog-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+        }
+        `}
+      </style>
       <div style={{ display: "flex", flexWrap: "wrap", alignItems: "flex-start", justifyContent: "space-between", gap: 16, marginBottom: 22 }}>
         <div>
           <h2 style={{ fontSize: 20, fontWeight: 800, color: AX.text, margin: 0, display: "flex", alignItems: "center", gap: 10, letterSpacing: "-0.02em" }}>
             <HiFilm size={24} style={{ color: AX.violet }} />
-            Scenografie
+            Elenco Film
           </h2>
           <p style={{ fontSize: 12, fontWeight: 700, color: AX.electric, margin: "8px 0 0", letterSpacing: "0.02em", maxWidth: 640, lineHeight: 1.45 }}>
             {MODULE_REGISTRY[MODULE_IDS.SCENOGRAFIE].ui.headerSubtitle}
@@ -503,28 +532,7 @@ export default function ScenografieProjectHub({ onOpenWorkspace, imageStylePrese
         <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
           <button
             type="button"
-            onClick={() => void refresh()}
-            disabled={loading}
-            style={{
-              padding: "10px 16px",
-              borderRadius: 10,
-              border: `1px solid ${AX.border}`,
-              background: AX.surface,
-              color: AX.text2,
-              fontWeight: 600,
-              fontSize: 13,
-              cursor: loading ? "wait" : "pointer",
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-            }}
-          >
-            <HiArrowPath size={16} />
-            Aggiorna elenco
-          </button>
-          <button
-            type="button"
-            onClick={openCreateModal}
+            onClick={openStartChoiceModal}
             disabled={creating || !imageStylePresets.length}
             style={{
               padding: "10px 20px",
@@ -545,46 +553,7 @@ export default function ScenografieProjectHub({ onOpenWorkspace, imageStylePrese
             <HiPlus size={18} />
             Nuovo progetto
           </button>
-          <button
-            type="button"
-            onClick={() => !creating && setStoryWizardOpen(true)}
-            disabled={creating || !imageStylePresets.length}
-            title="Crea un progetto partendo da una traccia completa: analisi, scene, personaggi e pre-produzione guidata"
-            style={{
-              padding: "10px 18px",
-              borderRadius: 10,
-              border: `1px solid rgba(123,77,255,0.45)`,
-              background: "rgba(123,77,255,0.12)",
-              color: AX.text,
-              fontWeight: 700,
-              fontSize: 14,
-              cursor: creating || !imageStylePresets.length ? "wait" : "pointer",
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              opacity: !imageStylePresets.length ? 0.5 : 1,
-            }}
-          >
-            <HiSparkles size={18} style={{ color: AX.violet }} />
-            Da traccia completa
-          </button>
         </div>
-      </div>
-
-      <div
-        style={{
-          marginBottom: 14,
-          padding: "10px 14px",
-          borderRadius: 12,
-          border: "1px solid rgba(41,182,255,0.28)",
-          background: "rgba(41,182,255,0.06)",
-          fontSize: 12,
-          color: AX.text2,
-          lineHeight: 1.5,
-        }}
-      >
-        <strong style={{ color: AX.electric }}>Stato reale</strong> è nell&apos;editor di ogni capitolo. Il wizard «Da traccia completa» produce una{" "}
-        <strong style={{ color: AX.text }}>proposta iniziale</strong> finché non confermi e lavori in Scenografie.
       </div>
 
       {loading ? (
@@ -613,7 +582,7 @@ export default function ScenografieProjectHub({ onOpenWorkspace, imageStylePrese
           </div>
           <button
             type="button"
-            onClick={openCreateModal}
+            onClick={openStartChoiceModal}
             disabled={creating || !imageStylePresets.length}
             style={{
               padding: "12px 22px",
@@ -624,78 +593,45 @@ export default function ScenografieProjectHub({ onOpenWorkspace, imageStylePrese
               fontWeight: 700,
               fontSize: 14,
               cursor: creating || !imageStylePresets.length ? "wait" : "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
               opacity: !imageStylePresets.length ? 0.5 : 1,
             }}
           >
-            Crea progetto
+            <HiPlus size={18} />
+            Nuovo progetto
           </button>
         </div>
       ) : (
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))",
-            gap: 20,
-            alignContent: "start",
-          }}
-        >
+        <div className="scenografie-hub-catalog-grid">
           {projectsSorted.map((p, idx) => {
             const n = projectsSorted.length - idx;
             const s = p.summary || {};
-            const st = s.workspaceAggregateUiStatus || s.uiStatus || "planning";
-            const stLabel = SCENOGRAFIA_UI_STATUS_LABEL[st] || st;
-            const stColor = STATUS_COLOR[st] || AX.muted;
             const displayTitle = s.displayTitle || "Senza titolo";
             const poster = typeof s.posterImageUrl === "string" && s.posterImageUrl.trim() ? s.posterImageUrl.trim() : null;
             const posterSt = s.projectPosterStatus || s.posterGenerationStatus || (poster ? "ready" : "none");
             const posterOutdated = s.projectPosterOutdated === true;
             const chaptersCount = s.chaptersCount != null ? s.chaptersCount : 1;
-            const filmDel = s.filmDeliveryState != null ? String(s.filmDeliveryState).trim() : "";
-            const hasFilmUrl = Boolean(s.completedFilmUrl != null && String(s.completedFilmUrl).trim());
-            const filmReadiness = String(s.filmOutputReadiness || "").trim() || FILM_OUTPUT_READINESS.MISSING_OUTPUT;
-            let filmSimple = null;
-            if (filmDel && filmDel !== FILM_DELIVERY_STATE.NOT_READY) {
-              const conf = deriveConsumerFilmConfidence({
-                filmDeliveryState: filmDel,
-                filmOutputReadiness: filmReadiness,
-                filmOutputTrust: String(s.filmOutputTrust || "").trim(),
-                hasUrl: hasFilmUrl,
-                completedFilmUrl: s.completedFilmUrl,
-                filmReconcileMeta: s.filmReconcileMeta,
-              });
-              const fv =
-                s.filmVerificationEffective && typeof s.filmVerificationEffective === "object"
-                  ? s.filmVerificationEffective
-                  : null;
-              filmSimple = deriveFinalOutputSimplePresentation(conf, {
-                hasUrl: hasFilmUrl,
-                filmDeliveryState: filmDel,
-                filmOutputReadiness: filmReadiness,
-                filmVerificationEffective: fv,
-              });
-            }
-            const hubPlaybackMoment =
-              filmSimple != null
-                ? describeFinalFilmPlaybackMoment(
-                    filmSimple.tier,
-                    filmReadiness,
-                    s.filmVerificationEffective && typeof s.filmVerificationEffective === "object"
-                      ? s.filmVerificationEffective
-                      : null,
-                  )
-                : null;
+            const finaleLine = hubCardFilmFinaleLine(s);
+            const finaleOk = finaleLine === "Film finale: disponibile";
             const initial = displayTitle.trim().charAt(0).toUpperCase() || "?";
+            const metaBits = [
+              `${chaptersCount} ${chaptersCount === 1 ? "capitolo" : "capitoli"}`,
+              finaleLine,
+            ].filter(Boolean);
+            const metaText = metaBits.join(" · ");
             return (
               <div
                 key={p.id}
                 style={{
-                  borderRadius: 16,
+                  borderRadius: 12,
                   border: `1px solid ${AX.border}`,
                   background: AX.card,
                   overflow: "hidden",
                   display: "flex",
                   flexDirection: "column",
-                  minHeight: 320,
+                  minHeight: 0,
                   transition: "border-color 0.15s ease, transform 0.12s ease, box-shadow 0.15s ease",
                   boxShadow: "0 2px 12px rgba(0,0,0,0.2)",
                 }}
@@ -717,7 +653,7 @@ export default function ScenografieProjectHub({ onOpenWorkspace, imageStylePrese
                     border: "none",
                     background: "transparent",
                     padding: 0,
-                    flex: 1,
+                    flex: "0 0 auto",
                     minHeight: 0,
                     width: "100%",
                     color: "inherit",
@@ -798,11 +734,6 @@ export default function ScenografieProjectHub({ onOpenWorkspace, imageStylePrese
                         position: "absolute",
                         left: 10,
                         top: 10,
-                        right: 10,
-                        display: "flex",
-                        justifyContent: "space-between",
-                        alignItems: "flex-start",
-                        gap: 8,
                         pointerEvents: "none",
                       }}
                     >
@@ -818,67 +749,47 @@ export default function ScenografieProjectHub({ onOpenWorkspace, imageStylePrese
                       >
                         Progetto #{n}
                       </span>
-                      {st !== "clip_approval" && (
-                        <span
-                          style={{
-                            fontSize: 9,
-                            fontWeight: 700,
-                            padding: "4px 8px",
-                            borderRadius: 999,
-                            background: "rgba(6,6,12,0.65)",
-                            color: stColor,
-                            border: `1px solid ${stColor}88`,
-                            whiteSpace: "nowrap",
-                            textShadow: "none",
-                          }}
-                        >
-                          {stLabel}
-                        </span>
-                      )}
                     </div>
                   </div>
-                  <div style={{ padding: "14px 14px 12px", flex: 1, display: "flex", flexDirection: "column" }}>
-                    <div style={{ fontSize: 16, fontWeight: 800, color: AX.text, lineHeight: 1.3, marginBottom: 10, minHeight: 42 }}>
+                  <div
+                    style={{
+                      padding: "8px 10px 7px",
+                      flex: "0 0 auto",
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 4,
+                      minHeight: 0,
+                    }}
+                  >
+                    <div
+                      style={{
+                        fontSize: 13,
+                        fontWeight: 800,
+                        color: AX.text,
+                        lineHeight: 1.25,
+                        display: "-webkit-box",
+                        WebkitLineClamp: 2,
+                        WebkitBoxOrient: "vertical",
+                        overflow: "hidden",
+                        wordBreak: "break-word",
+                      }}
+                    >
                       {displayTitle}
                     </div>
-                    <div style={{ marginTop: "auto", fontSize: 12, color: AX.text2 }}>
-                      <strong style={{ color: AX.electric }}>{chaptersCount}</strong>{" "}
-                      {chaptersCount === 1 ? "capitolo" : "capitoli"}
+                    <div
+                      style={{
+                        fontSize: 10,
+                        fontWeight: 600,
+                        color: finaleOk ? "#86efac" : AX.text2,
+                        lineHeight: 1.3,
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                      }}
+                      title={metaText}
+                    >
+                      {metaText}
                     </div>
-                    {filmSimple ? (
-                      <div
-                        style={{
-                          marginTop: 10,
-                          fontSize: 10,
-                          lineHeight: 1.45,
-                          color:
-                            filmSimple.tier === FINAL_OUTPUT_SIMPLE_TIER.READY_TO_WATCH ? "#86efac" : "#fbbf24",
-                          fontWeight: 700,
-                        }}
-                      >
-                        <span style={{ display: "block", fontSize: 11 }}>Film finale: {filmSimple.primaryLine}</span>
-                        {filmSimple.detailLine ? (
-                          <span style={{ display: "block", marginTop: 4, fontWeight: 600, color: AX.text2 }}>
-                            {filmSimple.detailLine}
-                          </span>
-                        ) : null}
-                        {chaptersCount > 1 && s.multiChapterFilmHint ? (
-                          <span style={{ display: "block", marginTop: 4, fontWeight: 600, color: AX.muted }}>
-                            {s.multiChapterFilmHint}
-                          </span>
-                        ) : null}
-                        {hubPlaybackMoment ? (
-                          <span style={{ display: "block", marginTop: 6, fontWeight: 600, color: AX.muted }}>
-                            Playback: <strong style={{ color: AX.text2 }}>{hubPlaybackMoment.headline}</strong>
-                          </span>
-                        ) : null}
-                        {filmSimple?.verificationLine ? (
-                          <span style={{ display: "block", marginTop: 4, fontSize: 10, color: AX.muted, lineHeight: 1.45 }}>
-                            Verifica: {filmSimple.verificationLine}
-                          </span>
-                        ) : null}
-                      </div>
-                    ) : null}
                   </div>
                 </button>
                 <div
@@ -886,16 +797,29 @@ export default function ScenografieProjectHub({ onOpenWorkspace, imageStylePrese
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "space-between",
-                    gap: 10,
-                    padding: "10px 14px 12px",
+                    gap: 8,
+                    padding: "6px 8px",
                     borderTop: `1px solid ${AX.border}`,
-                    background: "rgba(0,0,0,0.2)",
+                    background: "rgba(0,0,0,0.22)",
                   }}
                 >
-                  <span style={{ fontSize: 10, color: AX.muted, minWidth: 0, flex: 1 }}>
-                    {p.updatedAt ? `Aggiornato ${new Date(p.updatedAt).toLocaleString()}` : "\u00a0"}
+                  <span
+                    style={{
+                      fontSize: 9,
+                      color: AX.muted,
+                      minWidth: 0,
+                      flex: 1,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                    title={p.updatedAt ? new Date(p.updatedAt).toLocaleString("it-IT") : undefined}
+                  >
+                    {p.updatedAt
+                      ? `Agg. ${new Date(p.updatedAt).toLocaleDateString("it-IT", { day: "numeric", month: "short", year: "2-digit" })}`
+                      : "\u00a0"}
                   </span>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
                     <button
                       type="button"
                       aria-label={`Modifica progetto ${displayTitle}`}
@@ -909,9 +833,9 @@ export default function ScenografieProjectHub({ onOpenWorkspace, imageStylePrese
                         display: "inline-flex",
                         alignItems: "center",
                         justifyContent: "center",
-                        width: 36,
-                        height: 36,
-                        borderRadius: 10,
+                        width: 32,
+                        height: 32,
+                        borderRadius: 8,
                         border: `1px solid ${AX.border}`,
                         background: AX.surface,
                         color: AX.electric,
@@ -927,7 +851,7 @@ export default function ScenografieProjectHub({ onOpenWorkspace, imageStylePrese
                         e.currentTarget.style.borderColor = AX.border;
                       }}
                     >
-                      <HiPencilSquare size={18} />
+                      <HiPencilSquare size={16} />
                     </button>
                     <button
                       type="button"
@@ -942,9 +866,9 @@ export default function ScenografieProjectHub({ onOpenWorkspace, imageStylePrese
                         display: "inline-flex",
                         alignItems: "center",
                         justifyContent: "center",
-                        width: 36,
-                        height: 36,
-                        borderRadius: 10,
+                        width: 32,
+                        height: 32,
+                        borderRadius: 8,
                         border: `1px solid rgba(239,68,68,0.35)`,
                         background: "rgba(239,68,68,0.1)",
                         color: "#f87171",
@@ -960,7 +884,7 @@ export default function ScenografieProjectHub({ onOpenWorkspace, imageStylePrese
                         e.currentTarget.style.borderColor = "rgba(239,68,68,0.35)";
                       }}
                     >
-                      <HiTrash size={18} />
+                      <HiTrash size={16} />
                     </button>
                   </div>
                 </div>
@@ -970,172 +894,77 @@ export default function ScenografieProjectHub({ onOpenWorkspace, imageStylePrese
         </div>
       )}
       {createModalOpen && (
-        <div
-          role="presentation"
-          className="ax-modal-touch-lock"
-          style={{
-            position: "fixed",
-            inset: 0,
-            zIndex: 100000,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            padding: 24,
-            background: "rgba(6,6,12,0.82)",
-            backdropFilter: "blur(10px)",
-          }}
-          onClick={cancelCreateModal}
-        >
+        <div role="presentation" className="ax-modal-touch-lock" style={modalOverlayStyle} onClick={cancelCreateModal}>
           <div
             role="dialog"
             aria-modal="true"
             aria-labelledby="scenografie-create-project-title"
             onClick={(e) => e.stopPropagation()}
-            style={{
-              width: "100%",
-              maxWidth: 480,
-              borderRadius: 18,
-              background: AX.card,
-              border: `1px solid ${AX.border}`,
-              boxShadow: "0 28px 80px rgba(0,0,0,0.55), 0 0 0 1px rgba(41,182,255,0.08)",
-              overflow: "hidden",
-            }}
+            style={modalDialogStyle(720)}
           >
-            <div style={{ height: 3, background: AX.gradPrimary, width: "100%" }} />
-            <div style={{ padding: "22px 24px 20px" }}>
-              <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, marginBottom: 18 }}>
-                <div>
-                  <div style={{ fontSize: 10, fontWeight: 800, color: AX.muted, letterSpacing: "0.1em", marginBottom: 6 }}>AXSTUDIO · SCENOGRAFIE</div>
-                  <h2 id="scenografie-create-project-title" style={{ margin: 0, fontSize: 20, fontWeight: 800, color: AX.text, letterSpacing: "-0.02em" }}>
-                    Nuovo progetto
-                  </h2>
-                  <p style={{ margin: "10px 0 0", fontSize: 13, color: AX.text2, lineHeight: 1.5 }}>
-                    Titolo, descrizione e stile globale. Alla creazione generiamo la <strong style={{ color: AX.text }}>locandina</strong> del progetto.
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  aria-label="Chiudi"
-                  onClick={cancelCreateModal}
+            <div style={modalGradientBarStyle} />
+            <ProjectCreationModalHeader
+              eyebrow="AXSTUDIO · FILM STUDIO"
+              title="Nuovo progetto"
+              titleId="scenografie-create-project-title"
+              titleAdornment={<HiFilm size={26} style={{ color: AX.electric, flexShrink: 0 }} aria-hidden />}
+              subtitle={
+                <>
+                  Creazione <strong style={{ color: AX.text }}>libera</strong>: titolo, descrizione e stile globale. Alla creazione generiamo la{" "}
+                  <strong style={{ color: AX.text }}>locandina</strong> del progetto.
+                </>
+              }
+              onClose={cancelCreateModal}
+              closeDisabled={creating}
+            />
+
+            <div style={{ padding: "8px 24px 0", display: "flex", flexDirection: "column", gap: 16, flex: 1, minHeight: 0, overflowY: "auto" }}>
+              <div>
+                <label htmlFor="scenografie-free-title" style={labelStyle}>
+                  Titolo progetto <span style={{ color: "#f87171" }}>*</span>
+                </label>
+                <input
+                  id="scenografie-free-title"
+                  type="text"
+                  value={newTitle}
+                  onChange={(e) => setNewTitle(e.target.value)}
+                  placeholder="Es. La notte del faro"
                   disabled={creating}
-                  style={{
-                    flexShrink: 0,
-                    width: 40,
-                    height: 40,
-                    borderRadius: 10,
-                    border: `1px solid ${AX.border}`,
-                    background: AX.surface,
-                    color: AX.text2,
-                    cursor: creating ? "not-allowed" : "pointer",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                  }}
-                >
-                  <HiXMark size={20} />
-                </button>
+                  style={inputFieldStyle}
+                />
               </div>
-
-              <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-                <div>
-                  <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: AX.muted, marginBottom: 8, letterSpacing: "0.06em" }}>
-                    Titolo progetto <span style={{ color: "#f87171" }}>*</span>
-                  </label>
-                  <input
-                    type="text"
-                    value={newTitle}
-                    onChange={(e) => setNewTitle(e.target.value)}
-                    placeholder="Es. La notte del faro"
-                    disabled={creating}
-                    style={{
-                      width: "100%",
-                      boxSizing: "border-box",
-                      padding: "12px 14px",
-                      borderRadius: 12,
-                      border: `1px solid ${AX.border}`,
-                      background: AX.surface,
-                      color: AX.text,
-                      fontSize: 14,
-                      outline: "none",
-                    }}
-                  />
-                </div>
-                <div>
-                  <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: AX.muted, marginBottom: 8, letterSpacing: "0.06em" }}>
-                    Descrizione progetto <span style={{ color: "#f87171" }}>*</span>
-                  </label>
-                  <textarea
-                    value={newDescription}
-                    onChange={(e) => setNewDescription(e.target.value)}
-                    placeholder="Tema, ambientazione, tono narrativo…"
-                    disabled={creating}
-                    rows={4}
-                    style={{
-                      width: "100%",
-                      boxSizing: "border-box",
-                      padding: "12px 14px",
-                      borderRadius: 12,
-                      border: `1px solid ${AX.border}`,
-                      background: AX.surface,
-                      color: AX.text,
-                      fontSize: 14,
-                      resize: "vertical",
-                      minHeight: 100,
-                      outline: "none",
-                      lineHeight: 1.5,
-                    }}
-                  />
-                </div>
-                <div>
-                  <label style={{ display: "block", fontSize: 11, fontWeight: 700, color: AX.muted, marginBottom: 10, letterSpacing: "0.06em" }}>
-                    Stile grafico globale <span style={{ color: "#f87171" }}>*</span>
-                  </label>
-                  <div
-                    style={{
-                      display: "grid",
-                      gridTemplateColumns: "repeat(auto-fill, minmax(130px, 1fr))",
-                      gap: 10,
-                      maxHeight: 200,
-                      overflowY: "auto",
-                      paddingRight: 4,
-                    }}
-                  >
-                    {imageStylePresets.map((pr) => {
-                      const on = newPresetId === pr.id;
-                      return (
-                        <button
-                          key={pr.id}
-                          type="button"
-                          disabled={creating}
-                          onClick={() => setNewPresetId(pr.id)}
-                          style={{
-                            textAlign: "left",
-                            padding: "12px 12px",
-                            borderRadius: 12,
-                            border: on ? `2px solid ${AX.electric}` : `1px solid ${AX.border}`,
-                            background: on ? "rgba(41,182,255,0.1)" : AX.surface,
-                            color: AX.text,
-                            cursor: creating ? "not-allowed" : "pointer",
-                            fontSize: 12,
-                            fontWeight: 700,
-                            lineHeight: 1.35,
-                            transition: "border-color 0.15s ease, background 0.15s ease",
-                          }}
-                        >
-                          {pr.label}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
+              <div>
+                <label htmlFor="scenografie-free-desc" style={labelStyle}>
+                  Descrizione progetto <span style={{ color: "#f87171" }}>*</span>
+                </label>
+                <textarea
+                  id="scenografie-free-desc"
+                  value={newDescription}
+                  onChange={(e) => setNewDescription(e.target.value)}
+                  placeholder="Tema, ambientazione, tono narrativo…"
+                  disabled={creating}
+                  rows={4}
+                  style={{ ...textareaFieldStyle, minHeight: 100 }}
+                />
               </div>
+              <div>
+                <div style={{ ...labelStyle, marginBottom: 10 }}>Stile grafico globale <span style={{ color: "#f87171" }}>*</span></div>
+                <ProjectStylePresetGrid
+                  presets={imageStylePresets}
+                  value={newPresetId}
+                  onChange={setNewPresetId}
+                  disabled={creating}
+                />
+              </div>
+            </div>
 
+            <div style={{ padding: "16px 24px 20px", flexShrink: 0 }}>
               {creating && createPhase === "saving" && (
                 <div
                   style={{
-                    marginTop: 14,
+                    marginBottom: 12,
                     padding: "10px 12px",
-                    borderRadius: 10,
+                    borderRadius: 12,
                     background: "rgba(41,182,255,0.08)",
                     border: "1px solid rgba(41,182,255,0.35)",
                     fontSize: 12,
@@ -1149,9 +978,9 @@ export default function ScenografieProjectHub({ onOpenWorkspace, imageStylePrese
               {creating && createPhase === "poster" && (
                 <div
                   style={{
-                    marginTop: 14,
+                    marginBottom: 12,
                     padding: "10px 12px",
-                    borderRadius: 10,
+                    borderRadius: 12,
                     background: "rgba(123,77,255,0.1)",
                     border: "1px solid rgba(123,77,255,0.35)",
                     fontSize: 12,
@@ -1165,27 +994,23 @@ export default function ScenografieProjectHub({ onOpenWorkspace, imageStylePrese
               )}
 
               {createError && (
-                <div style={{ marginTop: 14, padding: "10px 12px", borderRadius: 10, background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.35)", fontSize: 12, color: "#fca5a5" }}>
+                <div
+                  style={{
+                    marginBottom: 12,
+                    padding: "10px 12px",
+                    borderRadius: 12,
+                    background: "rgba(239,68,68,0.1)",
+                    border: "1px solid rgba(239,68,68,0.35)",
+                    fontSize: 12,
+                    color: "#fca5a5",
+                  }}
+                >
                   {createError}
                 </div>
               )}
 
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 10, justifyContent: "flex-end", marginTop: 22 }}>
-                <button
-                  type="button"
-                  onClick={cancelCreateModal}
-                  disabled={creating}
-                  style={{
-                    padding: "10px 18px",
-                    borderRadius: 10,
-                    border: `1px solid ${AX.border}`,
-                    background: AX.surface,
-                    color: AX.text2,
-                    fontSize: 14,
-                    fontWeight: 600,
-                    cursor: creating ? "not-allowed" : "pointer",
-                  }}
-                >
+              <div style={{ ...footerDividerStyle, display: "flex", flexWrap: "wrap", gap: 10, justifyContent: "flex-end" }}>
+                <button type="button" onClick={cancelCreateModal} disabled={creating} style={{ ...btnSecondaryFooter, cursor: creating ? "not-allowed" : "pointer" }}>
                   Annulla
                 </button>
                 <button
@@ -1198,37 +1023,18 @@ export default function ScenografieProjectHub({ onOpenWorkspace, imageStylePrese
                     !newPresetId ||
                     !imageStylePresets.some((p) => p.id === newPresetId)
                   }
-                  style={{
-                    padding: "10px 22px",
-                    borderRadius: 10,
-                    border: "none",
-                    background: AX.gradPrimary,
-                    color: "#fff",
-                    fontSize: 14,
-                    fontWeight: 700,
-                    cursor:
-                      creating ||
+                  style={btnPrimaryFooter(
+                    creating ||
                       !newTitle.trim() ||
                       !newDescription.trim() ||
                       !newPresetId ||
-                      !imageStylePresets.some((p) => p.id === newPresetId)
-                        ? "not-allowed"
-                        : "pointer",
-                    opacity:
-                      creating ||
-                      !newTitle.trim() ||
-                      !newDescription.trim() ||
-                      !newPresetId ||
-                      !imageStylePresets.some((p) => p.id === newPresetId)
-                        ? 0.45
-                        : 1,
-                    boxShadow: "0 4px 20px rgba(41,182,255,0.25)",
-                  }}
+                      !imageStylePresets.some((p) => p.id === newPresetId),
+                  )}
                 >
                   {creating ? "Creazione…" : "Crea progetto"}
                 </button>
               </div>
-              <p style={{ margin: "14px 0 0", fontSize: 11, color: AX.muted, lineHeight: 1.45, textAlign: "center" }}>
+              <p style={{ margin: "14px 0 0", fontSize: 11, color: AX.muted, lineHeight: 1.5, textAlign: "center", maxWidth: 560, marginLeft: "auto", marginRight: "auto" }}>
                 Il titolo non viene scritto sull&apos;immagine. Dopo la creazione puoi modificare metadati e rigenerare la locandina dalla scheda progetto.
               </p>
             </div>
@@ -1531,11 +1337,17 @@ export default function ScenografieProjectHub({ onOpenWorkspace, imageStylePrese
         </div>
       )}
 
+      <ScenografieProjectStartChoiceModal
+        open={startChoiceModalOpen}
+        onClose={closeStartChoiceModal}
+        onChooseGuided={handleStartChoiceGuided}
+        onChooseFree={handleStartChoiceFree}
+        disabled={creating}
+      />
+
       <ScenografieStoryProjectWizard
         open={storyWizardOpen}
-        onClose={() => {
-          if (!creating) setStoryWizardOpen(false);
-        }}
+        onClose={closeStoryWizardModal}
         imageStylePresets={imageStylePresets}
         defaultPresetId={defaultPresetId}
         onCommitted={handleStoryWizardCommitted}

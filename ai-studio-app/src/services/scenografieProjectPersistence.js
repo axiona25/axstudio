@@ -15,7 +15,7 @@ import {
 } from "./scenografieVideoWorkflow.js";
 import { getCharactersNeedingMaster, resolveItalianPlanLogline } from "./scenografiePlanner.js";
 import { pcmRowForCharacter, approvalEntryForCharacter } from "./scenografiePcidLookup.js";
-import { PROJECT_POSTER_STATUS } from "./scenografieProjectPoster.js";
+import { PROJECT_POSTER_STATUS } from "./scenografieProjectPosterConstants.js";
 import { pickChapterRepresentativeThumbnailUrl } from "./scenografieChapterCover.js";
 import { emptyFinalFilmMontage } from "./montageAssembler.js";
 import {
@@ -1891,7 +1891,9 @@ export function mergeChapterDataWithProjectCharacterPool(chapterData, workspace)
     const cacheFromCanonical = syncLegacyMapsFromCanonicalPlan(merged.plan, merged.projectCharacterMasters || {});
     merged.masterImages = cacheFromCanonical.masterImages;
     merged.masterByCharName = cacheFromCanonical.masterByCharName;
-    console.info("[CANONICAL_PCM] merge_chapter+pool: masterImages/masterByCharName rigenerati da projectCharacterMasters");
+    if (chapterDataHealFingerprint(d) !== chapterDataHealFingerprint(merged)) {
+      console.info("[CANONICAL_PCM] merge_chapter+pool: masterImages/masterByCharName rigenerati da projectCharacterMasters");
+    }
   }
   return merged;
 }
@@ -2642,6 +2644,129 @@ function chapterDataHealFingerprint(data) {
 }
 
 /**
+ * Impronta semantica del payload capitolo editor (ordine chiavi oggetto irrilevante).
+ * Usata per evitare save/persist ridondanti che riattivano load hook / heal a catena.
+ * @param {object} payload
+ */
+export function fingerprintScenografiaEditorChapterPayload(payload) {
+  if (!payload || typeof payload !== "object") return "";
+  const heal = chapterDataHealFingerprint(payload);
+  const parts = [
+    heal,
+    `prompt:${String(payload.prompt ?? "")}`,
+    `title:${String(payload.scenografiaProjectTitle ?? "")}`,
+    `psl:${payload.projectStyleLocked === true ? "1" : "0"}`,
+  ];
+  const ps = payload.projectStyle && typeof payload.projectStyle === "object" ? payload.projectStyle : null;
+  parts.push(
+    `style:${ps ? [String(ps.presetId || ""), String(ps.label || ""), String(ps.stylePrompt || "").slice(0, 400)].join("\t") : ""}`,
+  );
+  const plan = payload.plan && typeof payload.plan === "object" ? payload.plan : null;
+  if (plan) {
+    const sceneSig = (Array.isArray(plan.scenes) ? plan.scenes : [])
+      .map((s) => `${String(s?.id || "").trim()}:${String(s?.title_it || s?.title || "").slice(0, 120)}`)
+      .sort((a, b) => a.localeCompare(b))
+      .join(";");
+    parts.push(`planScenes:${sceneSig}`);
+    const sceneBodies = (Array.isArray(plan.scenes) ? plan.scenes : [])
+      .map((s) =>
+        [
+          String(s?.id || "").trim(),
+          String(s?.description || "").slice(0, 500),
+          String(s?.summary_it || "").slice(0, 500),
+          String(s?.environment || "").slice(0, 200),
+        ].join("\t"),
+      )
+      .sort((a, b) => a.localeCompare(b))
+      .join("|");
+    parts.push(`planSceneBodies:${sceneBodies}`);
+    const charSig = (Array.isArray(plan.characters) ? plan.characters : [])
+      .map((c) =>
+        [
+          String(c?.id || "").trim(),
+          String(c?.pcid || "").trim(),
+          String(c?.name || "").slice(0, 120),
+          String(c?.appearance_prompt || "").slice(0, 300),
+        ].join("\t"),
+      )
+      .sort((a, b) => a.localeCompare(b))
+      .join("|");
+    parts.push(`planChars:${charSig}`);
+  } else {
+    parts.push("plan:none");
+  }
+  const sr = Array.isArray(payload.sceneResults) ? payload.sceneResults : [];
+  parts.push(
+    `sceneRows:${sr
+      .map((r) => {
+        if (!r || typeof r !== "object") return "";
+        return [
+          String(r.sceneId || "").trim(),
+          r.imageUrl != null ? String(r.imageUrl).trim() : "",
+          r.approved === true ? "1" : "0",
+          r.updatedAt != null ? String(r.updatedAt) : "",
+          String(r.lastEditPrompt || "").slice(0, 160),
+        ].join(":");
+      })
+      .filter(Boolean)
+      .sort((a, b) => a.localeCompare(b))
+      .join("|")}`,
+  );
+  const sel = Array.isArray(payload.selectedSceneIds) ? payload.selectedSceneIds : [];
+  parts.push(`sel:${sel.map((id) => String(id || "").trim()).sort((a, b) => a.localeCompare(b)).join(",")}`);
+  parts.push(`repair:${payload.enableRepair === true ? "1" : "0"}`);
+  const el = Array.isArray(payload.executionLog) ? payload.executionLog : [];
+  const lastLog = el.length ? el[el.length - 1] : null;
+  parts.push(`log:${el.length}:${lastLog && typeof lastLog === "object" ? String(lastLog.msg || "").slice(0, 200) : ""}`);
+  parts.push(`phase:${String(payload.scenografiaPhase || "")}`);
+  parts.push(`vid:${String(payload.scenografiaVideoPhase || "")}`);
+  parts.push(`fma:${String(payload.finalMontagePhase || "")}`);
+  const fmp = payload.finalMontagePlan && typeof payload.finalMontagePlan === "object" ? payload.finalMontagePlan : null;
+  parts.push(
+    `fmp:${fmp ? `${(Array.isArray(fmp.orderedClipIds) ? fmp.orderedClipIds : []).join(",")}|${(Array.isArray(fmp.orderedTimelineEntryIds) ? fmp.orderedTimelineEntryIds : []).join(",")}|${String(fmp.narrativeBeatNotes || "").slice(0, 200)}` : ""}`,
+  );
+  const ffm = payload.finalFilmMontage && typeof payload.finalFilmMontage === "object" ? payload.finalFilmMontage : null;
+  parts.push(`ffm:${ffm ? String(ffm.outputUrl || "").trim() : ""}`);
+  const tp = payload.timelinePlan && typeof payload.timelinePlan === "object" ? payload.timelinePlan : null;
+  parts.push(`tp:${tp ? `${tp.approved === true ? "1" : "0"}:${String(tp.approvedAt || "")}:${(Array.isArray(tp.entries) ? tp.entries : []).map((e) => String(e?.id || e?.clipId || "").trim()).join(",")}` : ""}`);
+  const clips = Array.isArray(payload.sceneVideoClips) ? payload.sceneVideoClips : [];
+  parts.push(
+    `clips:${clips
+      .map((c) => {
+        if (!c || typeof c !== "object") return "";
+        return [String(c.id || "").trim(), String(c.sceneId || "").trim(), String(c.status || ""), String(c.updatedAt || "")].join(":");
+      })
+      .filter(Boolean)
+      .sort((a, b) => a.localeCompare(b))
+      .join("|")}`,
+  );
+  const appr = payload.characterApprovalMap && typeof payload.characterApprovalMap === "object" ? payload.characterApprovalMap : {};
+  parts.push(
+    `appr:${sortedStringKeys(appr)
+      .map((k) => {
+        const e = appr[k];
+        return `${k}=${e && typeof e === "object" ? (e.approved === true ? "1" : "0") + ":" + String(e.version ?? "") : ""}`;
+      })
+      .join(";")}`,
+  );
+  const hints = payload.runtimeHints && typeof payload.runtimeHints === "object" ? payload.runtimeHints : null;
+  parts.push(`rh:${hints ? `${String(hints.sceneExecuteMode || "")}:${hints.reuseMastersNext === true ? "1" : "0"}` : ""}`);
+  const frNorm = normalizeFinalRenderSettings(payload.finalRenderSettings);
+  parts.push(`frs:${frNorm.resolution}:${frNorm.fps}`);
+  const cvm = payload.characterVoiceMasters && typeof payload.characterVoiceMasters === "object" ? payload.characterVoiceMasters : {};
+  parts.push(`cvm:${sortedStringKeys(cvm).map((k) => `${k}=${String(cvm[k]?.voiceId || "").trim()}`).join(";")}`);
+  const nar = Array.isArray(payload.projectNarrators) ? payload.projectNarrators : [];
+  parts.push(
+    `nar:${nar
+      .map((n) => (n && typeof n === "object" ? `${String(n.id || "").trim()}:${String(n.voiceId || "").trim()}` : ""))
+      .filter(Boolean)
+      .sort((a, b) => a.localeCompare(b))
+      .join("|")}`,
+  );
+  return parts.join("\x1f");
+}
+
+/**
  * Fingerprint campi rilevanti per heal/self-persist (pool + capitoli), stabile rispetto all'ordine chiavi oggetto.
  * @param {object} ws
  */
@@ -2690,7 +2815,11 @@ export async function applyScenografiaPcidPostMergeHealOnLoad(projectId, workspa
   for (const ch of workspace.chapters || []) {
     if (!ch?.data || typeof ch.data !== "object") continue;
     const sliceBefore = chapterDataHealFingerprint(ch.data);
-    ch.data = mergeChapterDataWithProjectCharacterPool(ch.data, workspace);
+    const mergedPreview = mergeChapterDataWithProjectCharacterPool(ch.data, workspace);
+    const mergeWouldChange = chapterDataHealFingerprint(mergedPreview) !== sliceBefore;
+    if (mergeWouldChange) {
+      ch.data = mergedPreview;
+    }
     const delHeal = healOrphanDeletedSceneIdsInChapterData(ch.data);
     if (delHeal.wasHealed) {
       console.info(
