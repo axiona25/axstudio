@@ -4,6 +4,8 @@
   "private": true,
   "dependencies": {
     "@fal-ai/client": "^1.9.5",
+    "@ffmpeg/ffmpeg": "^0.12.10",
+    "@ffmpeg/util": "^0.12.1",
     "@testing-library/dom": "^10.4.1",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
@@ -20,6 +22,12 @@
     "start": "react-scripts start",
     "build": "react-scripts build",
     "test": "react-scripts test",
+    "test:axstudio:voice": "node scripts/test-eleven-voice.mjs",
+    "test:axstudio:dialogue": "node scripts/test-dialogue-multivoice.mjs",
+    "test:axstudio:music": "node scripts/test-music-providers.mjs",
+    "test:axstudio:sfx": "node scripts/test-sfx-ambient.mjs",
+    "test:axstudio:mix": "node scripts/test-audio-mix.mjs",
+    "test:axstudio:full": "node scripts/test-full-audio-stack.mjs",
     "eject": "react-scripts eject",
     "electron-dev": "concurrently \"npm start\" \"wait-on http://localhost:3000 && electron ./public/electron.js\"",
     "electron-build": "npm run build && electron-builder"

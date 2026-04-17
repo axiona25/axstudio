@@ -74,7 +74,7 @@ export function isEnvironmentScene(scene) {
  * @param {object|null|undefined} scene
  */
 export function sceneTypeUiLabelIt(scene) {
-  return isEnvironmentScene(scene) ? "Ambiente" : "Con personaggi";
+  return isEnvironmentScene(scene) ? "Ambiente" : "Pers.";
 }
 
 export function looksLikeEnglishNarrative(s) {

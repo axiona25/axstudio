@@ -5,6 +5,7 @@
  */
 
 import { isEnvironmentScene, resolveItalianPlanLogline } from "./scenografiePlanner.js";
+import { getDisplayMasterUrl } from "./scenografiePcidLookup.js";
 
 /** @param {string} s */
 function normKey(s) {
@@ -215,6 +216,7 @@ export function pickChapterRepresentativeThumbnailUrl(chapterData, ctx = {}) {
   if (bestUrl && bestScore > -100) return bestUrl;
 
   const masters = d.masterImages && typeof d.masterImages === "object" ? d.masterImages : {};
+  const pcm = d.projectCharacterMasters && typeof d.projectCharacterMasters === "object" ? d.projectCharacterMasters : {};
   const chars = Array.isArray(plan.characters) ? plan.characters : [];
   const blob = chapterNarrativeBlob(d, ctx);
   const blobNorm = normKey(blob);
@@ -222,7 +224,9 @@ export function pickChapterRepresentativeThumbnailUrl(chapterData, ctx = {}) {
   const scoredChars = chars
     .map((c) => {
       const stable = String(c.pcid || "").trim() || String(c.id || "").trim();
-      const urlPrimary = stable && masters[stable] ? String(masters[stable]).trim() : "";
+      const canonU = getDisplayMasterUrl(c, pcm);
+      const urlCanon = canonU ? String(canonU).trim() : "";
+      const urlPrimary = urlCanon || (stable && masters[stable] ? String(masters[stable]).trim() : "");
       const urlLegacy = c.id && masters[c.id] ? String(masters[c.id]).trim() : "";
       const url = urlPrimary || urlLegacy;
       if (!url) return null;
@@ -244,7 +248,8 @@ export function pickChapterRepresentativeThumbnailUrl(chapterData, ctx = {}) {
 
   for (const c of chars) {
     const stable = String(c.pcid || "").trim() || String(c.id || "").trim();
-    const u = (stable && masters[stable]) || (c.id && masters[c.id]);
+    const uCanon = getDisplayMasterUrl(c, pcm);
+    const u = uCanon || (stable && masters[stable]) || (c.id && masters[c.id]);
     if (u && String(u).trim()) return String(u).trim();
   }
   for (const k of Object.keys(masters)) {

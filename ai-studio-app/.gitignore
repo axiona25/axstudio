@@ -11,6 +11,9 @@
 # production
 /build
 
+# AXSTUDIO H9 CLI test artifacts
+/temp
+
 # misc
 .DS_Store
 .env

@@ -113,7 +113,8 @@ export function voiceMasterRawForRef(characterVoiceMasters, characterIdRef, plan
 }
 
 /**
- * URL master da cache legacy (nome / id / pcid in masterByCharName).
+ * URL da sole cache legacy (`masterImages` / `masterByCharName`) — diagnostica o migrazione.
+ * Per la UI e le pipeline usare `getDisplayMasterUrl` / `projectCharacterMasters`.
  */
 export function resolveMasterUrlForPlanChar(char, masterImages, masterByCharName) {
   if (!char) return null;

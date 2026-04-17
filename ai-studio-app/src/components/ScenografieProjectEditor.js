@@ -20,6 +20,7 @@ import {
   HiBars3,
   HiPencilSquare,
 } from "react-icons/hi2";
+import { ScenografieCharacterVoicePicker } from "./ScenografieCharacterVoicePicker.js";
 import {
   planScenografia,
   planScenografiaContinue,
@@ -49,8 +50,19 @@ import {
   PCM_SOURCE_USER_CANONICAL_LOCK,
   characterMasterReadyForScenes,
   reconcileCharacterMasterMaps,
-  syncLegacyMapsFromCanonicalPlan,
+  inferPcidMasterLayout,
+  summarizeScenografiaWorkspaceForIndex,
+  SCENOGRAFIA_WORKSPACE_VERSION,
+  runAndPersistFilmOutputVerification,
 } from "../services/scenografieProjectPersistence.js";
+import {
+  syncDerivedMasterCachesFromCanonical,
+  promoteCanonicalProjectCharacterMaster,
+  swapCanonicalProjectCharacterMasters,
+  reassignCanonicalMasterToCharacter,
+  auditDerivedCacheDrift,
+  CANONICAL_PCM_LOG,
+} from "../services/scenografieCanonicalCharacterMasters.js";
 import {
   stableCharacterKey,
   findPlanCharacterByPresentRef,
@@ -96,11 +108,53 @@ import {
   resolveClipDurationSeconds,
   estimateClipDurationAuto,
   CLIP_TYPE,
-  ELEVENLABS_VOICE_PRESETS,
 } from "../services/scenografieVideoWorkflow.js";
+import {
+  compileMontagePlans,
+  runFinalMontageRender,
+  validateMontageRenderable,
+  emptyFinalFilmMontage,
+  normalizeFinalFilmMontage,
+  resolveEffectiveClipDurationSeconds,
+} from "../services/montageAssembler.js";
 import { ScenografieClipBuilder } from "./ScenografieClipBuilder.js";
+import {
+  normalizeProjectNarratorsList,
+  ensureProjectNarratorDefaultFlags,
+} from "../services/scenografieProjectNarrators.js";
+import { ScenografieNarratorSection } from "./ScenografieNarratorSection.js";
 import { runScenografieClipVideoPipeline } from "../services/videoClipPipeline.js";
 import { sanitizeClipPipelineErrorForUser } from "../services/scenografieClipUserMessages.js";
+import {
+  buildMontageFailureRecord,
+  logConsumerReliabilityEvent,
+  SUGGESTED_ACTION_LABEL_IT,
+  consumerMontageNextStepIt,
+  deriveFilmOutputReadinessFromChapterData,
+  deriveChapterMontageConsumerSummary,
+  deriveFinalOutputSimplePresentation,
+  FILM_DELIVERY_LABEL_IT,
+  FILM_OUTPUT_TRUST_LABEL_IT,
+  buildFinalFilmPlaybackCandidates,
+  mergePlaybackEntriesChapterFirst,
+  describeFinalFilmPlaybackMoment,
+  humanizeHtml5VideoElementError,
+} from "../services/scenografieConsumerReliability.js";
+import {
+  computeChapterCompletionGaps,
+  deriveSceneOperationalSemantics,
+  deriveClipOperationalSemantics,
+  buildSceneChecklistRuntimeItems,
+  clipOperationalLabelIt,
+  SCENE_OPERATIONAL,
+  CLIP_OPERATIONAL,
+} from "../services/scenografieOperationalReadiness.js";
+import {
+  normalizeSceneResultRow,
+  resolveSceneThumbnailUrl,
+  SCENE_DISPLAY_VARIANT,
+  logSceneVariantState,
+} from "../services/scenografieSceneVariants.js";
 import { ASSET_DOMAIN } from "../mediaAssetDomain.js";
 
 const AX = {
@@ -217,22 +271,6 @@ function normCharName(name) {
     .trim();
 }
 
-/** Mappa chiave stabile personaggio (pcid) → URL master preservati per nome. */
-function mergePreservedMastersByName(plan, byName, masterImagesHint = {}) {
-  const out = {};
-  const mi = masterImagesHint && typeof masterImagesHint === "object" ? masterImagesHint : {};
-  (plan?.characters || []).forEach((c) => {
-    const ref = byName[normCharName(c.name)];
-    if (ref == null) return;
-    const sk = stableCharacterKey(c);
-    if (!sk) return;
-    const s = String(ref).trim();
-    if (isHttpUrl(s)) out[sk] = s;
-    else if (isPcidKey(s) && mi[s] != null && isHttpUrl(mi[s])) out[sk] = String(mi[s]).trim();
-  });
-  return out;
-}
-
 function charHasResolvedMaster(char, projectCharacterMasters) {
   return !!getDisplayMasterUrl(char, projectCharacterMasters);
 }
@@ -339,19 +377,18 @@ function resolveSceneCharacterIdsForPipeline(scene, plan) {
 }
 
 /**
- * Master approvati per identity lock — **solo** da `projectCharacterMasters` (sorgente canonica).
+ * Master per identity lock — stessi gate di `characterMasterReadyForScenes` (PCM + approvazione + `pcmRowTrustedForIdentityLock`).
  */
 function buildApprovedMasterUrlMap(plan, projectCharacterMasters, characterApprovalMap) {
   const out = {};
   const pcm = projectCharacterMasters && typeof projectCharacterMasters === "object" ? projectCharacterMasters : {};
+  const gate = { projectCharacterMasters: pcm, characterApprovalMap };
   for (const char of plan?.characters || []) {
     if (!char?.id) continue;
     const sk = stableCharacterKey(char);
     if (!sk) continue;
-    if (!approvalEntryForCharacter(characterApprovalMap, char)?.approved) continue;
+    if (!characterMasterReadyForScenes(char, gate)) continue;
     const row = pcmRowForCharacter(pcm, char);
-    if (row?.pendingManualReview === true) continue;
-    if (row?.source !== PCM_SOURCE_USER_CANONICAL_LOCK) continue;
     const u = row?.masterImageUrl ? String(row.masterImageUrl).trim() : "";
     if (u) out[sk] = u;
   }
@@ -379,7 +416,7 @@ function collectInvalidPresentIds(scene, plan) {
  */
 function masterUrlMetaForLog(char, projectCharacterMasters, masterImages, masterByCharName, characterApprovalMap) {
   if (!char?.id) {
-    return { characterId: null, name: null, approved: false, url: null, source: "none" };
+    return { characterId: null, name: null, approved: false, url: null, source: "none", readyForScenes: false };
   }
   const sk = stableCharacterKey(char);
   const approved = approvalEntryForCharacter(characterApprovalMap, char)?.approved === true;
@@ -389,19 +426,26 @@ function masterUrlMetaForLog(char, projectCharacterMasters, masterImages, master
   const byId = masterImages?.[char.id] ? String(masterImages[char.id]).trim() : null;
   const nk = normCharName(char.name);
   const byName = nk && masterByCharName?.[nk] ? String(masterByCharName[nk]).trim() : null;
-  const fallback = resolveMasterUrlForPlanChar(char, masterImages, masterByCharName);
-  const resolved = canonicalUrl || fallback;
+  const legacyDerivedUrl = resolveMasterUrlForPlanChar(char, masterImages, masterByCharName);
+  const gatePayload = { projectCharacterMasters, characterApprovalMap };
+  const readyForScenes = characterMasterReadyForScenes(char, gatePayload);
   let source = "none";
   if (canonicalUrl) source = `canonical:${row?.source || "unknown"}`;
-  else if (fallback && byName && fallback === byName) source = "legacy_name_fallback";
-  else if (fallback && (byStable || byId) && (fallback === byStable || fallback === byId)) source = "legacy_id_fallback";
-  else if (resolved) source = "legacy_other";
+  else if (legacyDerivedUrl && byName && legacyDerivedUrl === byName) source = "legacy_name_only_cache";
+  else if (
+    legacyDerivedUrl &&
+    (byStable || byId) &&
+    (legacyDerivedUrl === byStable || legacyDerivedUrl === byId)
+  )
+    source = "legacy_id_only_cache";
+  else if (legacyDerivedUrl) source = "legacy_cache_mismatch_or_orphan";
   return {
     characterId: char.id,
     stableKey: sk,
     name: char.name,
     approved,
-    url: resolved || null,
+    url: canonicalUrl || null,
+    legacyDerivedUrl: legacyDerivedUrl || null,
     source,
     canonicalSource: row?.source || null,
     pendingManualReview: row?.pendingManualReview === true,
@@ -411,8 +455,10 @@ function masterUrlMetaForLog(char, projectCharacterMasters, masterImages, master
       canonicalUrl &&
       (byStable || byId) &&
       (byStable === canonicalUrl || byId === canonicalUrl) &&
-      (!byName || byName === canonicalUrl || isHttpUrl(byName))
+      (!byName || byName === canonicalUrl || isPcidKey(byName))
     ),
+    cacheOutOfSync: !!(canonicalUrl && legacyDerivedUrl && canonicalUrl !== legacyDerivedUrl),
+    readyForScenes,
   };
 }
 
@@ -520,63 +566,6 @@ function fallbackProjectTitlePlaceholder(plan, prompt) {
   return "Progetto scenografico";
 }
 
-/** URL miniatura: stato UI + eventuali chiavi legacy / log pipeline. */
-function resolveSceneThumbnailUrl(r) {
-  if (!r || typeof r !== "object") return "";
-  const candidates = [
-    r.imageUrl,
-    r.sceneFinalUrl,
-    r.final_output_url,
-    r.finalOutputUrl,
-    r.baseImageUrl,
-    r.sceneBaseUrl,
-    r.scene_base_url,
-  ];
-  for (const c of candidates) {
-    const s = c != null ? String(c).trim() : "";
-    if (s) return s;
-  }
-  return "";
-}
-
-function normalizeSceneResultRow(r) {
-  if (!r || typeof r !== "object" || !r.sceneId) return r;
-  const hist = Array.isArray(r.editHistory) ? r.editHistory.slice(-8) : [];
-  const base =
-    r.baseImageUrl != null && String(r.baseImageUrl).trim()
-      ? String(r.baseImageUrl).trim()
-      : r.scene_base_url != null && String(r.scene_base_url).trim()
-        ? String(r.scene_base_url).trim()
-        : r.sceneBaseUrl != null && String(r.sceneBaseUrl).trim()
-          ? String(r.sceneBaseUrl).trim()
-          : null;
-  const finalU =
-    r.sceneFinalUrl != null && String(r.sceneFinalUrl).trim()
-      ? String(r.sceneFinalUrl).trim()
-      : r.final_output_url != null && String(r.final_output_url).trim()
-        ? String(r.final_output_url).trim()
-        : r.finalOutputUrl != null && String(r.finalOutputUrl).trim()
-          ? String(r.finalOutputUrl).trim()
-          : null;
-  const primary =
-    r.imageUrl != null && String(r.imageUrl).trim()
-      ? String(r.imageUrl).trim()
-      : finalU || base || "";
-  return {
-    sceneId: r.sceneId,
-    title: r.title,
-    imageUrl: primary,
-    baseImageUrl: base,
-    sceneFinalUrl: finalU,
-    displayedVariant: r.displayedVariant != null ? String(r.displayedVariant) : null,
-    approved: r.approved === true,
-    approvedAt: r.approvedAt ?? null,
-    lastEditPrompt: r.lastEditPrompt ?? null,
-    editHistory: hist,
-    lastUpdatedAt: r.lastUpdatedAt ?? null,
-  };
-}
-
 /** Merge una scena appena generata in `sceneResults` ordinati come il piano (stessa logica di setSceneResults post-pipeline). */
 function mergePipelineSceneIntoResults(prevRows, scene, finalUrl, sceneBaseResult, updatedAt, del, plan) {
   const prev = Array.isArray(prevRows) ? prevRows : [];
@@ -585,14 +574,14 @@ function mergePipelineSceneIntoResults(prevRows, scene, finalUrl, sceneBaseResul
   const rowInput = {
     sceneId: scene.id,
     title: scene.title_it,
-    imageUrl: finalUrl,
-    baseImageUrl: sceneBaseResult.outputImage,
+    sceneBaseUrl: sceneBaseResult.outputImage,
     sceneFinalUrl: finalUrl,
-    displayedVariant: "post_pipeline_final",
+    sceneDisplayedVariant: SCENE_DISPLAY_VARIANT.FINAL,
     approved: false,
     approvedAt: null,
     lastEditPrompt: null,
     editHistory: prevRow?.editHistory ? [...prevRow.editHistory] : [],
+    sceneVariantHistory: prevRow?.sceneVariantHistory ? [...prevRow.sceneVariantHistory].slice(-24) : [],
     lastUpdatedAt: updatedAt,
   };
   const normalized = normalizeSceneResultRow(rowInput);
@@ -617,13 +606,16 @@ function sceneRowDebugLine(r, deletedSet) {
   return [
     `sceneId=${r.sceneId}`,
     `title=${JSON.stringify(String(r.title || ""))}`,
+    `sceneDisplayedVariant=${r.sceneDisplayedVariant != null ? String(r.sceneDisplayedVariant) : "-"}`,
+    `sceneDisplayedUrl=${shortUrlForSceneLog(r.sceneDisplayedUrl)}`,
     `imageUrl=${shortUrlForSceneLog(r.imageUrl)}`,
+    `sceneBaseUrl=${shortUrlForSceneLog(r.sceneBaseUrl)}`,
     `baseImageUrl/scene_base=${shortUrlForSceneLog(r.baseImageUrl)}`,
     `sceneFinalUrl/final_output=${shortUrlForSceneLog(r.sceneFinalUrl)}`,
     `thumb_resolved=${shortUrlForSceneLog(thumb)}`,
     `approved=${!!r.approved}`,
     `deletedInPlan=${del}`,
-    `displayedVariant=${r.displayedVariant != null ? String(r.displayedVariant) : "-"}`,
+    `displayedVariant_legacy=${r.displayedVariant != null ? String(r.displayedVariant) : "-"}`,
   ].join(" | ");
 }
 
@@ -661,12 +653,26 @@ export function ScenografieProjectEditor({
   imageProgress,
   setImageProgress,
   imageStylePresets = [],
+  sharedPipelineAbortRef = null,
+  scenePipelineFlight = null,
+  setScenePipelineFlight = null,
+  initialRecoveryDeepLink = null,
+  onConsumedRecoveryDeepLink,
 }) {
   const [prompt, setPrompt] = useState("");
   /** Nome progetto scenografico (persistito). */
   const [projectTitle, setProjectTitle] = useState("");
   /** Titolo del progetto narrativo (workspace), solo lettura in editor. */
   const [workspaceNarrativeTitle, setWorkspaceNarrativeTitle] = useState("");
+  /** Contesto consegna film a livello workspace (solo multi-capitolo, testo guida). */
+  const [workspaceMontageContext, setWorkspaceMontageContext] = useState(null);
+  /** Snapshot leggero capitoli (playback multi-sorgente, allineato alla Home). */
+  const [workspaceChaptersLight, setWorkspaceChaptersLight] = useState([]);
+  const [editorFilmPlaybackIndex, setEditorFilmPlaybackIndex] = useState(0);
+  const [editorFilmPlaybackError, setEditorFilmPlaybackError] = useState(null);
+  const [editorFilmPlaybackReloadKey, setEditorFilmPlaybackReloadKey] = useState(0);
+  const [workspaceFilmVerification, setWorkspaceFilmVerification] = useState(null);
+  const [editorFilmVerifyBusy, setEditorFilmVerifyBusy] = useState(false);
   const [planning, setPlanning] = useState(false);
   const [plan, setPlan] = useState(null);
   const [planError, setPlanError] = useState("");
@@ -684,6 +690,13 @@ export function ScenografieProjectEditor({
   const [projectCharacterMasters, setProjectCharacterMasters] = useState({});
   const projectCharacterMastersRef = useRef({});
   projectCharacterMastersRef.current = projectCharacterMasters;
+  /** Narratori di progetto (voce ElevenLabs, distinti dal cast scenico). */
+  const [projectNarrators, setProjectNarrators] = useState([]);
+  /** Strumenti avanzati: swap / copia master (sorgente sempre PCM). */
+  const [masterToolSwapA, setMasterToolSwapA] = useState("");
+  const [masterToolSwapB, setMasterToolSwapB] = useState("");
+  const [masterToolCopyFrom, setMasterToolCopyFrom] = useState("");
+  const [masterToolCopyTo, setMasterToolCopyTo] = useState("");
   /** Deve restare subito dopo masterImages/masterByCharName (evita TDZ se altre espressioni leggono i master). */
   const hasPreservableMasters = useMemo(
     () =>
@@ -713,6 +726,8 @@ export function ScenografieProjectEditor({
     orderedTimelineEntryIds: [],
     narrativeBeatNotes: "",
   });
+  const [finalFilmMontage, setFinalFilmMontage] = useState(() => emptyFinalFilmMontage());
+  const [montageRenderBusy, setMontageRenderBusy] = useState(false);
   const [timelinePlan, setTimelinePlan] = useState({ approved: false, approvedAt: null, entries: [] });
   const dragTimelineIdxRef = useRef(null);
   const sceneReorderSyncBundleRef = useRef({});
@@ -746,7 +761,8 @@ export function ScenografieProjectEditor({
   const [masterPromptModalCharId, setMasterPromptModalCharId] = useState(null);
   const [masterPromptDraft, setMasterPromptDraft] = useState("");
   const [masterPromptModalBusy, setMasterPromptModalBusy] = useState(false);
-  const abortRef = useRef(false);
+  const fallbackPipelineAbortRef = useRef(false);
+  const abortRef = sharedPipelineAbortRef ?? fallbackPipelineAbortRef;
   /** Se true, al prossimo `handleExecute` si riusano i master esistenti (niente createMaster salvo mancanze). */
   const reuseMastersRef = useRef(false);
   /** ALL | NEW_ONLY | BATCH_ALL | SELECTED — cosa elabora `handleExecute`. */
@@ -760,6 +776,16 @@ export function ScenografieProjectEditor({
   const lastCharCardDebugSigRef = useRef("");
   /** Incrementato ad ogni nuovo save programmato o su cleanup: invalida save async obsoleti (no coda serializzata). */
   const currentSaveIdRef = useRef(0);
+
+  const sceneGenFlightActive =
+    scenePipelineFlight != null &&
+    scenePipelineFlight.workspaceId === projectId &&
+    scenePipelineFlight.chapterId === chapterId;
+
+  const sceneExecuteBlocked = executing || sceneGenFlightActive;
+
+  const showSceneGenProgressBanner =
+    sceneGenFlightActive || (executing && scenografiaPhase === "scene_gen");
 
   const syncPromptTextareaHeight = useCallback(() => {
     const el = promptTextareaRef.current;
@@ -799,7 +825,38 @@ export function ScenografieProjectEditor({
           const sortedCh = [...raw.chapters].sort(
             (a, b) => (a.sortOrder - b.sortOrder) || String(a.id).localeCompare(String(b.id))
           );
+          setWorkspaceChaptersLight(
+            sortedCh.map((c) => ({ id: c.id, sortOrder: c.sortOrder, data: c.data })),
+          );
+          setWorkspaceFilmVerification(
+            raw.filmOutputVerification && typeof raw.filmOutputVerification === "object"
+              ? { ...raw.filmOutputVerification }
+              : null,
+          );
           const cid = chapterId || sortedCh[0]?.id;
+          if (sortedCh.length > 1) {
+            const sum = summarizeScenografiaWorkspaceForIndex(raw);
+            const recoveryId =
+              sum.filmPrimaryChapterId != null && String(sum.filmPrimaryChapterId).trim()
+                ? String(sum.filmPrimaryChapterId).trim()
+                : null;
+            const playableId =
+              sum.filmPlayableSourceChapterId != null && String(sum.filmPlayableSourceChapterId).trim()
+                ? String(sum.filmPlayableSourceChapterId).trim()
+                : null;
+            const cidStr = cid != null ? String(cid).trim() : "";
+            setWorkspaceMontageContext({
+              chaptersCount: sortedCh.length,
+              filmDeliveryLabel: sum.filmDeliveryState || null,
+              hint: sum.multiChapterFilmHint || null,
+              thisIsRecoveryTarget: Boolean(recoveryId && cidStr && recoveryId === cidStr),
+              thisIsPlayableSource: Boolean(playableId && cidStr && playableId === cidStr),
+              recoveryChapterId: recoveryId,
+              playableSourceChapterId: playableId,
+            });
+          } else {
+            setWorkspaceMontageContext(null);
+          }
           const ch = sortedCh.find((c) => c.id === cid) || sortedCh[0];
           const d = ch?.data;
           if (!d) {
@@ -821,10 +878,12 @@ export function ScenografieProjectEditor({
             setScenografiaVideoPhase("none");
             setFinalMontagePhase("none");
             setFinalMontagePlan({ orderedClipIds: [], orderedTimelineEntryIds: [], narrativeBeatNotes: "" });
+            setFinalFilmMontage(emptyFinalFilmMontage());
             setTimelinePlan({ approved: false, approvedAt: null, entries: [] });
             setSceneVideoClips([]);
             setClipBuilderClipId(null);
             setCharacterVoiceMasters({});
+            setProjectNarrators([]);
             setCharacterApprovalMap({});
             sceneExecuteModeRef.current = "ALL";
             reuseMastersRef.current = false;
@@ -851,9 +910,15 @@ export function ScenografieProjectEditor({
                 : {};
             setProjectCharacterMasters(pcmIn);
             if (d.plan?.characters?.length) {
-              const s = syncLegacyMapsFromCanonicalPlan(d.plan, pcmIn);
+              const s = syncDerivedMasterCachesFromCanonical(d.plan, pcmIn, "chapter_load");
               setMasterImages(s.masterImages);
               setMasterByCharName(s.masterByCharName);
+              const drift = auditDerivedCacheDrift(d.plan, pcmIn, mergedD.masterImages, mergedD.masterByCharName);
+              if (!drift.ok) {
+                console.warn(
+                  `${CANONICAL_PCM_LOG} load: chapter cache diverged from PCM (expected after merge to be rare)\n${JSON.stringify(drift.issues, null, 2)}`,
+                );
+              }
             } else {
               if (mergedD.masterImages && typeof mergedD.masterImages === "object") setMasterImages(mergedD.masterImages);
               if (mergedD.masterByCharName && typeof mergedD.masterByCharName === "object") {
@@ -895,9 +960,22 @@ export function ScenografieProjectEditor({
                   : [],
                 narrativeBeatNotes:
                   typeof d.finalMontagePlan.narrativeBeatNotes === "string" ? d.finalMontagePlan.narrativeBeatNotes : "",
+                titleCardIntro: d.finalMontagePlan.titleCardIntro === true,
+                endCredits: d.finalMontagePlan.endCredits === true,
               });
             } else {
-              setFinalMontagePlan({ orderedClipIds: [], orderedTimelineEntryIds: [], narrativeBeatNotes: "" });
+              setFinalMontagePlan({
+                orderedClipIds: [],
+                orderedTimelineEntryIds: [],
+                narrativeBeatNotes: "",
+                titleCardIntro: false,
+                endCredits: false,
+              });
+            }
+            if (d.finalFilmMontage && typeof d.finalFilmMontage === "object") {
+              setFinalFilmMontage(normalizeFinalFilmMontage(d.finalFilmMontage));
+            } else {
+              setFinalFilmMontage(emptyFinalFilmMontage());
             }
             if (d.timelinePlan && typeof d.timelinePlan === "object") {
               setTimelinePlan(normalizeTimelinePlan(d.timelinePlan));
@@ -913,6 +991,11 @@ export function ScenografieProjectEditor({
               setCharacterVoiceMasters({ ...d.characterVoiceMasters });
             } else {
               setCharacterVoiceMasters({});
+            }
+            if (Array.isArray(d.projectNarrators)) {
+              setProjectNarrators(ensureProjectNarratorDefaultFlags(normalizeProjectNarratorsList(d.projectNarrators)));
+            } else {
+              setProjectNarrators([]);
             }
             if (d.runtimeHints && typeof d.runtimeHints === "object") {
               if (typeof d.runtimeHints.sceneExecuteMode === "string") {
@@ -937,8 +1020,7 @@ export function ScenografieProjectEditor({
               const pcmCheck = mergedD.projectCharacterMasters && typeof mergedD.projectCharacterMasters === "object" ? mergedD.projectCharacterMasters : {};
               const hasScenes = Array.isArray(d.sceneResults) && d.sceneResults.length > 0;
               const allMastered =
-                needMaster.length === 0 ||
-                needMaster.every((c) => !!String(pcmCheck[c.id]?.masterImageUrl || "").trim());
+                needMaster.length === 0 || needMaster.every((c) => !!getDisplayMasterUrl(c, pcmCheck));
               if (!phase) {
                 if (hasScenes && allMastered) phase = "complete";
                 else if (allMastered) phase = "character_approval";
@@ -946,7 +1028,7 @@ export function ScenografieProjectEditor({
               }
               if (allMastered) {
                 needMaster.forEach((c) => {
-                  const u = String(pcmCheck[c.id]?.masterImageUrl || "").trim();
+                  const u = getDisplayMasterUrl(c, pcmCheck);
                   if (u && !approvals[c.id]) {
                     approvals[c.id] = hasScenes
                       ? { approved: true, approvedAt: d.updatedAt || new Date().toISOString(), version: 1 }
@@ -960,6 +1042,9 @@ export function ScenografieProjectEditor({
           }
         } else {
           setWorkspaceNarrativeTitle("");
+          setWorkspaceMontageContext(null);
+          setWorkspaceChaptersLight([]);
+          setWorkspaceFilmVerification(null);
           const b = emptyScenografiaProjectPayload();
           setPrompt(b.prompt || "");
           setProjectTitle(b.scenografiaProjectTitle || "");
@@ -978,10 +1063,12 @@ export function ScenografieProjectEditor({
           setScenografiaVideoPhase("none");
           setFinalMontagePhase("none");
           setFinalMontagePlan({ orderedClipIds: [], orderedTimelineEntryIds: [], narrativeBeatNotes: "" });
+          setFinalFilmMontage(emptyFinalFilmMontage());
           setTimelinePlan({ approved: false, approvedAt: null, entries: [] });
           setSceneVideoClips([]);
           setClipBuilderClipId(null);
           setCharacterVoiceMasters({});
+          setProjectNarrators([]);
           setCharacterApprovalMap({});
           sceneExecuteModeRef.current = "ALL";
           reuseMastersRef.current = false;
@@ -1066,8 +1153,10 @@ export function ScenografieProjectEditor({
       scenografiaVideoPhase,
       sceneVideoClips,
       characterVoiceMasters,
+      projectNarrators,
       finalMontagePhase,
       finalMontagePlan,
+      finalFilmMontage,
       timelinePlan,
       runtimeHints: {
         sceneExecuteMode: sceneExecuteModeRef.current,
@@ -1094,8 +1183,10 @@ export function ScenografieProjectEditor({
       scenografiaVideoPhase,
       sceneVideoClips,
       characterVoiceMasters,
+      projectNarrators,
       finalMontagePhase,
       finalMontagePlan,
+      finalFilmMontage,
       timelinePlan,
     ],
   );
@@ -1175,8 +1266,10 @@ export function ScenografieProjectEditor({
     scenografiaVideoPhase,
     sceneVideoClips,
     characterVoiceMasters,
+    projectNarrators,
     finalMontagePhase,
     finalMontagePlan,
+    finalFilmMontage,
     timelinePlan,
     buildCurrentChapterPayload,
   ]);
@@ -1201,8 +1294,10 @@ export function ScenografieProjectEditor({
       scenografiaVideoPhase,
       sceneVideoClips,
       characterVoiceMasters,
+      projectNarrators,
       finalMontagePhase,
       finalMontagePlan,
+      finalFilmMontage,
       timelinePlan,
       runtimeHints: {
         sceneExecuteMode: sceneExecuteModeRef.current,
@@ -1228,8 +1323,10 @@ export function ScenografieProjectEditor({
     scenografiaVideoPhase,
     sceneVideoClips,
     characterVoiceMasters,
+    projectNarrators,
     finalMontagePhase,
     finalMontagePlan,
+    finalFilmMontage,
     timelinePlan,
   ]);
 
@@ -1260,14 +1357,18 @@ export function ScenografieProjectEditor({
     setExecutionLog((prev) => [...prev, { time: new Date().toLocaleTimeString(), msg }]);
   }, []);
 
-  /** Aggiorna PCM e risincronizza le mappe legacy derivate (cache). */
+  /** Aggiorna PCM e risincronizza le sole cache derivate (masterImages / masterByCharName). */
   const commitProjectCharacterMastersSync = useCallback(
-    (nextPcm) => {
+    (nextPcm, reason = "editor") => {
       setProjectCharacterMasters(nextPcm);
       if (plan?.characters?.length) {
-        const sync = syncLegacyMapsFromCanonicalPlan(plan, nextPcm);
+        const sync = syncDerivedMasterCachesFromCanonical(plan, nextPcm, reason);
         setMasterImages(sync.masterImages);
         setMasterByCharName(sync.masterByCharName);
+        const audit = auditDerivedCacheDrift(plan, nextPcm, sync.masterImages, sync.masterByCharName);
+        if (!audit.ok) {
+          console.warn(`${CANONICAL_PCM_LOG} post_sync_audit unexpected drift (should be clean)`);
+        }
       }
     },
     [plan],
@@ -1329,6 +1430,7 @@ export function ScenografieProjectEditor({
   /** Estende il piano (nuove scene / sviluppi) senza perdere master né scene già ok. */
   const handlePlanContinue = async () => {
     if (!plan || !prompt.trim()) return;
+    const previousPlan = plan;
     setPlanning(true);
     setPlanError("");
     reuseMastersRef.current = false;
@@ -1353,14 +1455,10 @@ export function ScenografieProjectEditor({
         setProjectStyle(buildProjectStyleFromPlan(result, imageStylePresets));
       }
       {
-        const fromNames = mergePreservedMastersByName(result, masterByCharNameRef.current, masterImagesRef.current);
-        const merged = { ...fromNames };
-        (result.characters || []).forEach((c) => {
-          const sk = stableCharacterKey(c);
-          if (sk && !merged[sk] && masterImagesRef.current[sk]) merged[sk] = masterImagesRef.current[sk];
-          if (!merged[sk] && c.id && masterImagesRef.current[c.id]) merged[sk || c.id] = masterImagesRef.current[c.id];
-        });
-        const r = reconcileCharacterMasterMaps(result, merged, masterByCharNameRef.current);
+        const pcmRef = projectCharacterMastersRef.current;
+        const hintPlan = previousPlan?.characters?.length ? previousPlan : result;
+        const hints = syncDerivedMasterCachesFromCanonical(hintPlan, pcmRef, "plan_continue_hint_from_pcm");
+        const r = reconcileCharacterMasterMaps(result, hints.masterImages, hints.masterByCharName, pcmRef, {});
         let nextApprovals = { ...characterApprovalMap };
         (result.characters || []).forEach((c) => {
           if (nextApprovals[c.id] == null) nextApprovals[c.id] = { approved: false, approvedAt: null, version: 0 };
@@ -1368,14 +1466,18 @@ export function ScenografieProjectEditor({
         Object.keys(nextApprovals).forEach((k) => {
           if (!(result.characters || []).some((x) => x.id === k)) delete nextApprovals[k];
         });
+        const forcePcid =
+          inferPcidMasterLayout(result, r.masterImages, r.masterByCharName) ||
+          (result.characters || []).some((c) => isPcidKey(c?.pcid));
         const pcmNext = mergeProjectCharacterMastersFromLegacy(
           result,
-          projectCharacterMastersRef.current,
+          pcmRef,
           r.masterImages,
           r.masterByCharName,
           nextApprovals,
+          { forcePcidMode: forcePcid },
         );
-        const sync = syncLegacyMapsFromCanonicalPlan(result, pcmNext);
+        const sync = syncDerivedMasterCachesFromCanonical(result, pcmNext, "plan_continue_after_merge");
         setMasterImages(sync.masterImages);
         setMasterByCharName(sync.masterByCharName);
         setProjectCharacterMasters(pcmNext);
@@ -1391,6 +1493,7 @@ export function ScenografieProjectEditor({
 
   const handlePlan = async (preserveMasters = false) => {
     if (!prompt.trim()) return;
+    const planSnapshot = plan;
     setPlanning(true);
     setPlanError("");
     setPlan(null);
@@ -1425,14 +1528,10 @@ export function ScenografieProjectEditor({
       setPlan(result);
       setProjectStyle(buildProjectStyleFromPlan(result, imageStylePresets));
       if (preserveMasters) {
-        const fromNames = mergePreservedMastersByName(result, masterByCharNameRef.current, masterImagesRef.current);
-        const merged = { ...fromNames };
-        (result.characters || []).forEach((c) => {
-          const sk = stableCharacterKey(c);
-          if (sk && !merged[sk] && masterImagesRef.current[sk]) merged[sk] = masterImagesRef.current[sk];
-          if (!merged[sk] && c.id && masterImagesRef.current[c.id]) merged[sk || c.id] = masterImagesRef.current[c.id];
-        });
-        const r = reconcileCharacterMasterMaps(result, merged, masterByCharNameRef.current);
+        const pcmRef = projectCharacterMastersRef.current;
+        const hintPlan = planSnapshot?.characters?.length ? planSnapshot : result;
+        const hints = syncDerivedMasterCachesFromCanonical(hintPlan, pcmRef, "plan_new_hint_from_pcm");
+        const r = reconcileCharacterMasterMaps(result, hints.masterImages, hints.masterByCharName, pcmRef, {});
         let nextApprovals = { ...characterApprovalMap };
         (result.characters || []).forEach((c) => {
           if (nextApprovals[c.id] == null) nextApprovals[c.id] = { approved: false, approvedAt: null, version: 0 };
@@ -1440,14 +1539,18 @@ export function ScenografieProjectEditor({
         Object.keys(nextApprovals).forEach((k) => {
           if (!(result.characters || []).some((x) => x.id === k)) delete nextApprovals[k];
         });
+        const forcePcid =
+          inferPcidMasterLayout(result, r.masterImages, r.masterByCharName) ||
+          (result.characters || []).some((c) => isPcidKey(c?.pcid));
         const pcmNext = mergeProjectCharacterMastersFromLegacy(
           result,
-          projectCharacterMastersRef.current,
+          pcmRef,
           r.masterImages,
           r.masterByCharName,
           nextApprovals,
+          { forcePcidMode: forcePcid },
         );
-        const sync = syncLegacyMapsFromCanonicalPlan(result, pcmNext);
+        const sync = syncDerivedMasterCachesFromCanonical(result, pcmNext, "plan_new_after_merge");
         setMasterImages(sync.masterImages);
         setMasterByCharName(sync.masterByCharName);
         setProjectCharacterMasters(pcmNext);
@@ -1462,6 +1565,7 @@ export function ScenografieProjectEditor({
 
   const handleExecute = async () => {
     if (!plan) return;
+    if (sceneExecuteBlocked) return;
     const charsNeedingMaster = getCharactersNeedingMaster(plan);
     const masterPipelineRequired = charsNeedingMaster.length > 0;
     const masterGatePayload = { projectCharacterMasters, characterApprovalMap };
@@ -1476,8 +1580,17 @@ export function ScenografieProjectEditor({
         );
         return;
       }
+      const needApprove = notReadyMasters.filter(
+        (c) => !approvalEntryForCharacter(characterApprovalMap, c)?.approved,
+      );
+      if (needApprove.length) {
+        setPlanError(
+          `Approva con «Approva personaggio» sulla card: ${needApprove.map((c) => c.name).join(", ")} (stesso gate usato da identity lock).`
+        );
+        return;
+      }
       setPlanError(
-        `Quando il volto ti convince, approva ogni personaggio con «Approva personaggio» sulla card (${notReadyMasters.map((c) => c.name).join(", ")}).`
+        `Personaggi non ammessi in pipeline scene (revisione manuale o sorgente master non valida): ${notReadyMasters.map((c) => c.name).join(", ")}. Controlla la card (bordo arancione) o i log ${CANONICAL_PCM_LOG}.`
       );
       return;
     }
@@ -1543,6 +1656,7 @@ export function ScenografieProjectEditor({
     setProjectStyle(lockedStyle);
     setScenografiaPhase("scene_gen");
     setExecuting(true);
+    setScenePipelineFlight?.({ workspaceId: projectId, chapterId });
     abortRef.current = false;
     setPlanError("");
 
@@ -1588,7 +1702,7 @@ export function ScenografieProjectEditor({
       const animated = lockedStyle.isAnimated;
 
       const pcmSnap = projectCharacterMastersRef.current;
-      const sync = syncLegacyMapsFromCanonicalPlan(plan, pcmSnap);
+      const sync = syncDerivedMasterCachesFromCanonical(plan, pcmSnap, "scene_pipeline_preflight");
       setMasterImages(sync.masterImages);
       setMasterByCharName(sync.masterByCharName);
 
@@ -1615,6 +1729,13 @@ export function ScenografieProjectEditor({
       // ── Scene pipeline (master già approvati) ──
       const results = [];
       const totalRun = scenesToRun.length;
+      const bumpSceneProgress = (sceneIdx, sub01) => {
+        const t = Math.max(0, Math.min(1, sub01));
+        const tr = Math.max(1, totalRun);
+        const low = 20 + (sceneIdx / tr) * 60;
+        const high = sceneIdx + 1 >= tr ? 94 : 20 + ((sceneIdx + 1) / tr) * 60;
+        setImageProgress(Math.round(low + (high - low) * t));
+      };
       if (plan?.characters?.length) {
         const poolRows = plan.characters.map((c) => {
           const meta = masterUrlMetaForLog(c, pcmSnap, sync.masterImages, sync.masterByCharName, characterApprovalMap);
@@ -1635,11 +1756,10 @@ export function ScenografieProjectEditor({
       for (let i = 0; i < totalRun; i++) {
         if (abortRef.current) break;
         const scene = scenesToRun[i];
-        const pct = 20 + Math.round((i / totalRun) * 60);
-        setImageProgress(pct);
+        bumpSceneProgress(i, 0);
 
         addLog(`Scena ${i + 1}/${totalRun}: ${scene.title_it}…`);
-        setImageStatus(`Scena: ${scene.title_it}…`);
+        setImageStatus(`Scena: ${scene.title_it}`);
 
         try {
           const pipelineWarnings = [];
@@ -1755,6 +1875,7 @@ export function ScenografieProjectEditor({
 
           if (!isEnvScene && sceneCharIds.length === 0) {
             addLog(`ERRORE: scena «${scene.title_it || scene.id}» senza personaggi risolti nel piano — skip.`);
+            bumpSceneProgress(i, 1);
             continue;
           }
 
@@ -1813,6 +1934,11 @@ export function ScenografieProjectEditor({
               ? `Scena ambiente: base generata (nessun identity lock / repair personaggi).`
               : `Scena base generata — applicazione identità…`,
           );
+          if (isEnvScene) {
+            bumpSceneProgress(i, 0.45);
+          } else {
+            bumpSceneProgress(i, 0.12);
+          }
           let finalUrl = sceneResult.outputImage;
           const repairDiag = {
             repair_ui_enabled: enableRepair,
@@ -1822,7 +1948,8 @@ export function ScenografieProjectEditor({
           };
 
           if (!isEnvScene) {
-            for (let pi = 0; pi < sceneProtagonistIds.length; pi++) {
+            const lockCount = sceneProtagonistIds.length;
+            for (let pi = 0; pi < lockCount; pi++) {
               const pId = sceneProtagonistIds[pi];
               const pChar = findPlanCharacterByPresentRef(plan, pId);
               const label = pChar?.name || pId;
@@ -1832,7 +1959,10 @@ export function ScenografieProjectEditor({
                 : null;
               const sceneInBefore = finalUrl;
 
-              setImageStatus(`Identity lock: ${label}…`);
+              setImageStatus(`Identity lock: ${label}`);
+              if (lockCount > 0) {
+                bumpSceneProgress(i, 0.12 + 0.72 * (pi / lockCount));
+              }
               try {
                 const lockResult = await lockCharacterIdentity({
                   sceneImageUrl: finalUrl,
@@ -1873,13 +2003,20 @@ export function ScenografieProjectEditor({
                 addLog(`Identity lock fallito per ${label}: ${lockErr.message}`);
                 console.warn("[SCENOGRAFIE PIPELINE · identity lock ERR]", label, lockErr);
               }
+              if (lockCount > 0) {
+                bumpSceneProgress(i, 0.12 + 0.72 * ((pi + 1) / lockCount));
+              }
+            }
+            if (lockCount === 0) {
+              bumpSceneProgress(i, 0.78);
             }
 
             let repairInputUrl = null;
             let repairOutputUrl = null;
             let repairStatus = "off";
             if (enableRepair && sceneProtagonistIds.length > 0) {
-              setImageStatus("Repair pass…");
+              bumpSceneProgress(i, 0.86);
+              setImageStatus("Repair pass");
               repairInputUrl = finalUrl;
               repairStatus = "on";
               repairDiag.repair_attempted = true;
@@ -1911,12 +2048,14 @@ export function ScenografieProjectEditor({
                 } else {
                   addLog(`[repair] skipped | in=out=${shortUrl(repairInputUrl, 72)}`);
                 }
+                bumpSceneProgress(i, 0.96);
               } catch (repErr) {
                 repairStatus = "error";
                 repairDiag.repair_status = "error";
                 pipelineWarnings.push(`repair: ${repErr.message}`);
                 addLog(`Repair skip: ${repErr.message}`);
                 console.warn("[SCENOGRAFIE PIPELINE · repair ERR]", repErr);
+                bumpSceneProgress(i, 0.92);
               }
             } else {
               repairDiag.repair_status = !enableRepair ? "ui_off" : "no_lock_targets";
@@ -1931,6 +2070,9 @@ export function ScenografieProjectEditor({
                 )}`,
               );
               addLog(`[repair] off (${!enableRepair ? "flag" : "no lock"})`);
+              if (sceneProtagonistIds.length > 0) {
+                bumpSceneProgress(i, 0.94);
+              }
             }
           } else {
             repairDiag.repair_status = "environment_scene_skip";
@@ -1938,8 +2080,10 @@ export function ScenografieProjectEditor({
               `[SCENOGRAFIE PIPELINE · identity/repair]\n${JSON.stringify({ skipped: true, reason: "environment_scene" }, null, 2)}`,
             );
             addLog(`[lock/repair] skip — scena ambiente (${sceneTypeRaw})`);
+            bumpSceneProgress(i, 0.92);
           }
 
+          bumpSceneProgress(i, 1);
           const outLog = {
             scene_id: scene.id,
             title_it: scene.title_it,
@@ -1968,7 +2112,7 @@ export function ScenografieProjectEditor({
               `    imageUrl=${shortUrlForSceneLog(finalUrl)}`,
               `    baseImageUrl=${shortUrlForSceneLog(sceneResult.outputImage)}`,
               `    sceneFinalUrl=${shortUrlForSceneLog(finalUrl)}`,
-              `    displayedVariant=post_pipeline_final`,
+              `    sceneDisplayedVariant=final (policy default quando esiste la finale)`,
             ].join("\n"),
           );
 
@@ -2099,11 +2243,14 @@ export function ScenografieProjectEditor({
       setScenografiaPhase((ph) => (ph === "scene_gen" ? "character_approval" : ph));
     } finally {
       setExecuting(false);
+      setScenePipelineFlight?.((cur) =>
+        cur && cur.workspaceId === projectId && cur.chapterId === chapterId ? null : cur
+      );
     }
   };
 
   const runGenerateAllPlannedScenes = () => {
-    if (!plan || executing) return;
+    if (!plan || sceneExecuteBlocked) return;
     sceneExecuteModeRef.current = "BATCH_ALL";
     reuseMastersRef.current = (sceneResults || []).length > 0;
     setProjectStyleLocked(false);
@@ -2111,7 +2258,7 @@ export function ScenografieProjectEditor({
   };
 
   const runGenerateSelectedScenes = () => {
-    if (!plan || executing || selectedSceneIds.length === 0) return;
+    if (!plan || sceneExecuteBlocked || selectedSceneIds.length === 0) return;
     sceneExecuteModeRef.current = "SELECTED";
     reuseMastersRef.current = (sceneResults || []).length > 0;
     setProjectStyleLocked(false);
@@ -2119,7 +2266,7 @@ export function ScenografieProjectEditor({
   };
 
   const regenerateSingleScene = (sceneId) => {
-    if (!plan || executing) return;
+    if (!plan || sceneExecuteBlocked) return;
     singleSceneOverrideRef.current = sceneId;
     sceneExecuteModeRef.current = "SELECTED";
     reuseMastersRef.current = true;
@@ -2145,6 +2292,25 @@ export function ScenografieProjectEditor({
           ? normalizeSceneResultRow({ ...r, approved: true, approvedAt: now, lastUpdatedAt: now })
           : r
       )
+    );
+  }, []);
+
+  const chooseSceneDisplayVariant = useCallback((sceneId, variant) => {
+    setSceneResults((prev) =>
+      prev.map((r) => {
+        if (r.sceneId !== sceneId) return r;
+        const hist = [
+          ...(Array.isArray(r.sceneVariantHistory) ? r.sceneVariantHistory : []),
+          { at: new Date().toISOString(), variant, trigger: "user_ui" },
+        ].slice(-24);
+        const row = normalizeSceneResultRow({
+          ...r,
+          sceneDisplayedVariant: variant,
+          sceneVariantHistory: hist,
+        });
+        logSceneVariantState("user_choice", row);
+        return row;
+      })
     );
   }, []);
 
@@ -2191,8 +2357,8 @@ export function ScenografieProjectEditor({
       return;
     }
     const row = sceneResults.find((r) => r.sceneId === sid);
-    if (!row?.imageUrl) return;
-    if (sceneEditBusyId || executing) return;
+    if (!row?.imageUrl && !row?.sceneDisplayedUrl) return;
+    if (sceneEditBusyId || sceneExecuteBlocked) return;
 
     const lockedStyle = projectStyle || buildProjectStyleFromPlan(plan, imageStylePresets);
     const globalStyleNote = composeGlobalVisualStyle(lockedStyle).slice(0, 900);
@@ -2201,31 +2367,34 @@ export function ScenografieProjectEditor({
     setPlanError("");
     addLog(`Modifica scena (solo immagine, senza master): ${row.title}…`);
     try {
+      const sourceImg = row.sceneDisplayedUrl || row.imageUrl;
       const job = await editScenografiaSceneWithPrompt({
-        sceneImageUrl: row.imageUrl,
+        sceneImageUrl: sourceImg,
         integrativePrompt: draft,
         globalVisualStyleNote: globalStyleNote,
         isAnimated: lockedStyle.isAnimated,
         onProgress: ({ message }) => {
-          setImageStatus(message || "Modifica scena…");
+          setImageStatus(message || "Modifica scena");
         },
       });
       const now = new Date().toISOString();
       const hist = [...(row.editHistory || []), { prompt: draft, at: now }].slice(-8);
       setSceneResults((prev) =>
-        prev.map((r) =>
-          r.sceneId === sid
-            ? normalizeSceneResultRow({
-                ...r,
-                imageUrl: job.outputImage,
-                approved: false,
-                approvedAt: null,
-                lastEditPrompt: draft,
-                editHistory: hist,
-                lastUpdatedAt: now,
-              })
-            : r
-        )
+        prev.map((r) => {
+          if (r.sceneId !== sid) return r;
+          const variant = r.sceneDisplayedVariant === SCENE_DISPLAY_VARIANT.BASE ? SCENE_DISPLAY_VARIANT.BASE : SCENE_DISPLAY_VARIANT.FINAL;
+          const patch = {
+            ...r,
+            approved: false,
+            approvedAt: null,
+            lastEditPrompt: draft,
+            editHistory: hist,
+            lastUpdatedAt: now,
+          };
+          if (variant === SCENE_DISPLAY_VARIANT.BASE) patch.sceneBaseUrl = job.outputImage;
+          else patch.sceneFinalUrl = job.outputImage;
+          return normalizeSceneResultRow(patch);
+        })
       );
       setModifyingSceneId(null);
       setModifyDraftPrompt("");
@@ -2268,6 +2437,7 @@ export function ScenografieProjectEditor({
     imageStylePresets,
     sceneEditBusyId,
     executing,
+    sceneGenFlightActive,
     onSave,
     addLog,
     setImageStatus,
@@ -2459,11 +2629,230 @@ export function ScenografieProjectEditor({
     ]
   );
 
+  const chapterPayloadForOps = useMemo(
+    () => ({
+      plan,
+      sceneResults,
+      sceneVideoClips,
+      deletedSceneIds,
+      projectCharacterMasters,
+      characterApprovalMap,
+      characterVoiceMasters,
+      projectNarrators,
+    }),
+    [
+      plan,
+      sceneResults,
+      sceneVideoClips,
+      deletedSceneIds,
+      projectCharacterMasters,
+      characterApprovalMap,
+      characterVoiceMasters,
+      projectNarrators,
+    ],
+  );
+
+  const completionGapPayload = useMemo(
+    () => ({
+      plan,
+      scenografiaPhase,
+      characterApprovalMap,
+      masterImages,
+      projectCharacterMasters,
+      sceneResults,
+      deletedSceneIds,
+      scenografiaVideoPhase,
+      sceneVideoClips,
+      finalMontagePhase,
+      timelinePlan,
+      projectNarrators,
+      finalFilmMontage,
+    }),
+    [
+      plan,
+      scenografiaPhase,
+      characterApprovalMap,
+      masterImages,
+      projectCharacterMasters,
+      sceneResults,
+      deletedSceneIds,
+      scenografiaVideoPhase,
+      sceneVideoClips,
+      finalMontagePhase,
+      timelinePlan,
+      projectNarrators,
+      finalFilmMontage,
+    ],
+  );
+
+  const completionGaps = useMemo(() => computeChapterCompletionGaps(completionGapPayload), [completionGapPayload]);
+
+  const chapterMontageDelivery = useMemo(
+    () =>
+      deriveFilmOutputReadinessFromChapterData({
+        finalFilmMontage,
+        finalMontagePhase,
+        scenografiaVideoPhase,
+      }),
+    [finalFilmMontage, finalMontagePhase, scenografiaVideoPhase],
+  );
+
+  const montageNextStepLine = useMemo(
+    () =>
+      consumerMontageNextStepIt({
+        readiness: chapterMontageDelivery.readiness,
+        finalMontagePhase,
+        montageStatus: finalFilmMontage?.status,
+        outputUrl: finalFilmMontage?.outputUrl,
+      }),
+    [
+      chapterMontageDelivery.readiness,
+      finalMontagePhase,
+      finalFilmMontage?.status,
+      finalFilmMontage?.outputUrl,
+    ],
+  );
+
+  const chapterMontageConsumer = useMemo(
+    () =>
+      deriveChapterMontageConsumerSummary({
+        finalFilmMontage,
+        finalMontagePhase,
+        scenografiaVideoPhase,
+      }),
+    [finalFilmMontage, finalMontagePhase, scenografiaVideoPhase],
+  );
+  const chapterFilmConfidence = chapterMontageConsumer.confidence;
+
+  const workspaceSummaryFilm = useMemo(() => {
+    if (!workspaceChaptersLight.length) return null;
+    const ws = {
+      workspaceVersion: SCENOGRAFIA_WORKSPACE_VERSION,
+      chapters: workspaceChaptersLight,
+      filmOutputVerification: workspaceFilmVerification,
+      narrativeProjectTitle: workspaceNarrativeTitle || "",
+      narrativeProjectDescription: "",
+      projectTitle: (projectTitle || workspaceNarrativeTitle || "").trim(),
+      projectDescription: "",
+    };
+    return summarizeScenografiaWorkspaceForIndex(ws);
+  }, [workspaceChaptersLight, workspaceFilmVerification, workspaceNarrativeTitle, projectTitle]);
+
+  const chapterFilmSimple = useMemo(
+    () =>
+      deriveFinalOutputSimplePresentation(chapterFilmConfidence, {
+        hasUrl: Boolean(finalFilmMontage?.outputUrl),
+        filmDeliveryState: chapterMontageConsumer.filmDeliveryState,
+        filmOutputReadiness: chapterMontageConsumer.readiness,
+        filmVerificationEffective: workspaceSummaryFilm?.filmVerificationEffective ?? null,
+      }),
+    [
+      chapterFilmConfidence,
+      chapterMontageConsumer.filmDeliveryState,
+      chapterMontageConsumer.readiness,
+      finalFilmMontage?.outputUrl,
+      workspaceSummaryFilm?.filmVerificationEffective,
+    ],
+  );
+
+  const workspaceFilmPlaybackPlan = useMemo(
+    () => buildFinalFilmPlaybackCandidates({ chapters: workspaceChaptersLight }),
+    [workspaceChaptersLight],
+  );
+
+  const editorFilmPlaybackEntries = useMemo(() => {
+    const merged = mergePlaybackEntriesChapterFirst(
+      finalFilmMontage?.outputUrl,
+      chapterId,
+      workspaceFilmPlaybackPlan,
+    );
+    if (merged.entries.length) return merged.entries;
+    const u =
+      finalFilmMontage?.outputUrl != null && String(finalFilmMontage.outputUrl).trim()
+        ? String(finalFilmMontage.outputUrl).trim()
+        : null;
+    return u
+      ? [{ url: u, sourceLabel: "Output · questo capitolo", chapterId: chapterId || null }]
+      : [];
+  }, [finalFilmMontage?.outputUrl, chapterId, workspaceFilmPlaybackPlan]);
+
+  const editorPlaybackMoment = useMemo(
+    () =>
+      describeFinalFilmPlaybackMoment(
+        chapterFilmSimple.tier,
+        chapterMontageConsumer.readiness,
+        workspaceSummaryFilm?.filmVerificationEffective ?? null,
+      ),
+    [chapterFilmSimple.tier, chapterMontageConsumer.readiness, workspaceSummaryFilm?.filmVerificationEffective],
+  );
+
+  const handleVerifyWorkspaceFilmOutput = useCallback(async () => {
+    if (!projectId) return;
+    setEditorFilmVerifyBusy(true);
+    try {
+      const res = await runAndPersistFilmOutputVerification(projectId);
+      if (res.ok && res.persistedVerification) {
+        setWorkspaceFilmVerification(res.persistedVerification);
+      }
+    } finally {
+      setEditorFilmVerifyBusy(false);
+    }
+  }, [projectId]);
+
+  useEffect(() => {
+    setEditorFilmPlaybackIndex(0);
+    setEditorFilmPlaybackError(null);
+    setEditorFilmPlaybackReloadKey((k) => k + 1);
+  }, [finalFilmMontage?.outputUrl, chapterId, workspaceChaptersLight]);
+
+  const applyRecoveryDeepLink = useCallback((link) => {
+    if (!link || typeof link !== "object") return;
+    const focus = link.focus != null ? String(link.focus).trim() : "";
+    const sceneId = link.sceneId != null ? String(link.sceneId).trim() : "";
+    const clipId = link.clipId != null ? String(link.clipId).trim() : "";
+    window.requestAnimationFrame(() => {
+      const scrollTo = (id) => {
+        const el = typeof document !== "undefined" ? document.getElementById(id) : null;
+        el?.scrollIntoView({ behavior: "smooth", block: "center" });
+      };
+      if (clipId) {
+        if (sceneId) setSceneCardFocusId(sceneId);
+        setClipBuilderClipId(clipId);
+        scrollTo(`ax-scenografie-clip-${clipId}`);
+        return;
+      }
+      if (sceneId) {
+        setSceneCardFocusId(sceneId);
+        scrollTo(`ax-scenografie-scene-${sceneId}`);
+        return;
+      }
+      if (focus === "montage") {
+        scrollTo("ax-scenografie-anchor-montage");
+        if (typeof document !== "undefined" && !document.getElementById("ax-scenografie-anchor-montage")) {
+          scrollTo("ax-scenografie-anchor-clips");
+        }
+      } else if (focus === "clips") scrollTo("ax-scenografie-anchor-clips");
+      else if (focus === "timeline") scrollTo("ax-scenografie-anchor-timeline");
+      else if (focus === "scenes") scrollTo("ax-scenografie-anchor-scenes");
+      else if (focus === "characters") scrollTo("ax-scenografie-anchor-cast");
+      else if (focus === "narrators") scrollTo("ax-scenografie-anchor-narrators");
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!initialRecoveryDeepLink) return undefined;
+    const t = window.setTimeout(() => {
+      applyRecoveryDeepLink(initialRecoveryDeepLink);
+      onConsumedRecoveryDeepLink?.();
+    }, 220);
+    return () => window.clearTimeout(t);
+  }, [initialRecoveryDeepLink, applyRecoveryDeepLink, onConsumedRecoveryDeepLink]);
+
   const canOpenVideoProduction =
     allCharacterMastersApprovedForVideo(gatePayload) &&
     allActiveScenesApproved(gatePayload) &&
     scenografiaVideoPhase === "none" &&
-    !executing &&
+    !sceneExecuteBlocked &&
     !planning;
 
   const canStartFinalMontage =
@@ -2472,7 +2861,7 @@ export function ScenografieProjectEditor({
     clipsReadyForFinalMontage(gatePayload) &&
     timelineNarrativeApproved(gatePayload) &&
     finalMontagePhase === "none" &&
-    !executing &&
+    !sceneExecuteBlocked &&
     !planning;
 
   const handleGoToVideoProduction = useCallback(async () => {
@@ -2503,12 +2892,184 @@ export function ScenografieProjectEditor({
       ...(base.finalMontagePlan && typeof base.finalMontagePlan === "object" ? base.finalMontagePlan : {}),
       ...fromTimeline,
     };
-    const payload = { ...base, finalMontagePhase: "assembly", finalMontagePlan: nextPlan };
+    const { compiledMontagePlan, montageExecutionPlan, finalFilmBuildPlan } = compileMontagePlans({
+      timelinePlan: base.timelinePlan,
+      finalMontagePlan: nextPlan,
+      sceneVideoClips: base.sceneVideoClips,
+    });
+    console.info("[AXSTUDIO · montage · compiled plan]", compiledMontagePlan);
+    const nextFilm = normalizeFinalFilmMontage({
+      ...emptyFinalFilmMontage(),
+      status: "ready",
+      lastCompiledAt: compiledMontagePlan.compiledAt,
+      compiledMontagePlan,
+      montageExecutionPlan,
+      finalFilmBuildPlan,
+    });
+    const payload = { ...base, finalMontagePhase: "assembly", finalMontagePlan: nextPlan, finalFilmMontage: nextFilm };
     await persistChapterPayload(payload);
     setFinalMontagePhase("assembly");
     setFinalMontagePlan(nextPlan);
-    addLog("Montaggio finale: ordine narrativo dalla timeline approvata registrato. Motore da integrare.");
+    setFinalFilmMontage(nextFilm);
+    addLog("Montaggio finale: piano compilato dalla timeline approvata. Puoi generare il filmato.");
   }, [projectId, canStartFinalMontage, addLog, persistChapterPayload]);
+
+  const handleRefreshMontagePlan = useCallback(async () => {
+    if (!projectId || finalMontagePhase !== "assembly" || montageRenderBusy) return;
+    const base = persistSnapshotRef.current;
+    if (!base) return;
+    const fmp = base.finalMontagePlan && typeof base.finalMontagePlan === "object" ? base.finalMontagePlan : {};
+    const { compiledMontagePlan, montageExecutionPlan, finalFilmBuildPlan } = compileMontagePlans({
+      timelinePlan: base.timelinePlan,
+      finalMontagePlan: fmp,
+      sceneVideoClips: base.sceneVideoClips,
+    });
+    console.info("[AXSTUDIO · montage · compiled plan]", compiledMontagePlan);
+    const nextFilm = normalizeFinalFilmMontage({
+      ...(base.finalFilmMontage && typeof base.finalFilmMontage === "object" ? base.finalFilmMontage : {}),
+      status: "ready",
+      lastCompiledAt: compiledMontagePlan.compiledAt,
+      compiledMontagePlan,
+      montageExecutionPlan,
+      finalFilmBuildPlan,
+      outputUrl: null,
+      lastError: null,
+      lastWorkflowFailure: null,
+      lastMontageAttemptAt: null,
+      lastRenderStartedAt: null,
+      lastRenderCompletedAt: null,
+      outputUrlSetAt: null,
+      lastRenderSummary: null,
+    });
+    const payload = { ...base, finalFilmMontage: nextFilm };
+    await persistChapterPayload(payload);
+    setFinalFilmMontage(nextFilm);
+    addLog("Piano montaggio aggiornato (durate e ordine dalla timeline corrente).");
+  }, [projectId, finalMontagePhase, montageRenderBusy, persistChapterPayload, addLog]);
+
+  const handleGenerateFinalFilm = useCallback(async () => {
+    if (!projectId || montageRenderBusy || finalMontagePhase !== "assembly") return;
+    const base = persistSnapshotRef.current;
+    if (!base) return;
+    setMontageRenderBusy(true);
+    let working = { ...base };
+    try {
+      const fmp = base.finalMontagePlan && typeof base.finalMontagePlan === "object" ? base.finalMontagePlan : {};
+      const { compiledMontagePlan, montageExecutionPlan, finalFilmBuildPlan } = compileMontagePlans({
+        timelinePlan: base.timelinePlan,
+        finalMontagePlan: fmp,
+        sceneVideoClips: base.sceneVideoClips,
+      });
+      console.info("[AXSTUDIO · montage · compiled plan]", compiledMontagePlan);
+      const val = validateMontageRenderable(compiledMontagePlan);
+      if (!val.ok) {
+        const err = val.reasons.join("; ");
+        const lastWorkflowFailure = buildMontageFailureRecord({
+          kind: "validate",
+          userMessage: "Il montaggio non può partire: controlla clip mancanti, URL o timeline.",
+          technical: err,
+        });
+        logConsumerReliabilityEvent("montage_validate_failed", { ...lastWorkflowFailure, projectId });
+        working = {
+          ...working,
+          finalFilmMontage: normalizeFinalFilmMontage({
+            ...(base.finalFilmMontage && typeof base.finalFilmMontage === "object" ? base.finalFilmMontage : {}),
+            status: "failed",
+            lastError: lastWorkflowFailure.errorMessageUser,
+            lastWorkflowFailure,
+            lastMontageAttemptAt: new Date().toISOString(),
+            lastCompiledAt: compiledMontagePlan.compiledAt,
+            compiledMontagePlan,
+            montageExecutionPlan,
+            finalFilmBuildPlan,
+          }),
+        };
+        await persistChapterPayload(working);
+        setFinalFilmMontage(working.finalFilmMontage);
+        addLog(`Montaggio: validazione fallita — ${err}`);
+        return;
+      }
+      const renderStartedAt = new Date().toISOString();
+      working = {
+        ...working,
+        finalFilmMontage: normalizeFinalFilmMontage({
+          ...(base.finalFilmMontage && typeof base.finalFilmMontage === "object" ? base.finalFilmMontage : {}),
+          status: "rendering",
+          lastCompiledAt: compiledMontagePlan.compiledAt,
+          lastRenderStartedAt: renderStartedAt,
+          compiledMontagePlan,
+          montageExecutionPlan,
+          finalFilmBuildPlan,
+          lastError: null,
+          lastWorkflowFailure: null,
+          lastMontageAttemptAt: renderStartedAt,
+        }),
+      };
+      await persistChapterPayload(working);
+      setFinalFilmMontage(working.finalFilmMontage);
+      console.info("[AXSTUDIO · montage · execution]", montageExecutionPlan);
+      const { outputUrl, blobSizeBytes, renderSummary } = await runFinalMontageRender(compiledMontagePlan, {
+        onProgress: (s) => console.info("[AXSTUDIO · montage · execution]", s),
+      });
+      console.info("[AXSTUDIO · montage · output]", {
+        outputUrl,
+        blobSizeBytes,
+        renderModeUsed: renderSummary?.renderModeUsed,
+        concatHadToReencode: renderSummary?.concatHadToReencode,
+      });
+      working = {
+        ...working,
+        finalFilmMontage: normalizeFinalFilmMontage({
+          ...working.finalFilmMontage,
+          status: "complete",
+          lastRenderCompletedAt: new Date().toISOString(),
+          outputUrlSetAt: new Date().toISOString(),
+          outputUrl,
+          lastError: null,
+          lastWorkflowFailure: null,
+          lastRenderSummary: renderSummary,
+          montageExecutionPlan: {
+            ...montageExecutionPlan,
+            renderModeResolved: renderSummary?.renderModeUsed ?? null,
+            concatHadToReencode: renderSummary?.concatHadToReencode ?? null,
+            lastRunCompletedAt: renderSummary?.at ?? null,
+          },
+          compiledMontagePlan,
+          finalFilmBuildPlan,
+        }),
+      };
+      await persistChapterPayload(working);
+      setFinalFilmMontage(working.finalFilmMontage);
+      addLog(`Filmato finale pronto: ${outputUrl}`);
+    } catch (e) {
+      const msg = e?.message || String(e);
+      console.info("[AXSTUDIO · montage · output]", { error: msg });
+      const lastWorkflowFailure = buildMontageFailureRecord({
+        kind: "render",
+        userMessage:
+          "Il filmato finale non è stato creato. Controlla la connessione, lo spazio in memoria e riprova il render.",
+        technical: msg,
+      });
+      logConsumerReliabilityEvent("montage_render_failed", { ...lastWorkflowFailure, projectId });
+      working = {
+        ...working,
+        finalFilmMontage: normalizeFinalFilmMontage({
+          ...(working.finalFilmMontage && typeof working.finalFilmMontage === "object" ? working.finalFilmMontage : {}),
+          status: "failed",
+          lastError: lastWorkflowFailure.errorMessageUser,
+          lastWorkflowFailure,
+          lastMontageAttemptAt: new Date().toISOString(),
+          lastRenderCompletedAt: new Date().toISOString(),
+          outputUrlSetAt: null,
+        }),
+      };
+      await persistChapterPayload(working);
+      setFinalFilmMontage(working.finalFilmMontage);
+      addLog(`Montaggio: errore — ${msg}`);
+    } finally {
+      setMontageRenderBusy(false);
+    }
+  }, [projectId, montageRenderBusy, finalMontagePhase, persistChapterPayload, addLog]);
 
   const handleMarkFinalMontageDone = useCallback(async () => {
     if (!projectId) return;
@@ -2552,25 +3113,36 @@ export function ScenografieProjectEditor({
             if (k === mapKey) continue;
             const o = normalizeCharacterVoiceMaster(next[k], k);
             if (o.isNarratorDefault) {
-              next[k] = {
-                voiceId: o.voiceId,
-                voiceLabel: o.voiceLabel,
-                voiceProvider: o.voiceProvider,
-                isNarratorDefault: false,
-                elevenLabs: o.elevenLabs || {},
-              };
+              next[k] = normalizeCharacterVoiceMaster({ ...o, isNarratorDefault: false }, k);
             }
           }
         }
         const cur = normalizeCharacterVoiceMaster(next[mapKey], mapKey);
-        const n = normalizeCharacterVoiceMaster({ ...cur, ...partial }, mapKey);
-        next[mapKey] = {
-          voiceId: n.voiceId,
-          voiceLabel: n.voiceLabel,
-          voiceProvider: n.voiceProvider,
-          isNarratorDefault: n.isNarratorDefault,
-          elevenLabs: n.elevenLabs || {},
-        };
+        let mergePartial = { ...partial };
+        const prevVid = String(cur.voiceId || "").trim();
+        const nextVid = partial.voiceId != null ? String(partial.voiceId).trim() : prevVid;
+        if (nextVid && prevVid && nextVid !== prevVid) {
+          const hist = [
+            ...(cur.voiceAssignmentHistory || []),
+            {
+              voiceId: cur.voiceId,
+              voiceLabel: cur.voiceLabel,
+              at: new Date().toISOString(),
+              note: "reassigned_before_clip_regeneration",
+            },
+          ];
+          mergePartial = { ...mergePartial, voiceAssignmentHistory: hist.slice(-12) };
+        }
+        const n = normalizeCharacterVoiceMaster({ ...cur, ...mergePartial }, mapKey);
+        next[mapKey] = n;
+        if (typeof console !== "undefined" && console.info && mergePartial.voiceId != null) {
+          console.info("[AXSTUDIO · character voice master]", {
+            mapKey,
+            characterId,
+            voiceId: n.voiceId,
+            voiceSourceType: n.voiceSourceType || null,
+          });
+        }
         return next;
       });
     },
@@ -2660,6 +3232,8 @@ export function ScenografieProjectEditor({
     if (!c) return;
     const { ok, reasons } = getClipGenerationReadiness(c, {
       characterVoiceMasters,
+      projectCharacterMasters,
+      projectNarrators,
       plan,
       sceneResults,
     });
@@ -2674,6 +3248,13 @@ export function ScenografieProjectEditor({
         plan,
         sceneResults,
         characterVoiceMasters,
+        projectCharacterMasters,
+        projectNarrators,
+        projectMeta: {
+          id: projectId,
+          title: workspaceNarrativeTitle || projectTitle || null,
+        },
+        chapterMeta: { id: chapterId, ordinal: chapterOrdinal },
         patchClip: (partial) => {
           const now = new Date().toISOString();
           setSceneVideoClips((prev) =>
@@ -2701,6 +3282,13 @@ export function ScenografieProjectEditor({
     plan,
     sceneResults,
     addLog,
+    projectId,
+    workspaceNarrativeTitle,
+    projectTitle,
+    chapterId,
+    chapterOrdinal,
+    projectCharacterMasters,
+    projectNarrators,
   ]);
 
   const clipBuilderOpenClip = useMemo(
@@ -2716,6 +3304,7 @@ export function ScenografieProjectEditor({
       setPlanError("Definisci prima lo stile progetto (preset) dal piano.");
       return;
     }
+    if (executing || sceneGenFlightActive) return;
     const lockedStyle = projectStyle || buildProjectStyleFromPlan(plan, imageStylePresets);
     const globalVisual = composeGlobalVisualStyle(lockedStyle);
     setProjectStyle(lockedStyle);
@@ -2726,11 +3315,7 @@ export function ScenografieProjectEditor({
       setScenografiaPhase("character_approval");
       return;
     }
-    const hasResolvedRef = (c) => {
-      const sk = stableCharacterKey(c);
-      const row = sk ? projectCharacterMastersRef.current[sk] : null;
-      return !!(row && String(row.masterImageUrl || "").trim());
-    };
+    const hasResolvedRef = (c) => !!getDisplayMasterUrl(c, projectCharacterMastersRef.current);
     const toGenerate = needMaster.filter((c) => !hasResolvedRef(c));
     if (toGenerate.length === 0) {
       addLog("Tutti i master obbligatori sono già nel progetto (id o nome). Approva le card se necessario, poi «Genera tutte le scene».");
@@ -2750,7 +3335,7 @@ export function ScenografieProjectEditor({
         if (hasResolvedRef(char)) continue;
         setBatchMasterCharId(char.id);
         done += 1;
-        setImageStatus(`Master: ${char.name}…`);
+        setImageStatus(`Master: ${char.name}`);
         setImageProgress(Math.round(8 + (done / totalGen) * 40));
         try {
           const pcmKey = stableCharacterKey(char);
@@ -2785,10 +3370,7 @@ export function ScenografieProjectEditor({
                   : [],
             },
           };
-          const sync = syncLegacyMapsFromCanonicalPlan(plan, pcmNext);
-          setMasterImages(sync.masterImages);
-          setMasterByCharName(sync.masterByCharName);
-          setProjectCharacterMasters(pcmNext);
+          commitProjectCharacterMastersSync(pcmNext, "batch_master_generated");
           setCharacterApprovalMap((prev) => ({
             ...prev,
             [pcmKey]: { approved: false, approvedAt: null, version: (prev[pcmKey]?.version ?? 0) + 1 },
@@ -2814,7 +3396,7 @@ export function ScenografieProjectEditor({
   /** Prima generazione o rigenerazione: aggiorna preview, invalida approvazione, persiste via snapshot progetto. */
   const generateOrRegenerateCharacterMaster = async (charId, opts = {}) => {
     if (!plan || !projectStyle || pipelineLocked) return;
-    if (executing) return;
+    if (sceneExecuteBlocked) return;
     if (regeneratingCharId != null || batchMasterCharId != null) return;
     const char = plan.characters.find((c) => c.id === charId);
     if (!char) return;
@@ -2867,10 +3449,7 @@ export function ScenografieProjectEditor({
               : [],
         },
       };
-      const sync = syncLegacyMapsFromCanonicalPlan(plan, pcmNext);
-      setMasterImages(sync.masterImages);
-      setMasterByCharName(sync.masterByCharName);
-      setProjectCharacterMasters(pcmNext);
+      commitProjectCharacterMastersSync(pcmNext, "single_master_regenerated");
     } catch (err) {
       setPlanError(err.message || `Generazione master fallita per ${char.name}`);
     } finally {
@@ -2898,7 +3477,7 @@ export function ScenografieProjectEditor({
         pendingManualReview: false,
       },
     };
-    commitProjectCharacterMastersSync(pcmNext);
+    commitProjectCharacterMastersSync(pcmNext, "approve_canonical_lock");
     setCharacterApprovalMap((prev) => ({
       ...prev,
       [pcmKey]: {
@@ -2931,29 +3510,12 @@ export function ScenografieProjectEditor({
           `Confermi?`
       );
       if (!ok) return;
-      const prevRow = (pcmKey && projectCharacterMastersRef.current[pcmKey]) || {};
-      const prevUrl = String(prevRow.masterImageUrl || "").trim();
-      const prior = Array.isArray(prevRow.priorMasterImageUrls)
-        ? prevRow.priorMasterImageUrls.filter((x) => typeof x === "string" && x.trim())
-        : [];
-      const nextPrior =
-        prevUrl && prevUrl !== u ? [prevUrl, ...prior.filter((x) => x !== prevUrl)].slice(0, 20) : prior.slice(0, 20);
+      const { nextPcm } = promoteCanonicalProjectCharacterMaster(plan, projectCharacterMastersRef.current, ch, u, {
+        source: PCM_SOURCE_USER_CANONICAL_LOCK,
+        approved: true,
+      });
       const now = new Date().toISOString();
-      const pcmNext = {
-        ...projectCharacterMastersRef.current,
-        [pcmKey]: {
-          ...prevRow,
-          characterId: ch.id,
-          characterName: ch.name,
-          masterImageUrl: u,
-          approved: true,
-          updatedAt: now,
-          source: PCM_SOURCE_USER_CANONICAL_LOCK,
-          pendingManualReview: false,
-          priorMasterImageUrls: nextPrior,
-        },
-      };
-      commitProjectCharacterMastersSync(pcmNext);
+      commitProjectCharacterMastersSync(nextPcm, "promote_scene_frame_to_canonical");
       setCharacterApprovalMap((prev) => ({
         ...prev,
         [pcmKey]: {
@@ -2962,10 +3524,77 @@ export function ScenografieProjectEditor({
           version: (prev[pcmKey]?.version ?? 0) + 1,
         },
       }));
-      addLog(`Master progetto da scena: «${ch.name}» ← ${shortUrl(u, 72)}`);
+      addLog(`${CANONICAL_PCM_LOG} promote_scene_frame «${ch.name}» ← ${shortUrl(u, 72)}`);
     },
     [plan, finalMontagePhase, scenografiaVideoPhase, commitProjectCharacterMastersSync, addLog]
   );
+
+  const applyMasterCanonicalSwap = useCallback(() => {
+    const masterToolsLocked =
+      finalMontagePhase === "assembly" ||
+      finalMontagePhase === "done" ||
+      scenografiaVideoPhase === "completed";
+    if (!plan || masterToolsLocked) return;
+    const a = findPlanCharacterByLocalId(plan, masterToolSwapA);
+    const b = findPlanCharacterByLocalId(plan, masterToolSwapB);
+    if (!a || !b || a.id === b.id) return;
+    const ok = window.confirm(
+      `Scambiare i master canonici tra «${a.name}» e «${b.name}»?\n\n` +
+        `Le approvazioni per entrambi verranno azzerate (da riapprovare).`,
+    );
+    if (!ok) return;
+    const { nextPcm, ka, kb } = swapCanonicalProjectCharacterMasters(plan, projectCharacterMastersRef.current, a, b);
+    commitProjectCharacterMastersSync(nextPcm, "manual_swap_canonical_rows");
+    setCharacterApprovalMap((prev) => ({
+      ...prev,
+      [ka]: { approved: false, approvedAt: null, version: (prev[ka]?.version ?? 0) + 1 },
+      [kb]: { approved: false, approvedAt: null, version: (prev[kb]?.version ?? 0) + 1 },
+    }));
+    addLog(`${CANONICAL_PCM_LOG} manual_swap «${a.name}» ↔ «${b.name}»`);
+  }, [
+    plan,
+    finalMontagePhase,
+    scenografiaVideoPhase,
+    masterToolSwapA,
+    masterToolSwapB,
+    commitProjectCharacterMastersSync,
+    addLog,
+  ]);
+
+  const applyMasterCanonicalCopy = useCallback(() => {
+    const masterToolsLocked =
+      finalMontagePhase === "assembly" ||
+      finalMontagePhase === "done" ||
+      scenografiaVideoPhase === "completed";
+    if (!plan || masterToolsLocked) return;
+    const fromC = findPlanCharacterByLocalId(plan, masterToolCopyFrom);
+    const toC = findPlanCharacterByLocalId(plan, masterToolCopyTo);
+    if (!fromC || !toC || fromC.id === toC.id) return;
+    const ok = window.confirm(
+      `Copiare il master canonico di «${fromC.name}» su «${toC.name}»?\n\n` +
+        `Il volto sorgente resta invariato; la destinazione va in revisione manuale e va riapprovata.`,
+    );
+    if (!ok) return;
+    const { nextPcm, kt } = reassignCanonicalMasterToCharacter(plan, projectCharacterMastersRef.current, fromC, toC, {
+      clearSource: false,
+      markPendingReview: true,
+      resetApprovalOnTarget: true,
+    });
+    commitProjectCharacterMastersSync(nextPcm, "manual_reassign_copy_canonical");
+    setCharacterApprovalMap((prev) => ({
+      ...prev,
+      [kt]: { approved: false, approvedAt: null, version: (prev[kt]?.version ?? 0) + 1 },
+    }));
+    addLog(`${CANONICAL_PCM_LOG} manual_reassign_copy ${fromC.name} → ${toC.name}`);
+  }, [
+    plan,
+    finalMontagePhase,
+    scenografiaVideoPhase,
+    masterToolCopyFrom,
+    masterToolCopyTo,
+    commitProjectCharacterMastersSync,
+    addLog,
+  ]);
 
   const shortDescription = useMemo(
     () => buildNarrativeHeaderDescription(plan, deletedSceneIds),
@@ -3236,7 +3865,7 @@ export function ScenografieProjectEditor({
             <button
               type="button"
               onClick={() => void handleMarkVideoCompleted()}
-              disabled={executing}
+              disabled={sceneExecuteBlocked}
               style={{
                 padding: "6px 10px",
                 borderRadius: 8,
@@ -3245,7 +3874,7 @@ export function ScenografieProjectEditor({
                 color: AX.text2,
                 fontWeight: 600,
                 fontSize: 11,
-                cursor: executing ? "not-allowed" : "pointer",
+                cursor: sceneExecuteBlocked ? "not-allowed" : "pointer",
               }}
             >
               Video libero: completato
@@ -3255,7 +3884,7 @@ export function ScenografieProjectEditor({
             <button
               type="button"
               onClick={() => void handleMarkFinalMontageDone()}
-              disabled={executing}
+              disabled={sceneExecuteBlocked}
               style={{
                 padding: "6px 10px",
                 borderRadius: 8,
@@ -3264,7 +3893,7 @@ export function ScenografieProjectEditor({
                 color: AX.electric,
                 fontWeight: 700,
                 fontSize: 11,
-                cursor: executing ? "not-allowed" : "pointer",
+                cursor: sceneExecuteBlocked ? "not-allowed" : "pointer",
               }}
             >
               Montaggio: completato
@@ -3291,6 +3920,77 @@ export function ScenografieProjectEditor({
             : finalMontagePhase === "done" || scenografiaVideoPhase === "completed"
               ? "Progetto completato: modifica disabilitata."
               : "Modifica disabilitata."}
+        </div>
+      )}
+
+      {plan && (
+        <div
+          style={{
+            marginBottom: 16,
+            padding: 14,
+            borderRadius: 12,
+            border: `1px solid rgba(59,130,246,0.35)`,
+            background: "rgba(30,58,138,0.12)",
+          }}
+        >
+          <div
+            style={{
+              fontSize: 11,
+              fontWeight: 800,
+              color: AX.electric,
+              textTransform: "uppercase",
+              letterSpacing: "0.06em",
+              marginBottom: 6,
+            }}
+          >
+            Verso il film finito
+          </div>
+          <div style={{ fontSize: 11, color: AX.muted, lineHeight: 1.45, marginBottom: 8 }}>
+            <strong style={{ color: AX.text2 }}>Stato reale del capitolo</strong> (clip, timeline, montaggio). Non è l&apos;anteprima del
+            wizard «da traccia»: quella resta una proposta finché non confermi qui.
+          </div>
+          <div style={{ fontSize: 13, color: AX.text, fontWeight: 700, lineHeight: 1.45, marginBottom: 8 }}>
+            {completionGaps.headline}
+          </div>
+          <div style={{ fontSize: 12, color: AX.text2, lineHeight: 1.5, marginBottom: 10 }}>
+            <strong style={{ color: AX.text }}>Prossimo passo consigliato:</strong> {completionGaps.nextStep}
+          </div>
+          {completionGaps.items.filter((x) => !x.ok).length > 0 ? (
+            <ul style={{ margin: 0, paddingLeft: 18, fontSize: 11, color: AX.muted, lineHeight: 1.55 }}>
+              {completionGaps.items
+                .filter((x) => !x.ok)
+                .slice(0, 7)
+                .map((x, i) => (
+                  <li key={`${x.label}-${i}`} style={{ marginBottom: 6 }}>
+                    <span style={{ color: AX.text2 }}>{x.label}</span>
+                    {x.deepLink ? (
+                      <>
+                        {" · "}
+                        <button
+                          type="button"
+                          disabled={pipelineLocked}
+                          onClick={() => applyRecoveryDeepLink(x.deepLink)}
+                          style={{
+                            background: "none",
+                            border: "none",
+                            color: AX.electric,
+                            cursor: pipelineLocked ? "not-allowed" : "pointer",
+                            textDecoration: "underline",
+                            padding: 0,
+                            font: "inherit",
+                            fontWeight: 700,
+                          }}
+                        >
+                          Apri il passaggio
+                        </button>
+                      </>
+                    ) : null}
+                  </li>
+                ))}
+            </ul>
+          ) : (
+            <div style={{ fontSize: 11, color: AX.muted }}>Controlli principali ok — passa al montaggio o alla consegna finale.</div>
+          )}
         </div>
       )}
 
@@ -3369,7 +4069,7 @@ export function ScenografieProjectEditor({
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
             placeholder="Descrivi la scena, la storia, i personaggi e l'ambientazione in italiano…"
-            disabled={planning || executing || pipelineLocked}
+            disabled={planning || sceneExecuteBlocked || pipelineLocked}
             style={{
               width: "100%",
               minHeight: PROMPT_TEXTAREA_MIN_PX,
@@ -3401,7 +4101,11 @@ export function ScenografieProjectEditor({
               {planError}
             </div>
           )}
-          {plan && (!executing || scenografiaPhase === "character_gen" || scenografiaPhase === "scene_gen") && (
+          {plan &&
+            (!executing ||
+              scenografiaPhase === "character_gen" ||
+              scenografiaPhase === "scene_gen" ||
+              sceneGenFlightActive) && (
           <>
           <div style={{ marginTop: 18, paddingTop: 16, borderTop: `1px solid ${AX.border}` }}>
             <div style={{ fontSize: 11, fontWeight: 800, color: AX.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 10 }}>
@@ -3475,7 +4179,7 @@ export function ScenografieProjectEditor({
               </label>
               <select
                 value={projectStyle.presetId}
-                disabled={projectStyleLocked || executing || scenografiaPhase !== "plan" || pipelineLocked}
+                disabled={projectStyleLocked || sceneExecuteBlocked || scenografiaPhase !== "plan" || pipelineLocked}
                 onChange={(e) => applyPresetChoice(e.target.value)}
                 style={{
                   width: "100%",
@@ -3486,7 +4190,7 @@ export function ScenografieProjectEditor({
                   background: AX.surface,
                   color: AX.text,
                   fontSize: 13,
-                  cursor: projectStyleLocked || executing || scenografiaPhase !== "plan" || pipelineLocked ? "not-allowed" : "pointer",
+                  cursor: projectStyleLocked || sceneExecuteBlocked || scenografiaPhase !== "plan" || pipelineLocked ? "not-allowed" : "pointer",
                 }}
               >
                 {imageStylePresets.map((p) => (
@@ -3506,7 +4210,7 @@ export function ScenografieProjectEditor({
           <button
             type="button"
             onClick={() => handlePlan(false)}
-            disabled={!prompt.trim() || planning || executing || pipelineLocked}
+            disabled={!prompt.trim() || planning || sceneExecuteBlocked || pipelineLocked}
             style={{
               padding: "9px 16px",
               borderRadius: 10,
@@ -3515,12 +4219,12 @@ export function ScenografieProjectEditor({
               color: "#fff",
               fontWeight: 700,
               fontSize: 12,
-              cursor: !prompt.trim() || planning || executing || pipelineLocked ? "not-allowed" : "pointer",
+              cursor: !prompt.trim() || planning || sceneExecuteBlocked || pipelineLocked ? "not-allowed" : "pointer",
               display: "flex",
               alignItems: "center",
               gap: 6,
               boxShadow: "0 6px 20px rgba(41,182,255,0.2)",
-              opacity: !prompt.trim() || planning || executing || pipelineLocked ? 0.5 : 1,
+              opacity: !prompt.trim() || planning || sceneExecuteBlocked || pipelineLocked ? 0.5 : 1,
             }}
             title="Analizza il prompt e costruisci / aggiorna il piano narrativo"
           >
@@ -3549,7 +4253,7 @@ export function ScenografieProjectEditor({
               <button
                 type="button"
                 onClick={handlePlanContinue}
-                disabled={!prompt.trim() || planning || executing || pipelineLocked}
+                disabled={!prompt.trim() || planning || sceneExecuteBlocked || pipelineLocked}
                 style={{
                   padding: "8px 14px",
                   borderRadius: 10,
@@ -3558,8 +4262,8 @@ export function ScenografieProjectEditor({
                   color: AX.violet,
                   fontWeight: 600,
                   fontSize: 12,
-                  cursor: !prompt.trim() || planning || executing || pipelineLocked ? "not-allowed" : "pointer",
-                  opacity: !prompt.trim() || planning || executing || pipelineLocked ? 0.45 : 1,
+                  cursor: !prompt.trim() || planning || sceneExecuteBlocked || pipelineLocked ? "not-allowed" : "pointer",
+                  opacity: !prompt.trim() || planning || sceneExecuteBlocked || pipelineLocked ? 0.45 : 1,
                 }}
                 title="Aggiunge sviluppi al piano senza cancellare le scene già presenti se restano valide"
               >
@@ -3635,6 +4339,7 @@ export function ScenografieProjectEditor({
       {/* FASE 2 — Generazione Personaggi */}
       {plan && (
         <div
+          id="ax-scenografie-anchor-cast"
           style={{ ...p2.shell, ...p2.shellHover(hoveredPhase === 2) }}
           onMouseEnter={() => setHoveredPhase(2)}
           onMouseLeave={() => setHoveredPhase(null)}
@@ -3647,11 +4352,43 @@ export function ScenografieProjectEditor({
             </div>
             <h2 style={p2.title}>Generazione Personaggi</h2>
             <p style={p2.sub}>
-              Rigenera, modifica il volto con il prompt, approva quando sei soddisfatto. Voice master ElevenLabs sotto
-              ogni card.
+              Narratori di progetto (voce ElevenLabs, senza volto) e sotto il cast con master immagine. Voice master
+              ElevenLabs sotto ogni personaggio.
             </p>
           </div>
           <div style={p2.body}>
+            <div style={{ marginBottom: 28 }} id="ax-scenografie-anchor-narrators">
+              <div
+                style={{
+                  fontSize: 11,
+                  fontWeight: 800,
+                  color: AX.muted,
+                  textTransform: "uppercase",
+                  letterSpacing: "0.08em",
+                  marginBottom: 10,
+                }}
+              >
+                Narratori
+              </div>
+              <ScenografieNarratorSection
+                ax={AX}
+                narrators={projectNarrators}
+                onChangeNarrators={setProjectNarrators}
+                disabled={pipelineLocked || sceneExecuteBlocked}
+              />
+            </div>
+            <div
+              style={{
+                fontSize: 11,
+                fontWeight: 800,
+                color: AX.muted,
+                textTransform: "uppercase",
+                letterSpacing: "0.08em",
+                marginBottom: 12,
+              }}
+            >
+              Personaggi · master volto
+            </div>
             {getCharactersNeedingMaster(plan).length === 0 ? (
               <p style={{ fontSize: 13, color: AX.text2, margin: 0, lineHeight: 1.55 }}>
                 Nessun personaggio di questo piano richiede un master immagine dedicato.
@@ -3668,6 +4405,8 @@ export function ScenografieProjectEditor({
                 const url = getDisplayMasterUrl(char, projectCharacterMasters);
                 const ap = approvalEntryForCharacter(characterApprovalMap, char);
                 const approved = ap?.approved === true;
+                const masterGate = { projectCharacterMasters, characterApprovalMap };
+                const readyForScenes = characterMasterReadyForScenes(char, masterGate);
                 const masterInFlight =
                   regeneratingCharId === char.id ||
                   (executing && scenografiaPhase === "character_gen" && batchMasterCharId === char.id);
@@ -3676,18 +4415,26 @@ export function ScenografieProjectEditor({
                 /** Disabilita controlli durante batch scene, batch master, o rigenerazione su un’altra card. */
                 const charCardControlsLocked =
                   masterInFlight ||
-                  executing ||
+                  sceneExecuteBlocked ||
                   (regeneratingCharId != null && regeneratingCharId !== char.id);
                 const hasMaster = !!url;
-                const cardBorder = approved && hasMaster ? AX.electric : hasMaster ? AX.border : "rgba(255,79,163,0.55)";
+                const cardBorder = readyForScenes
+                  ? AX.electric
+                  : hasMaster && approved && !readyForScenes
+                    ? "rgba(245,158,11,0.7)"
+                    : hasMaster
+                      ? AX.border
+                      : "rgba(255,79,163,0.55)";
                 const roleLab = characterRoleLabelIt(char);
                 const statusLineNoRole = masterInFlight
                   ? "In lavorazione"
-                  : approved
-                    ? "Approvato"
-                    : hasMaster
-                      ? "Pronto"
-                      : "In attesa";
+                  : readyForScenes
+                    ? "Approvato · pronto per scene e lock"
+                    : hasMaster && approved && !readyForScenes
+                      ? "Approvato in UI ma non ammesso in pipeline (revisione / sorgente master)"
+                      : hasMaster
+                        ? "Master in PCM — approva per sbloccare scene"
+                        : "In attesa";
                 return (
                   <div
                     key={char.id}
@@ -3919,51 +4666,37 @@ export function ScenografieProjectEditor({
                       <div style={{ marginTop: 12, paddingTop: 12, borderTop: `1px solid ${AX.border}`, textAlign: "left" }}>
                         <div style={{ fontSize: 10, fontWeight: 800, color: AX.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>
                           <HiMicrophone size={12} style={{ verticalAlign: "middle", marginRight: 4 }} />
-                          Voice master · ElevenLabs
+                          Voice master · ElevenLabs (catalogo API + preset IT)
                         </div>
                         {(() => {
                           const vRaw = voiceMasterRawForRef(characterVoiceMasters, char.id, plan);
                           const vm = normalizeCharacterVoiceMaster(vRaw, stableCharacterKey(char));
                           return (
                             <>
-                              <select
-                                value={vm.voiceId || ""}
+                              <ScenografieCharacterVoicePicker
+                                ax={AX}
+                                vm={vm}
                                 disabled={charCardControlsLocked || pipelineLocked}
-                                onChange={(e) => {
-                                  const v = ELEVENLABS_VOICE_PRESETS.find((x) => x.voiceId === e.target.value);
-                                  patchCharacterVoiceMaster(char.id, {
-                                    voiceId: e.target.value,
-                                    voiceLabel: v?.label || "",
-                                    voiceProvider: "elevenlabs",
-                                  });
-                                }}
+                                onAssign={(partial) => patchCharacterVoiceMaster(char.id, partial)}
+                              />
+                              <label
                                 style={{
-                                  width: "100%",
-                                  padding: "8px 10px",
-                                  borderRadius: 10,
-                                  border: `1px solid ${AX.border}`,
-                                  background: AX.bg,
-                                  color: AX.text,
+                                  display: "flex",
+                                  alignItems: "center",
+                                  gap: 8,
                                   fontSize: 11,
-                                  marginBottom: 8,
-                                  boxSizing: "border-box",
+                                  color: AX.text2,
+                                  cursor: charCardControlsLocked || pipelineLocked ? "not-allowed" : "pointer",
+                                  marginTop: 10,
                                 }}
                               >
-                                <option value="">— Voce non impostata —</option>
-                                {ELEVENLABS_VOICE_PRESETS.map((v) => (
-                                  <option key={v.voiceId} value={v.voiceId}>
-                                    {v.label}
-                                  </option>
-                                ))}
-                              </select>
-                              <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11, color: AX.text2, cursor: "pointer" }}>
                                 <input
                                   type="checkbox"
                                   checked={vm.isNarratorDefault}
                                   disabled={charCardControlsLocked || pipelineLocked}
                                   onChange={(e) => patchCharacterVoiceMaster(char.id, { isNarratorDefault: e.target.checked })}
                                 />
-                                Default narratore progetto
+                                Default narratore progetto (compatibile con narratore dedicato in roadmap)
                               </label>
                             </>
                           );
@@ -3975,13 +4708,134 @@ export function ScenografieProjectEditor({
               })}
             </div>
             )}
+            {getCharactersNeedingMaster(plan).length > 0 ? (
+              <details
+                style={{
+                  marginTop: 20,
+                  padding: "12px 14px",
+                  borderRadius: 12,
+                  border: `1px solid ${AX.border}`,
+                  background: AX.bg,
+                }}
+              >
+                <summary style={{ cursor: "pointer", fontWeight: 700, fontSize: 12, color: AX.text }}>
+                  Correzione master canonici (PCM)
+                </summary>
+                <p style={{ fontSize: 11, color: AX.text2, lineHeight: 1.5, margin: "10px 0 12px" }}>
+                  Operano solo su <strong>projectCharacterMasters</strong>; le mappe legacy si rigenerano in automatico.
+                  Dopo swap o copia, riapprova le card interessate.
+                </p>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center", marginBottom: 10 }}>
+                  <span style={{ fontSize: 11, color: AX.text2 }}>Scambia master tra</span>
+                  <select
+                    value={masterToolSwapA}
+                    onChange={(e) => setMasterToolSwapA(e.target.value)}
+                    style={{ padding: "6px 8px", borderRadius: 8, border: `1px solid ${AX.border}`, background: AX.surface, color: AX.text, fontSize: 11 }}
+                  >
+                    <option value="">—</option>
+                    {getCharactersNeedingMaster(plan).map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name}
+                      </option>
+                    ))}
+                  </select>
+                  <span style={{ fontSize: 11, color: AX.text2 }}>e</span>
+                  <select
+                    value={masterToolSwapB}
+                    onChange={(e) => setMasterToolSwapB(e.target.value)}
+                    style={{ padding: "6px 8px", borderRadius: 8, border: `1px solid ${AX.border}`, background: AX.surface, color: AX.text, fontSize: 11 }}
+                  >
+                    <option value="">—</option>
+                    {getCharactersNeedingMaster(plan).map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={applyMasterCanonicalSwap}
+                    disabled={
+                      !masterToolSwapA ||
+                      !masterToolSwapB ||
+                      masterToolSwapA === masterToolSwapB ||
+                      pipelineLocked
+                    }
+                    style={{
+                      padding: "6px 12px",
+                      borderRadius: 8,
+                      border: `1px solid ${AX.violet}`,
+                      background: "transparent",
+                      color: AX.violet,
+                      fontWeight: 700,
+                      fontSize: 11,
+                      cursor: pipelineLocked ? "not-allowed" : "pointer",
+                      opacity: pipelineLocked ? 0.45 : 1,
+                    }}
+                  >
+                    Scambia
+                  </button>
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
+                  <span style={{ fontSize: 11, color: AX.text2 }}>Copia master di</span>
+                  <select
+                    value={masterToolCopyFrom}
+                    onChange={(e) => setMasterToolCopyFrom(e.target.value)}
+                    style={{ padding: "6px 8px", borderRadius: 8, border: `1px solid ${AX.border}`, background: AX.surface, color: AX.text, fontSize: 11 }}
+                  >
+                    <option value="">—</option>
+                    {getCharactersNeedingMaster(plan).map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name}
+                      </option>
+                    ))}
+                  </select>
+                  <span style={{ fontSize: 11, color: AX.text2 }}>su</span>
+                  <select
+                    value={masterToolCopyTo}
+                    onChange={(e) => setMasterToolCopyTo(e.target.value)}
+                    style={{ padding: "6px 8px", borderRadius: 8, border: `1px solid ${AX.border}`, background: AX.surface, color: AX.text, fontSize: 11 }}
+                  >
+                    <option value="">—</option>
+                    {getCharactersNeedingMaster(plan).map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={applyMasterCanonicalCopy}
+                    disabled={
+                      !masterToolCopyFrom ||
+                      !masterToolCopyTo ||
+                      masterToolCopyFrom === masterToolCopyTo ||
+                      pipelineLocked
+                    }
+                    style={{
+                      padding: "6px 12px",
+                      borderRadius: 8,
+                      border: `1px solid ${AX.border}`,
+                      background: AX.surface,
+                      color: AX.text,
+                      fontWeight: 700,
+                      fontSize: 11,
+                      cursor: pipelineLocked ? "not-allowed" : "pointer",
+                      opacity: pipelineLocked ? 0.45 : 1,
+                    }}
+                  >
+                    Copia su destinazione
+                  </button>
+                </div>
+              </details>
+            ) : null}
           </div>
           <div style={p2.footer}>
             {scenografiaPhase === "plan" && projectStyle && mastersStillMissingForPlan > 0 && (
               <button
                 type="button"
                 onClick={runProtagonistMastersBatch}
-                disabled={executing || planning || pipelineLocked}
+                disabled={sceneExecuteBlocked || planning || pipelineLocked}
                 style={{
                   padding: "9px 16px",
                   borderRadius: 10,
@@ -3990,11 +4844,11 @@ export function ScenografieProjectEditor({
                   color: "#fff",
                   fontSize: 12,
                   fontWeight: 700,
-                  cursor: executing || planning || pipelineLocked ? "not-allowed" : "pointer",
+                  cursor: sceneExecuteBlocked || planning || pipelineLocked ? "not-allowed" : "pointer",
                   display: "flex",
                   alignItems: "center",
                   gap: 6,
-                  opacity: executing || planning || pipelineLocked ? 0.55 : 1,
+                  opacity: sceneExecuteBlocked || planning || pipelineLocked ? 0.55 : 1,
                   boxShadow: "0 6px 20px rgba(41,182,255,0.2)",
                 }}
               >
@@ -4008,6 +4862,7 @@ export function ScenografieProjectEditor({
       {/* FASE 3 — Generazione Scene */}
       {plan && (
         <div
+          id="ax-scenografie-anchor-scenes"
           style={{ ...p3.shell, ...p3.shellHover(hoveredPhase === 3) }}
           onMouseEnter={() => setHoveredPhase(3)}
           onMouseLeave={() => setHoveredPhase(null)}
@@ -4034,17 +4889,130 @@ export function ScenografieProjectEditor({
               />
               Repair pass (rifinitura volti dopo identity lock — applicato in pipeline scene)
             </label>
-            {executing && (
-              <div style={{ marginBottom: 14, padding: 12, borderRadius: 10, border: `1px solid ${AX.border}`, background: AX.surface }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <div style={{ width: 16, height: 16, border: "2px solid rgba(41,182,255,0.3)", borderTopColor: AX.electric, borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
-                  <span style={{ fontSize: 13, color: AX.electric, fontWeight: 600 }}>{imageStatus || "Elaborazione…"}</span>
-                  {imageProgress > 0 && imageProgress < 100 && (
-                    <span style={{ fontSize: 12, color: AX.text2 }}>{imageProgress}%</span>
-                  )}
-                  <button type="button" onClick={handleAbort} style={{ marginLeft: "auto", padding: "4px 10px", borderRadius: 6, border: `1px solid rgba(239,68,68,0.4)`, background: "transparent", color: "#ef4444", fontSize: 11, cursor: "pointer" }}>
-                    Interrompi
-                  </button>
+            {showSceneGenProgressBanner && (
+              <div
+                style={{
+                  marginBottom: 14,
+                  borderRadius: 10,
+                  border: `1px solid ${AX.border}`,
+                  background: AX.surface,
+                  overflow: "hidden",
+                }}
+              >
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "minmax(280px, 1.45fr) minmax(120px, 1.55fr) auto",
+                    alignItems: "stretch",
+                    minHeight: 58,
+                  }}
+                >
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 10,
+                      padding: "12px 14px",
+                      borderRight: `1px solid ${AX.border}`,
+                      minWidth: 0,
+                    }}
+                  >
+                    <div
+                      style={{
+                        width: 16,
+                        height: 16,
+                        flexShrink: 0,
+                        border: "2px solid rgba(41,182,255,0.3)",
+                        borderTopColor: AX.electric,
+                        borderRadius: "50%",
+                        animation: "spin 0.8s linear infinite",
+                      }}
+                    />
+                    <div
+                      style={{
+                        fontSize: 13,
+                        color: AX.electric,
+                        fontWeight: 600,
+                        lineHeight: 1.45,
+                        whiteSpace: "normal",
+                        wordBreak: "break-word",
+                        overflowWrap: "anywhere",
+                        minWidth: 0,
+                      }}
+                    >
+                      {imageStatus || "Elaborazione…"}
+                    </div>
+                  </div>
+                  <div
+                    style={{
+                      display: "flex",
+                      flexDirection: "column",
+                      justifyContent: "center",
+                      gap: 8,
+                      padding: "10px 14px",
+                      borderRight: `1px solid ${AX.border}`,
+                      minWidth: 0,
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+                      <span style={{ fontSize: 11, color: AX.muted, fontWeight: 700, letterSpacing: "0.04em" }}>
+                        Avanzamento
+                      </span>
+                      <span
+                        style={{
+                          fontSize: 13,
+                          color: AX.text2,
+                          fontWeight: 800,
+                          fontVariantNumeric: "tabular-nums",
+                        }}
+                        aria-live="polite"
+                      >
+                        {Math.min(100, Math.max(0, Math.round(Number(imageProgress) || 0)))}%
+                      </span>
+                    </div>
+                    <div
+                      role="progressbar"
+                      aria-valuemin={0}
+                      aria-valuemax={100}
+                      aria-valuenow={Math.min(100, Math.max(0, Math.round(Number(imageProgress) || 0)))}
+                      style={{
+                        height: 12,
+                        borderRadius: 6,
+                        background: "rgba(255,255,255,0.06)",
+                        overflow: "hidden",
+                        border: `1px solid ${AX.border}`,
+                      }}
+                    >
+                      <div
+                        style={{
+                          height: "100%",
+                          width: `${Math.min(100, Math.max(0, Number(imageProgress) || 0))}%`,
+                          background: `linear-gradient(90deg, ${AX.electric}, rgba(123,77,255,0.95))`,
+                          borderRadius: 5,
+                          transition: "width 0.4s ease",
+                        }}
+                      />
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", padding: "10px 14px" }}>
+                    <button
+                      type="button"
+                      onClick={handleAbort}
+                      style={{
+                        padding: "6px 12px",
+                        borderRadius: 6,
+                        border: `1px solid rgba(239,68,68,0.45)`,
+                        background: "transparent",
+                        color: "#ef4444",
+                        fontSize: 11,
+                        fontWeight: 700,
+                        cursor: "pointer",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      Interrompi
+                    </button>
+                  </div>
                 </div>
               </div>
             )}
@@ -4143,7 +5111,7 @@ export function ScenografieProjectEditor({
               const planSceneRow = plan?.scenes?.find((s) => s.id === r.sceneId);
               const rowIsEnvironment = planSceneRow ? isEnvironmentScene(planSceneRow) : false;
               const sceneBusy = sceneEditBusyId === r.sceneId;
-              const pipelineBusy = executing || !!sceneEditBusyId || pipelineLocked;
+              const pipelineBusy = sceneExecuteBlocked || !!sceneEditBusyId || pipelineLocked;
               const btnBase = {
                 padding: "7px 8px",
                 borderRadius: 8,
@@ -4160,6 +5128,7 @@ export function ScenografieProjectEditor({
               return (
                 <div
                   key={r.sceneId}
+                  id={`ax-scenografie-scene-${r.sceneId}`}
                   role="group"
                   aria-label={`Scena ${r.title}`}
                   draggable={canDragGallery}
@@ -4185,6 +5154,10 @@ export function ScenografieProjectEditor({
                     outline: sceneCardFocusId === r.sceneId ? `2px solid ${AX.electric}` : "none",
                     outlineOffset: 0,
                     cursor: canDragGallery ? "grab" : "default",
+                    display: "flex",
+                    flexDirection: "column",
+                    height: "100%",
+                    minHeight: 0,
                   }}
                   onClick={() => setSceneCardFocusId(r.sceneId)}
                 >
@@ -4264,6 +5237,186 @@ export function ScenografieProjectEditor({
                       </div>
                     )}
                   </div>
+                  {planSceneRow ? (() => {
+                    const sem = deriveSceneOperationalSemantics(planSceneRow, chapterPayloadForOps);
+                    const checklist = buildSceneChecklistRuntimeItems(planSceneRow, chapterPayloadForOps);
+                    const semColor =
+                      sem.key === SCENE_OPERATIONAL.SCENE_MONTAGE_READY
+                        ? "#4ade80"
+                        : sem.key === SCENE_OPERATIONAL.CLIP_FAILED || sem.key === SCENE_OPERATIONAL.BLOCKED_CAST
+                          ? "#fb7185"
+                          : sem.key === SCENE_OPERATIONAL.CLIP_RECOVERABLE ||
+                              sem.key === SCENE_OPERATIONAL.CLIPS_NOT_MONTAGE_READY
+                            ? "#fbbf24"
+                            : AX.electric;
+                    return (
+                      <div
+                        style={{ padding: "8px 10px", borderTop: `1px solid ${AX.border}`, background: AX.surface }}
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                          <span
+                            style={{
+                              fontSize: 10,
+                              fontWeight: 800,
+                              color: semColor,
+                              textTransform: "uppercase",
+                              letterSpacing: "0.04em",
+                            }}
+                          >
+                            Stato: {sem.labelIt}
+                          </span>
+                          <button
+                            type="button"
+                            disabled={pipelineLocked}
+                            onClick={() => applyRecoveryDeepLink({ focus: "clips", sceneId: r.sceneId })}
+                            style={{
+                              padding: "4px 8px",
+                              borderRadius: 8,
+                              border: `1px solid ${AX.electric}`,
+                              background: "transparent",
+                              color: AX.electric,
+                              fontSize: 10,
+                              fontWeight: 700,
+                              cursor: pipelineLocked ? "not-allowed" : "pointer",
+                            }}
+                          >
+                            Apri area clip
+                          </button>
+                        </div>
+                        <details style={{ fontSize: 10, color: AX.text2 }}>
+                          <summary style={{ cursor: "pointer", userSelect: "none", fontWeight: 700 }}>Checklist (dati reali)</summary>
+                          <ul style={{ margin: "8px 0 0", paddingLeft: 16, lineHeight: 1.5 }}>
+                            {checklist.map((it) => (
+                              <li key={it.id} style={{ marginBottom: 4 }}>
+                                <span style={{ color: AX.text }}>
+                                  {it.state === "done" ? "✓" : it.state === "blocked" ? "!" : "○"} {it.label}
+                                </span>
+                                {it.hint ? (
+                                  <span style={{ color: AX.muted, display: "block", marginTop: 2 }}>{it.hint}</span>
+                                ) : null}
+                                {it.deepLink && it.state !== "done" ? (
+                                  <div style={{ marginTop: 4 }}>
+                                    <button
+                                      type="button"
+                                      disabled={pipelineLocked}
+                                      onClick={() => applyRecoveryDeepLink(it.deepLink)}
+                                      style={{
+                                        padding: "2px 6px",
+                                        borderRadius: 6,
+                                        border: `1px solid ${AX.border}`,
+                                        background: AX.card,
+                                        color: AX.electric,
+                                        fontSize: 10,
+                                        fontWeight: 700,
+                                        cursor: pipelineLocked ? "not-allowed" : "pointer",
+                                      }}
+                                    >
+                                      Vai
+                                    </button>
+                                  </div>
+                                ) : null}
+                              </li>
+                            ))}
+                          </ul>
+                        </details>
+                      </div>
+                    );
+                  })() : null}
+                  {(() => {
+                    const baseU = r.sceneBaseUrl || r.baseImageUrl;
+                    const finalU = r.sceneFinalUrl;
+                    const bStr = baseU != null ? String(baseU).trim() : "";
+                    const fStr = finalU != null ? String(finalU).trim() : "";
+                    const distinct = Boolean(bStr && fStr && bStr !== fStr);
+                    const isBase = r.sceneDisplayedVariant === SCENE_DISPLAY_VARIANT.BASE;
+                    const badge = (label, on) => ({
+                      fontSize: 10,
+                      fontWeight: 700,
+                      padding: "4px 8px",
+                      borderRadius: 8,
+                      border: `1px solid ${on ? AX.electric : AX.border}`,
+                      color: on ? "#fff" : AX.text2,
+                      background: on ? "rgba(41,182,255,0.35)" : AX.card,
+                    });
+                    return (
+                      <div
+                        style={{
+                          padding: "10px 10px 8px",
+                          borderTop: `1px solid ${AX.border}`,
+                          background: "rgba(129,140,248,0.07)",
+                        }}
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <div
+                          style={{
+                            fontSize: 10,
+                            fontWeight: 800,
+                            color: AX.muted,
+                            textTransform: "uppercase",
+                            letterSpacing: "0.06em",
+                            marginBottom: 8,
+                          }}
+                        >
+                          Variante immagine
+                        </div>
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8, alignItems: "center" }}>
+                          <span style={badge("Base", isBase)}>Base</span>
+                          <span style={badge("Finale", !isBase)}>Finale</span>
+                          <span style={badge(`Attiva · ${isBase ? "base" : "finale"}`, true)}>Attiva</span>
+                        </div>
+                        {distinct ? (
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                            <button
+                              type="button"
+                              disabled={pipelineBusy || isBase}
+                              onClick={() => chooseSceneDisplayVariant(r.sceneId, SCENE_DISPLAY_VARIANT.BASE)}
+                              style={{
+                                flex: "1 1 130px",
+                                padding: "8px 10px",
+                                borderRadius: 10,
+                                border: `1px solid ${AX.border}`,
+                                background: isBase ? "rgba(41,182,255,0.2)" : AX.surface,
+                                color: AX.text,
+                                fontWeight: 700,
+                                fontSize: 11,
+                                cursor: pipelineBusy || isBase ? "not-allowed" : "pointer",
+                                opacity: pipelineBusy ? 0.5 : 1,
+                              }}
+                            >
+                              Usa scena base
+                            </button>
+                            <button
+                              type="button"
+                              disabled={pipelineBusy || !isBase}
+                              onClick={() => chooseSceneDisplayVariant(r.sceneId, SCENE_DISPLAY_VARIANT.FINAL)}
+                              style={{
+                                flex: "1 1 130px",
+                                padding: "8px 10px",
+                                borderRadius: 10,
+                                border: `1px solid ${AX.border}`,
+                                background: !isBase ? "rgba(41,182,255,0.2)" : AX.surface,
+                                color: AX.text,
+                                fontWeight: 700,
+                                fontSize: 11,
+                                cursor: pipelineBusy || !isBase ? "not-allowed" : "pointer",
+                                opacity: pipelineBusy ? 0.5 : 1,
+                              }}
+                            >
+                              Usa scena finale
+                            </button>
+                          </div>
+                        ) : (
+                          <p style={{ fontSize: 10, color: AX.muted, margin: 0, lineHeight: 1.45 }}>
+                            Base e finale coincidono o una sola versione è disponibile — nessuno scambio necessario.
+                          </p>
+                        )}
+                        <p style={{ fontSize: 10, color: AX.muted, margin: "8px 0 0", lineHeight: 1.45 }}>
+                          Galleria, clip e Kling usano sempre la variante <strong style={{ color: AX.text }}>attiva</strong> (persistita sul capitolo).
+                        </p>
+                      </div>
+                    );
+                  })()}
                   <div
                     style={{
                       display: "flex",
@@ -4330,12 +5483,6 @@ export function ScenografieProjectEditor({
                         }}
                         onClick={(e) => e.stopPropagation()}
                       >
-                        <div style={{ fontSize: 10, fontWeight: 800, color: AX.electric, marginBottom: 6, letterSpacing: "0.04em" }}>
-                          Master progetto da questa scena
-                        </div>
-                        <p style={{ margin: "0 0 8px", fontSize: 10, color: AX.muted, lineHeight: 1.45 }}>
-                          Imposta come master ufficiale il fotogramma corrente (tutto il workspace). I master precedenti restano in archivio sulla riga PCM.
-                        </p>
                         <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
                           {ids.map((cid) => {
                             const c = plan.characters.find((x) => x.id === cid);
@@ -4433,7 +5580,17 @@ export function ScenografieProjectEditor({
                       </div>
                     </div>
                   )}
-                  <div style={{ padding: "8px 10px", display: "flex", alignItems: "center", gap: 8 }}>
+                  <div
+                    style={{
+                      padding: "8px 10px",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8,
+                      marginTop: "auto",
+                      borderTop: `1px solid ${AX.border}`,
+                      background: AX.surface,
+                    }}
+                  >
                     <input
                       type="checkbox"
                       checked={selectedSceneIds.includes(r.sceneId)}
@@ -4487,7 +5644,7 @@ export function ScenografieProjectEditor({
               <button
                 type="button"
                 onClick={runGenerateAllPlannedScenes}
-                disabled={executing || planning || pipelineLocked}
+                disabled={sceneExecuteBlocked || planning || pipelineLocked}
                 style={{
                   padding: "9px 16px",
                   borderRadius: 10,
@@ -4496,11 +5653,11 @@ export function ScenografieProjectEditor({
                   color: "#fff",
                   fontSize: 12,
                   fontWeight: 700,
-                  cursor: executing || planning || pipelineLocked ? "not-allowed" : "pointer",
+                  cursor: sceneExecuteBlocked || planning || pipelineLocked ? "not-allowed" : "pointer",
                   display: "flex",
                   alignItems: "center",
                   gap: 6,
-                  opacity: executing || planning || pipelineLocked ? 0.55 : 1,
+                  opacity: sceneExecuteBlocked || planning || pipelineLocked ? 0.55 : 1,
                   boxShadow: "0 6px 20px rgba(41,182,255,0.2)",
                 }}
                 title="Genera in batch tutte le scene del piano che non hanno ancora un'immagine"
@@ -4512,7 +5669,7 @@ export function ScenografieProjectEditor({
               <button
                 type="button"
                 onClick={runGenerateSelectedScenes}
-                disabled={executing || planning || pipelineLocked || selectedMissingCount === 0}
+                disabled={sceneExecuteBlocked || planning || pipelineLocked || selectedMissingCount === 0}
                 style={{
                   padding: "8px 14px",
                   borderRadius: 10,
@@ -4522,13 +5679,13 @@ export function ScenografieProjectEditor({
                   fontSize: 12,
                   fontWeight: 600,
                   cursor:
-                    executing || planning || pipelineLocked || selectedMissingCount === 0
+                    sceneExecuteBlocked || planning || pipelineLocked || selectedMissingCount === 0
                       ? "not-allowed"
                       : "pointer",
                   display: "flex",
                   alignItems: "center",
                   gap: 6,
-                  opacity: executing || planning || pipelineLocked || selectedMissingCount === 0 ? 0.45 : 1,
+                  opacity: sceneExecuteBlocked || planning || pipelineLocked || selectedMissingCount === 0 ? 0.45 : 1,
                 }}
                 title="Genera in batch solo le scene spuntate che non hanno ancora un'immagine"
               >
@@ -4557,6 +5714,7 @@ export function ScenografieProjectEditor({
       {/* FASE 4 — Generazione Clip video */}
       {(approvedScenesForClips.length > 0 || clipsReadyForFinalMontage(gatePayload)) && (
         <div
+          id="ax-scenografie-anchor-clips"
           style={{ ...p4.shell, ...p4.shellHover(hoveredPhase === 4) }}
           onMouseEnter={() => setHoveredPhase(4)}
           onMouseLeave={() => setHoveredPhase(null)}
@@ -4648,12 +5806,20 @@ export function ScenografieProjectEditor({
                         const effDur = resolveClipDurationSeconds(clip);
                         const genOk = getClipGenerationReadiness(clip, {
                           characterVoiceMasters,
+                          projectCharacterMasters,
                           plan,
                           sceneResults,
                         }).ok;
+                        const clipOp = deriveClipOperationalSemantics(clip, {
+                          plan,
+                          characterVoiceMasters,
+                          projectCharacterMasters,
+                          sceneResults,
+                        });
                         return (
                           <div
                             key={clip.id}
+                            id={`ax-scenografie-clip-${clip.id}`}
                             style={{
                               padding: 12,
                               borderRadius: 10,
@@ -4664,6 +5830,24 @@ export function ScenografieProjectEditor({
                             <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", gap: 8, marginBottom: 8, alignItems: "center" }}>
                               <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
                                 <span style={{ fontSize: 11, fontWeight: 800, color: AX.magenta }}>{stLabel}</span>
+                                <span
+                                  style={{
+                                    fontSize: 10,
+                                    fontWeight: 800,
+                                    color:
+                                      clipOp.key === CLIP_OPERATIONAL.FAILED ||
+                                      clipOp.key === CLIP_OPERATIONAL.FAILED_RECOVERABLE
+                                        ? "#fb7185"
+                                        : clipOp.key === CLIP_OPERATIONAL.BLOCKED
+                                          ? "#fbbf24"
+                                          : AX.muted,
+                                    textTransform: "uppercase",
+                                    letterSpacing: "0.04em",
+                                  }}
+                                  title="Stato operativo (AXSTUDIO)"
+                                >
+                                  {clipOperationalLabelIt(clipOp.key)}
+                                </span>
                                 <span
                                   style={{
                                     fontSize: 10,
@@ -4705,7 +5889,14 @@ export function ScenografieProjectEditor({
                             )}
                             {clip.lastGenerationError && clip.status === SCENE_VIDEO_CLIP_STATUS.FAILED && (
                               <div style={{ fontSize: 10, color: "#fca5a5", marginBottom: 8, lineHeight: 1.45 }}>
-                                {clip.lastGenerationError}
+                                <strong>Errore clip:</strong> {clip.lastWorkflowFailure?.errorMessageUser || clip.lastGenerationError}
+                                {clip.lastWorkflowFailure?.suggestedAction ? (
+                                  <span style={{ display: "block", marginTop: 4, color: AX.muted }}>
+                                    →{" "}
+                                    {SUGGESTED_ACTION_LABEL_IT[clip.lastWorkflowFailure.suggestedAction] ||
+                                      clip.lastWorkflowFailure.suggestedAction}
+                                  </span>
+                                ) : null}
                               </div>
                             )}
                             {clip.videoUrl && (
@@ -4831,7 +6022,11 @@ export function ScenografieProjectEditor({
           sceneResults={sceneResults}
           approvedScenes={approvedScenesForClips}
           characterVoiceMasters={characterVoiceMasters}
+          projectCharacterMasters={projectCharacterMasters}
+          projectNarrators={projectNarrators}
           onVoiceMasterPatch={patchCharacterVoiceMaster}
+          directorProject={projectId ? { id: projectId, title: projectTitle } : null}
+          directorChapter={chapterId ? { id: chapterId, ordinal: chapterOrdinal } : null}
           clip={clipBuilderOpenClip}
           onPatch={patchActiveClip}
           onClose={closeClipBuilder}
@@ -4844,7 +6039,14 @@ export function ScenografieProjectEditor({
       )}
 
             {clipsReadyForFinalMontage(gatePayload) && (
-            <div style={{ marginTop: approvedScenesForClips.length > 0 ? 22 : 0, paddingTop: approvedScenesForClips.length > 0 ? 18 : 0, borderTop: approvedScenesForClips.length > 0 ? `1px solid ${AX.border}` : "none" }}>
+            <div
+              id="ax-scenografie-anchor-timeline"
+              style={{
+                marginTop: approvedScenesForClips.length > 0 ? 22 : 0,
+                paddingTop: approvedScenesForClips.length > 0 ? 18 : 0,
+                borderTop: approvedScenesForClips.length > 0 ? `1px solid ${AX.border}` : "none",
+              }}
+            >
               <div style={{ fontSize: 11, fontWeight: 800, color: AX.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8 }}>
                 Timeline / storyboard
               </div>
@@ -5123,7 +6325,7 @@ export function ScenografieProjectEditor({
               <button
                 type="button"
                 onClick={() => void handleMarkVideoCompleted()}
-                disabled={executing}
+                disabled={sceneExecuteBlocked}
                 style={{
                   padding: "6px 10px",
                   borderRadius: 8,
@@ -5132,7 +6334,7 @@ export function ScenografieProjectEditor({
                   color: AX.text2,
                   fontWeight: 600,
                   fontSize: 11,
-                  cursor: executing ? "not-allowed" : "pointer",
+                  cursor: sceneExecuteBlocked ? "not-allowed" : "pointer",
                 }}
               >
                 Video libero: completato
@@ -5142,7 +6344,7 @@ export function ScenografieProjectEditor({
               <button
                 type="button"
                 onClick={() => void handleMarkFinalMontageDone()}
-                disabled={executing}
+                disabled={sceneExecuteBlocked}
                 style={{
                   padding: "6px 10px",
                   borderRadius: 8,
@@ -5151,7 +6353,7 @@ export function ScenografieProjectEditor({
                   color: AX.electric,
                   fontWeight: 700,
                   fontSize: 11,
-                  cursor: executing ? "not-allowed" : "pointer",
+                  cursor: sceneExecuteBlocked ? "not-allowed" : "pointer",
                 }}
               >
                 Montaggio: completato
@@ -5163,49 +6365,638 @@ export function ScenografieProjectEditor({
 
       {/* ── Fase 5: auto-montaggio (struttura sequenza) ── */}
       {finalMontagePhase === "assembly" && (
-        <div style={{ marginBottom: 22, padding: 16, borderRadius: 14, background: "rgba(123,77,255,0.08)", border: `1px solid rgba(123,77,255,0.35)` }}>
+        <div
+          id="ax-scenografie-anchor-montage"
+          style={{ marginBottom: 22, padding: 16, borderRadius: 14, background: "rgba(123,77,255,0.08)", border: `1px solid rgba(123,77,255,0.35)` }}
+        >
           <div style={{ fontSize: 10, fontWeight: 800, color: AX.violet, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>Fase 5 · Montaggio finale</div>
-          <h3 style={{ fontSize: 15, fontWeight: 700, color: AX.text, margin: "0 0 8px" }}>Auto-montaggio narrativo</h3>
-          <p style={{ fontSize: 12, color: AX.text2, lineHeight: 1.55, marginBottom: 12 }}>
-            Sequenza registrata dalla timeline approvata. Il rendering del filmato unico e le transizioni saranno gestiti dal motore dedicato.
-          </p>
+          <h3 style={{ fontSize: 15, fontWeight: 700, color: AX.text, margin: "0 0 8px" }}>Montaggio reale (MVP)</h3>
+          {workspaceMontageContext && workspaceMontageContext.chaptersCount > 1 ? (
+            <div
+              style={{
+                marginBottom: 12,
+                padding: "10px 12px",
+                borderRadius: 12,
+                background: "rgba(251,191,36,0.08)",
+                border: "1px solid rgba(251,191,36,0.35)",
+                fontSize: 12,
+                color: AX.text2,
+                lineHeight: 1.5,
+              }}
+            >
+              <strong style={{ color: AX.text }}>Progetto con più capitoli</strong>
+              {workspaceMontageContext.filmDeliveryLabel ? (
+                <span style={{ color: AX.muted }}>
+                  {" "}
+                  · Consegna complessiva:{" "}
+                  {FILM_DELIVERY_LABEL_IT[workspaceMontageContext.filmDeliveryLabel] ||
+                    workspaceMontageContext.filmDeliveryLabel}
+                </span>
+              ) : null}
+              <div style={{ marginTop: 6 }}>
+                {workspaceMontageContext.thisIsPlayableSource
+                  ? "Questo capitolo contiene il file che AXSTUDIO usa in Home per la riproduzione."
+                  : workspaceMontageContext.playableSourceChapterId
+                    ? "Il file usato in Home è salvato su un altro capitolo: apri la scheda progetto e seleziona il capitolo giusto se devi verificare il MP4."
+                    : "Chiudi il montaggio capitolo per capitolo; la Home sintetizza il miglior file disponibile."}
+                {workspaceMontageContext.thisIsRecoveryTarget ? " Qui ti indichiamo come punto di ripartenza per sistemare errori o stati incoerenti." : ""}
+              </div>
+              {workspaceMontageContext.hint ? (
+                <div style={{ marginTop: 6, fontSize: 11, color: AX.muted }}>{workspaceMontageContext.hint}</div>
+              ) : null}
+            </div>
+          ) : null}
+          <div
+            style={{
+              marginBottom: 12,
+              padding: "12px 14px",
+              borderRadius: 12,
+              background: "rgba(74,222,128,0.08)",
+              border: `1px solid rgba(74,222,128,0.35)`,
+              fontSize: 13,
+              color: AX.text,
+              lineHeight: 1.5,
+            }}
+          >
+            <div style={{ fontSize: 10, fontWeight: 800, color: AX.muted, letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: 6 }}>
+              Film finale · sintesi
+            </div>
+            <div style={{ fontWeight: 800, marginBottom: 6, fontSize: 16 }}>{chapterFilmSimple.primaryLine}</div>
+            {chapterFilmSimple.detailLine ? (
+              <div style={{ fontSize: 12, color: AX.text2, marginBottom: 8 }}>{chapterFilmSimple.detailLine}</div>
+            ) : null}
+            <div style={{ fontSize: 12, color: AX.text2 }}>
+              <strong style={{ color: AX.electric }}>Prossimo passo:</strong>{" "}
+              {chapterFilmSimple.nextStepLine || chapterFilmConfidence.nextStep}
+            </div>
+            {chapterFilmSimple.verificationLine ? (
+              <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 8, lineHeight: 1.45 }}>
+                <strong style={{ color: AX.text2 }}>Verifica reale (consegna progetto):</strong> {chapterFilmSimple.verificationLine}
+                {workspaceSummaryFilm?.filmOutputVerificationCheckedAt ? (
+                  <span style={{ display: "block", fontSize: 11, color: AX.muted, marginTop: 4 }}>
+                    Ultimo controllo:{" "}
+                    {new Date(workspaceSummaryFilm.filmOutputVerificationCheckedAt).toLocaleString("it-IT")}
+                    {workspaceSummaryFilm.filmOutputVerificationMethod
+                      ? ` · ${workspaceSummaryFilm.filmOutputVerificationMethod}`
+                      : ""}
+                  </span>
+                ) : null}
+              </div>
+            ) : null}
+            {workspaceSummaryFilm?.completedFilmUrl ? (
+              <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+                <button
+                  type="button"
+                  onClick={() => void handleVerifyWorkspaceFilmOutput()}
+                  disabled={editorFilmVerifyBusy}
+                  style={{
+                    padding: "8px 14px",
+                    borderRadius: 10,
+                    border: "none",
+                    background: editorFilmVerifyBusy ? AX.border : AX.gradPrimary,
+                    color: "#fff",
+                    fontWeight: 800,
+                    fontSize: 12,
+                    cursor: editorFilmVerifyBusy ? "wait" : "pointer",
+                  }}
+                >
+                  {editorFilmVerifyBusy ? "Verifica in corso…" : "Verifica file finale (consegna)"}
+                </button>
+                <span style={{ fontSize: 11, color: AX.muted, lineHeight: 1.4 }}>
+                  Controllo leggero (HTTP o metadati video). Aggiorna lo stato senza rigenerare il montaggio.
+                </span>
+              </div>
+            ) : null}
+            <details style={{ marginTop: 10, fontSize: 11, color: AX.muted, lineHeight: 1.5 }}>
+              <summary style={{ cursor: "pointer", fontWeight: 700, color: AX.text2, userSelect: "none" }}>
+                Dettaglio tecnico
+              </summary>
+              <div style={{ marginTop: 8 }}>{chapterFilmSimple.technicalHeadline}</div>
+              <div style={{ marginTop: 4 }}>{chapterFilmConfidence.subline}</div>
+            </details>
+            <div style={{ marginTop: 10, fontSize: 11, color: AX.muted }}>
+              Stato montaggio:{" "}
+              <strong style={{ color: AX.text }}>
+                {finalFilmMontage.status === "idle" && "Non avviato"}
+                {finalFilmMontage.status === "compiling" && "Compilazione…"}
+                {finalFilmMontage.status === "ready" && "Pronto per generare il file"}
+                {finalFilmMontage.status === "rendering" && "Creazione file in corso…"}
+                {finalFilmMontage.status === "complete" && "File generato"}
+                {finalFilmMontage.status === "failed" && "Non riuscito"}
+              </strong>
+            </div>
+          </div>
+          <details
+            style={{
+              marginBottom: 12,
+              padding: "10px 12px",
+              borderRadius: 12,
+              background: "rgba(41,182,255,0.06)",
+              border: `1px solid rgba(41,182,255,0.28)`,
+              fontSize: 12,
+              color: AX.text2,
+              lineHeight: 1.55,
+            }}
+          >
+            <summary style={{ cursor: "pointer", fontWeight: 800, color: AX.text, userSelect: "none" }}>
+              Dettagli consegna (affidabilità file, timestamp, note tecniche)
+            </summary>
+            <div style={{ marginTop: 10 }}>
+              <div>
+                Affidabilità (metadati salvati):{" "}
+                <span style={{ color: AX.electric }}>
+                  {FILM_OUTPUT_TRUST_LABEL_IT[chapterMontageDelivery.outputTrust] || chapterMontageDelivery.outputTrust}
+                </span>
+                {chapterMontageDelivery.outputRecordedAt ? (
+                  <span style={{ color: AX.muted }}>
+                    {" "}
+                    · ultimo successo noto: {chapterMontageDelivery.outputRecordedAt}
+                  </span>
+                ) : null}
+              </div>
+              {finalFilmMontage.lastMontageAttemptAt ? (
+                <div style={{ marginTop: 4, fontSize: 11, color: AX.muted }}>
+                  Ultimo tentativo montaggio: {finalFilmMontage.lastMontageAttemptAt}
+                </div>
+              ) : null}
+              <div style={{ marginTop: 8, fontSize: 12, color: AX.text }}>{montageNextStepLine}</div>
+              <p style={{ fontSize: 11, color: AX.muted, margin: "10px 0 0", lineHeight: 1.45 }}>
+                Il link al file non viene verificato in rete da AXSTUDIO: se non si apre, rigenera il montaggio nello stesso progetto.
+              </p>
+            </div>
+          </details>
+          <details style={{ marginBottom: 12 }}>
+            <summary style={{ cursor: "pointer", fontSize: 12, fontWeight: 700, color: AX.text2, userSelect: "none" }}>
+              Come funziona il montaggio (tecnico)
+            </summary>
+            <p style={{ fontSize: 12, color: AX.text2, lineHeight: 1.55, margin: "10px 0 0" }}>
+              Piano esecutivo: durate risolte con fonte esplicita, trim dove il file MP4 è noto e più lungo del target, concat ffmpeg.wasm (copy poi re-encode se serve). Transizioni fade sono nel piano ma il render MVP usa solo taglio netto; mix musica/ambiente/SFX resta future-only.
+            </p>
+          </details>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center", marginBottom: 12 }}>
+            <span style={{ fontSize: 11, fontWeight: 700, color: AX.text2 }}>
+              Stato montaggio:{" "}
+              <span style={{ color: AX.text }}>
+                {finalFilmMontage.status === "idle" && "Non inizializzato"}
+                {finalFilmMontage.status === "compiling" && "Compilazione…"}
+                {finalFilmMontage.status === "ready" && "Pronto per il render"}
+                {finalFilmMontage.status === "rendering" && "Rendering in corso…"}
+                {finalFilmMontage.status === "complete" && "Completato"}
+                {finalFilmMontage.status === "failed" && "Errore"}
+              </span>
+            </span>
+            {finalFilmMontage.compiledMontagePlan?.totalDurationSecEstimate != null && (
+              <span style={{ fontSize: 11, fontWeight: 700, color: AX.electric }}>
+                Durata stimata sequenza: ~{finalFilmMontage.compiledMontagePlan.totalDurationSecEstimate}s
+              </span>
+            )}
+            {finalFilmMontage.lastCompiledAt && (
+              <span style={{ fontSize: 10, color: AX.muted }}>Piano: {finalFilmMontage.lastCompiledAt}</span>
+            )}
+            {finalFilmMontage.lastRenderCompletedAt && finalFilmMontage.status === "complete" && (
+              <span style={{ fontSize: 10, color: AX.muted }}>Render: {finalFilmMontage.lastRenderCompletedAt}</span>
+            )}
+          </div>
+          {(finalFilmMontage.montageExecutionPlan?.renderModePreference || finalFilmMontage.lastRenderSummary?.renderModeUsed) && (
+            <div
+              style={{
+                marginBottom: 10,
+                padding: "8px 10px",
+                borderRadius: 10,
+                background: "rgba(0,0,0,0.2)",
+                border: `1px solid ${AX.border}`,
+                fontSize: 11,
+                color: AX.text2,
+                lineHeight: 1.55,
+              }}
+            >
+              <div>
+                <span style={{ fontWeight: 800, color: AX.text }}>Modalità render</span>: preferenza{" "}
+                <code style={{ fontSize: 10, color: AX.electric }}>
+                  {finalFilmMontage.montageExecutionPlan?.renderModePreference || "—"}
+                </code>
+                {finalFilmMontage.lastRenderSummary?.renderModeUsed ? (
+                  <>
+                    {" "}
+                    · effettiva (ultimo run):{" "}
+                    <code style={{ fontSize: 10, color: AX.electric }}>{finalFilmMontage.lastRenderSummary.renderModeUsed}</code>
+                    {finalFilmMontage.lastRenderSummary.concatHadToReencode ? (
+                      <span style={{ color: AX.muted }}> (concat ha richiesto re-encode)</span>
+                    ) : null}
+                  </>
+                ) : (
+                  <span style={{ color: AX.muted }}> · esegui &quot;Genera filmato&quot; per la modalità effettiva.</span>
+                )}
+              </div>
+              <div style={{ marginTop: 6, fontSize: 10, color: AX.muted }}>
+                Nel file MP4 finale oggi: solo video (e audio già nel container di ogni clip). Stem separati e crossfade: vedi sotto.
+              </div>
+            </div>
+          )}
+          {finalFilmMontage.compiledMontagePlan?.transitionReport != null && (
+            <p style={{ fontSize: 11, color: AX.text2, margin: "0 0 10px", lineHeight: 1.5 }}>
+              <span style={{ fontWeight: 700 }}>Transizioni</span>:{" "}
+              {finalFilmMontage.compiledMontagePlan.transitionReport.crossfadePlannedCutOnlyCount || 0} giunzione/i fade
+              pianificata/e ma rese come taglio netto;{" "}
+              {finalFilmMontage.compiledMontagePlan.transitionReport.transitionsNotRenderedCount || 0} placeholder (titoli/credits)
+              non nel render.
+            </p>
+          )}
+          {finalFilmMontage.compiledMontagePlan?.audioPlanReference && (
+            <p style={{ fontSize: 11, color: AX.text2, margin: "0 0 10px", lineHeight: 1.5 }}>
+              <span style={{ fontWeight: 700 }}>Audio / mix</span>: ogni segmento usa{" "}
+              <code style={{ fontSize: 10 }}>clip.videoUrl</code> con traccia audio già incorporata dal mix clip (H7; cinematic
+              include mux post-O3). Segmenti:{" "}
+              {finalFilmMontage.compiledMontagePlan.audioPlanReference.voiceStem?.executableNow ? "ok" : "n/d"}. Piano
+              design musica / ambiente / SFX (placeholder):{" "}
+              {finalFilmMontage.compiledMontagePlan.audioPlanReference.musicBed?.plannedClipsCount ?? 0} ·{" "}
+              {finalFilmMontage.compiledMontagePlan.audioPlanReference.ambientBed?.plannedClipsCount ?? 0} ·{" "}
+              {finalFilmMontage.compiledMontagePlan.audioPlanReference.sfx?.plannedClipsCount ?? 0}. Stem renderizzati su
+              clip: musica{" "}
+              {finalFilmMontage.compiledMontagePlan.audioPlanReference.musicBed?.clipsWithRenderedStemCount ?? 0} · ambiente{" "}
+              {finalFilmMontage.compiledMontagePlan.audioPlanReference.ambientBed?.clipsWithRenderedStemCount ?? 0} · SFX{" "}
+              {finalFilmMontage.compiledMontagePlan.audioPlanReference.sfx?.clipsWithRenderedStemCount ?? 0}. Il concat non
+              rimixa a livello film.
+            </p>
+          )}
+          {finalFilmMontage.compiledMontagePlan?.audioMixIntentSummary?.summaryLine && (
+            <p style={{ fontSize: 11, color: AX.text2, margin: "0 0 10px", lineHeight: 1.5 }}>
+              Audio (intent): {finalFilmMontage.compiledMontagePlan.audioMixIntentSummary.summaryLine}
+            </p>
+          )}
+          {(finalFilmMontage.compiledMontagePlan?.titleCardIntro || finalFilmMontage.compiledMontagePlan?.endCredits) && (
+            <p style={{ fontSize: 11, color: AX.muted, margin: "0 0 10px" }}>
+              Segnaposto: {finalFilmMontage.compiledMontagePlan.titleCardIntro ? "titolo intro" : ""}
+              {finalFilmMontage.compiledMontagePlan.titleCardIntro && finalFilmMontage.compiledMontagePlan.endCredits ? " · " : ""}
+              {finalFilmMontage.compiledMontagePlan.endCredits ? "credits fine" : ""} (non ancora nel file concatenato)
+            </p>
+          )}
+          {(finalFilmMontage.lastError || finalFilmMontage.lastWorkflowFailure) && (
+            <div
+              style={{
+                marginBottom: 12,
+                padding: 10,
+                borderRadius: 10,
+                background: "rgba(255,79,163,0.12)",
+                border: "1px solid rgba(255,79,163,0.35)",
+                fontSize: 12,
+                color: AX.text,
+              }}
+            >
+              <div style={{ fontWeight: 800, marginBottom: 6 }}>Montaggio · problema</div>
+              <div style={{ lineHeight: 1.5 }}>
+                {finalFilmMontage.lastWorkflowFailure?.errorMessageUser || finalFilmMontage.lastError}
+              </div>
+              {finalFilmMontage.lastWorkflowFailure?.isRecoverable !== false &&
+              finalFilmMontage.lastWorkflowFailure?.suggestedAction ? (
+                <div style={{ marginTop: 8, fontSize: 11, color: AX.muted }}>
+                  Suggerimento:{" "}
+                  <strong style={{ color: AX.text }}>
+                    {SUGGESTED_ACTION_LABEL_IT[finalFilmMontage.lastWorkflowFailure.suggestedAction] ||
+                      finalFilmMontage.lastWorkflowFailure.suggestedAction}
+                  </strong>
+                </div>
+              ) : null}
+              {finalFilmMontage.lastWorkflowFailure?.errorMessageTechnical ? (
+                <details style={{ marginTop: 8, fontSize: 10, color: AX.muted }}>
+                  <summary style={{ cursor: "pointer", userSelect: "none" }}>Dettaglio tecnico</summary>
+                  <pre style={{ whiteSpace: "pre-wrap", margin: "8px 0 0", fontFamily: "monospace" }}>
+                    {String(finalFilmMontage.lastWorkflowFailure.errorMessageTechnical)}
+                  </pre>
+                </details>
+              ) : null}
+            </div>
+          )}
+          {Array.isArray(finalFilmMontage.compiledMontagePlan?.executionWarnings) &&
+            finalFilmMontage.compiledMontagePlan.executionWarnings.length > 0 && (
+            <ul style={{ margin: "0 0 12px", paddingLeft: 18, fontSize: 11, color: AX.muted, lineHeight: 1.55 }}>
+              {finalFilmMontage.compiledMontagePlan.executionWarnings.slice(0, 12).map((w, i) => (
+                <li key={i}>{w}</li>
+              ))}
+            </ul>
+          )}
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 14 }}>
+            <button
+              type="button"
+              onClick={() => void handleGenerateFinalFilm()}
+              disabled={sceneExecuteBlocked || montageRenderBusy || !finalFilmMontage.compiledMontagePlan}
+              style={{
+                padding: "10px 16px",
+                borderRadius: 10,
+                border: "none",
+                background: montageRenderBusy || !finalFilmMontage.compiledMontagePlan ? AX.border : AX.gradPrimary,
+                color: AX.text,
+                fontWeight: 800,
+                fontSize: 12,
+                cursor: sceneExecuteBlocked || montageRenderBusy || !finalFilmMontage.compiledMontagePlan ? "not-allowed" : "pointer",
+                opacity: sceneExecuteBlocked || montageRenderBusy || !finalFilmMontage.compiledMontagePlan ? 0.5 : 1,
+              }}
+            >
+              {montageRenderBusy ? "Generazione in corso…" : "Genera filmato finale"}
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleRefreshMontagePlan()}
+              disabled={sceneExecuteBlocked || montageRenderBusy}
+              style={{
+                padding: "10px 14px",
+                borderRadius: 10,
+                border: `1px solid ${AX.border}`,
+                background: AX.surface,
+                color: AX.text2,
+                fontWeight: 700,
+                fontSize: 11,
+                cursor: sceneExecuteBlocked || montageRenderBusy ? "not-allowed" : "pointer",
+              }}
+            >
+              Aggiorna piano montaggio
+            </button>
+          </div>
           <ol style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: AX.text2, lineHeight: 1.7 }}>
-            {(finalMontagePlan.orderedTimelineEntryIds && finalMontagePlan.orderedTimelineEntryIds.length > 0
-              ? finalMontagePlan.orderedTimelineEntryIds
-              : finalMontagePlan.orderedClipIds || []
-            ).map((rowId, i) => {
-              if (finalMontagePlan.orderedTimelineEntryIds && finalMontagePlan.orderedTimelineEntryIds.length > 0) {
-                const entry = timelinePlan.entries.find((x) => x.id === rowId);
-                if (!entry) {
+            {Array.isArray(finalFilmMontage.compiledMontagePlan?.segmentDetails) && finalFilmMontage.compiledMontagePlan.segmentDetails.length > 0
+              ? finalFilmMontage.compiledMontagePlan.segmentDetails.map((seg, i) => {
+                  const sc = plan?.scenes?.find((s) => s.id === seg.sceneId);
+                  const eff = seg.resolvedDurationSec != null || seg.effectiveDurationSec != null
+                    ? `${seg.resolvedDurationSec ?? seg.effectiveDurationSec}s`
+                    : "durata n/d";
+                  const src = seg.durationSource ? ` · fonte ${seg.durationSource}` : "";
+                  const hint = seg.timelineDurationHintSec != null ? ` · timeline ${seg.timelineDurationHintSec}s` : "";
+                  const trim =
+                    seg.canTrimExactly && seg.trimDurationSecForRender != null
+                      ? ` · trim render ~${seg.trimDurationSecForRender}s`
+                      : seg.needsFullClipFallback
+                        ? " · file intero (trim non garantito)"
+                        : "";
                   return (
-                    <li key={rowId}>
-                      {i + 1}. (voce timeline mancante) {rowId}
+                    <li key={seg.clipId || seg.timelineEntryId}>
+                      {i + 1}. {sc?.title_it || seg.sceneId} — {eff}
+                      {src}
+                      {hint}
+                      {trim} · {SCENE_VIDEO_CLIP_STATUS_LABEL[seg.clipStatus] || seg.clipStatus}
                     </li>
                   );
-                }
-                const sc = plan?.scenes?.find((s) => s.id === entry.sceneId);
-                const clip = entry.kind === "clip" && entry.clipId ? sceneVideoClips.find((c) => c.id === entry.clipId) : null;
-                const label =
-                  entry.kind === "scene" ? `Scena — ${sc?.title_it || entry.sceneId}` : `Clip — ${sc?.title_it || entry.sceneId}`;
-                return (
-                  <li key={rowId}>
-                    {i + 1}. {label}
-                    {entry.durationSec != null ? ` · ${entry.durationSec}s` : ""}
-                    {clip ? ` — ${SCENE_VIDEO_CLIP_STATUS_LABEL[clip.status] || clip.status}` : ""}
-                  </li>
-                );
-              }
-              const cid = rowId;
-              const c = sceneVideoClips.find((x) => x.id === cid);
-              const sc = plan?.scenes?.find((s) => s.id === c?.sceneId);
-              return (
-                <li key={cid}>
-                  {i + 1}. {sc?.title_it || c?.sceneId || cid}
-                  {c ? ` — ${SCENE_VIDEO_CLIP_STATUS_LABEL[c.status] || c.status}` : ""}
-                </li>
-              );
-            })}
+                })
+              : (finalMontagePlan.orderedTimelineEntryIds && finalMontagePlan.orderedTimelineEntryIds.length > 0
+                  ? finalMontagePlan.orderedTimelineEntryIds
+                  : finalMontagePlan.orderedClipIds || []
+                ).map((rowId, i) => {
+                  if (finalMontagePlan.orderedTimelineEntryIds && finalMontagePlan.orderedTimelineEntryIds.length > 0) {
+                    const entry = timelinePlan.entries.find((x) => x.id === rowId);
+                    if (!entry) {
+                      return (
+                        <li key={rowId}>
+                          {i + 1}. (voce timeline mancante) {rowId}
+                        </li>
+                      );
+                    }
+                    const sc = plan?.scenes?.find((s) => s.id === entry.sceneId);
+                    const clip = entry.kind === "clip" && entry.clipId ? sceneVideoClips.find((c) => c.id === entry.clipId) : null;
+                    const label =
+                      entry.kind === "scene" ? `Scena — ${sc?.title_it || entry.sceneId}` : `Clip — ${sc?.title_it || entry.sceneId}`;
+                    const eff = clip ? resolveEffectiveClipDurationSeconds(clip) : null;
+                    return (
+                      <li key={rowId}>
+                        {i + 1}. {label}
+                        {eff != null ? ` · ~${eff}s eff.` : entry.durationSec != null ? ` · ${entry.durationSec}s` : ""}
+                        {clip ? ` — ${SCENE_VIDEO_CLIP_STATUS_LABEL[clip.status] || clip.status}` : ""}
+                      </li>
+                    );
+                  }
+                  const cid = rowId;
+                  const c = sceneVideoClips.find((x) => x.id === cid);
+                  const sc = plan?.scenes?.find((s) => s.id === c?.sceneId);
+                  const eff = c ? resolveEffectiveClipDurationSeconds(c) : null;
+                  return (
+                    <li key={cid}>
+                      {i + 1}. {sc?.title_it || c?.sceneId || cid}
+                      {eff != null ? ` · ~${eff}s eff.` : ""}
+                      {c ? ` — ${SCENE_VIDEO_CLIP_STATUS_LABEL[c.status] || c.status}` : ""}
+                    </li>
+                  );
+                })}
           </ol>
+          {editorFilmPlaybackEntries.length > 0 ? (
+            <div style={{ marginTop: 14 }}>
+              {(() => {
+                const entries = editorFilmPlaybackEntries;
+                const ix = Math.min(Math.max(0, editorFilmPlaybackIndex), entries.length - 1);
+                const cur = entries[ix];
+                const activeUrl = cur?.url || "";
+                const hasAlt = ix < entries.length - 1;
+                const errHint =
+                  editorFilmPlaybackError && typeof editorFilmPlaybackError === "object"
+                    ? editorFilmPlaybackError.browserHint
+                    : null;
+                const errAt =
+                  editorFilmPlaybackError && typeof editorFilmPlaybackError === "object" && editorFilmPlaybackError.atIso
+                    ? new Date(editorFilmPlaybackError.atIso).toLocaleString("it-IT")
+                    : null;
+                return (
+                  <>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: AX.text2, marginBottom: 6 }}>
+                      Output finale · anteprima (stessa logica della Home)
+                    </div>
+                    <div
+                      style={{
+                        marginBottom: 10,
+                        padding: "10px 12px",
+                        borderRadius: 10,
+                        background: "rgba(41,182,255,0.08)",
+                        border: "1px solid rgba(41,182,255,0.28)",
+                        fontSize: 12,
+                        color: AX.text2,
+                        lineHeight: 1.5,
+                      }}
+                    >
+                      <strong style={{ color: "#7dd3fc" }}>{editorPlaybackMoment.headline}</strong>
+                      <div style={{ marginTop: 4 }}>{editorPlaybackMoment.subline}</div>
+                      <div style={{ marginTop: 8, fontSize: 11, color: AX.muted }}>
+                        <strong style={{ color: AX.text2 }}>Sorgente in uso:</strong> {cur?.sourceLabel}
+                        {entries.length > 1 ? (
+                          <span>
+                            {" "}
+                            · ancora {entries.length - 1 - ix} sorgente/i diversa/e nel progetto
+                          </span>
+                        ) : null}
+                      </div>
+                    </div>
+                    {editorFilmPlaybackError ? (
+                      <div
+                        style={{
+                          marginBottom: 10,
+                          padding: 12,
+                          borderRadius: 10,
+                          background: "rgba(127,29,29,0.25)",
+                          border: "1px solid rgba(248,113,113,0.4)",
+                          fontSize: 12,
+                          color: "#fecaca",
+                          lineHeight: 1.5,
+                        }}
+                      >
+                        <strong>Anteprima: il lettore incorporato non ha caricato il file.</strong>
+                        <div style={{ marginTop: 6 }}>
+                          Prova la nuova scheda o un altro MP4 salvato; se il montaggio è vecchio o incoerente, rigenera con «Genera
+                          filmato finale» qui sopra.
+                        </div>
+                        {errHint ? (
+                          <div style={{ marginTop: 8 }}>
+                            <strong>Indizio dal browser:</strong> {errHint}
+                          </div>
+                        ) : null}
+                        {errAt ? <div style={{ marginTop: 6, fontSize: 11, opacity: 0.9 }}>Ultimo tentativo: {errAt}</div> : null}
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 10 }}>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditorFilmPlaybackError(null);
+                              setEditorFilmPlaybackReloadKey((k) => k + 1);
+                            }}
+                            style={{
+                              padding: "6px 12px",
+                              borderRadius: 8,
+                              border: "none",
+                              background: AX.gradPrimary,
+                              color: "#fff",
+                              fontWeight: 800,
+                              fontSize: 11,
+                              cursor: "pointer",
+                            }}
+                          >
+                            Riprova qui
+                          </button>
+                          {hasAlt ? (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditorFilmPlaybackIndex(ix + 1);
+                                setEditorFilmPlaybackError(null);
+                                setEditorFilmPlaybackReloadKey((k) => k + 1);
+                              }}
+                              style={{
+                                padding: "6px 12px",
+                                borderRadius: 8,
+                                border: "1px solid rgba(74,222,128,0.45)",
+                                background: "rgba(74,222,128,0.1)",
+                                color: "#bbf7d0",
+                                fontWeight: 700,
+                                fontSize: 11,
+                                cursor: "pointer",
+                              }}
+                            >
+                              Prova altra sorgente
+                            </button>
+                          ) : null}
+                          {activeUrl ? (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                try {
+                                  window.open(activeUrl, "_blank", "noopener,noreferrer");
+                                } catch {
+                                  /* ignore */
+                                }
+                              }}
+                              style={{
+                                padding: "6px 12px",
+                                borderRadius: 8,
+                                border: `1px solid ${AX.border}`,
+                                background: AX.surface,
+                                color: AX.electric,
+                                fontWeight: 700,
+                                fontSize: 11,
+                                cursor: "pointer",
+                              }}
+                            >
+                              Apri in nuova scheda
+                            </button>
+                          ) : null}
+                          <button
+                            type="button"
+                            onClick={() => applyRecoveryDeepLink({ focus: "montage" })}
+                            style={{
+                              padding: "6px 12px",
+                              borderRadius: 8,
+                              border: "1px solid rgba(196,181,253,0.45)",
+                              background: "rgba(123,77,255,0.12)",
+                              color: "#e9d5ff",
+                              fontWeight: 700,
+                              fontSize: 11,
+                              cursor: "pointer",
+                            }}
+                          >
+                            Vai al blocco montaggio
+                          </button>
+                        </div>
+                      </div>
+                    ) : null}
+                    <video
+                      key={`${projectId}-${chapterId}-${editorFilmPlaybackReloadKey}-${ix}`}
+                      src={activeUrl || undefined}
+                      controls
+                      playsInline
+                      onLoadedData={() => setEditorFilmPlaybackError(null)}
+                      onError={(e) => {
+                        const v = e?.target;
+                        setEditorFilmPlaybackError({
+                          browserHint: humanizeHtml5VideoElementError(v),
+                          atIso: new Date().toISOString(),
+                        });
+                      }}
+                      style={{ width: "100%", maxWidth: 520, borderRadius: 10, background: "#000" }}
+                    />
+                    {!editorFilmPlaybackError && activeUrl ? (
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 8 }}>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            try {
+                              window.open(activeUrl, "_blank", "noopener,noreferrer");
+                            } catch {
+                              /* ignore */
+                            }
+                          }}
+                          style={{
+                            padding: "6px 12px",
+                            borderRadius: 8,
+                            border: `1px solid ${AX.border}`,
+                            background: AX.surface,
+                            color: AX.electric,
+                            fontWeight: 600,
+                            fontSize: 11,
+                            cursor: "pointer",
+                          }}
+                        >
+                          Apri in nuova scheda (stessa sorgente)
+                        </button>
+                        {hasAlt ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditorFilmPlaybackIndex(ix + 1);
+                              setEditorFilmPlaybackError(null);
+                              setEditorFilmPlaybackReloadKey((k) => k + 1);
+                            }}
+                            style={{
+                              padding: "6px 12px",
+                              borderRadius: 8,
+                              border: "1px solid rgba(74,222,128,0.35)",
+                              background: "rgba(74,222,128,0.06)",
+                              color: "#86efac",
+                              fontWeight: 600,
+                              fontSize: 11,
+                              cursor: "pointer",
+                            }}
+                          >
+                            Passa a sorgente alternativa
+                          </button>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </>
+                );
+              })()}
+            </div>
+          ) : null}
         </div>
       )}
 

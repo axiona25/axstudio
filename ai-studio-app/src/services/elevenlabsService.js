@@ -78,6 +78,9 @@ export async function elevenLabsTextToSpeechMp3(opts) {
     model_id: modelId,
     voice_settings: { stability, similarity_boost: similarityBoost },
   };
+  if (opts.language || opts.languageCode) {
+    body.language_code = opts.languageCode || opts.language;
+  }
 
   const res = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}`, {
     method: "POST",

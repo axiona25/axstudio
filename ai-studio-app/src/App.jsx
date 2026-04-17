@@ -1,3 +1,8 @@
+/**
+ * LEGACY — non usato dall’app attuale.
+ * CRA risolve `import App from "./App"` verso `App.js` prima di `App.jsx`.
+ * Mantenuto solo come riferimento storico (stack RunPod / FaceSwap diverso).
+ */
 import { useState, useEffect, useRef } from "react";
 
 // ── RunPod Serverless API Config ──

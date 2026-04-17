@@ -4,13 +4,18 @@
  */
 
 import { getCharactersNeedingMaster } from "./scenografiePlanner.js";
+import { resolveNarratedClipNarrator } from "./scenografieProjectNarrators.js";
+import { getSceneClipPipelineImageUrl } from "./scenografieSceneVariants.js";
 import { resolveElevenLabsVoiceId, getElevenLabsApiKey } from "./elevenlabsService.js";
 import {
   approvalEntryForCharacter,
+  findPlanCharacterByPresentRef,
+  pcmRowForCharacter,
   planCharacterDisplayName,
-  stableCharacterKey,
   voiceMasterRawForRef,
 } from "./scenografiePcidLookup.js";
+import { normalizeAudioStemRecord } from "./audioRenderEngine.js";
+import { sanitizeStructuredWorkflowFailure } from "./scenografieConsumerReliability.js";
 
 /** @typedef {'narrated'|'dialogue'} ScenografiaClipType */
 /** @typedef {'auto'|'manual'} ScenografiaClipDurationMode */
@@ -20,13 +25,110 @@ export const CLIP_TYPE = {
   DIALOGUE: "dialogue",
 };
 
-/** Preset regia / movimento per clip narrato (UX + payload motore). */
+/** Preset movimento camera (wizard AXSTUDIO — persistito; motore video in evoluzione). */
 export const NARRATED_CAMERA_PRESETS = [
-  { id: "slow_zoom", label: "Slow zoom" },
-  { id: "pan_light", label: "Pan leggero" },
-  { id: "reveal", label: "Reveal" },
-  { id: "smooth_camera", label: "Camera move morbido" },
   { id: "static_gentle", label: "Static gentle motion" },
+  { id: "slow_zoom", label: "Slow zoom" },
+  { id: "reveal", label: "Reveal" },
+  { id: "pan_light", label: "Pan leggero" },
+  { id: "smooth_camera", label: "Camera move morbido" },
+  { id: "push_in_soft", label: "Push-in delicato" },
+];
+
+/** Alias semantico per il wizard. */
+export const CLIP_MOVEMENT_PRESETS = NARRATED_CAMERA_PRESETS;
+
+/** Apertura clip (creativo / roadmap pipeline). */
+export const CLIP_OPENING_STYLES = [
+  { id: "immediate", label: "Inizio immediato" },
+  { id: "gradual_reveal", label: "Reveal graduale" },
+  { id: "arrival_from_afar", label: "Arrivo da lontano" },
+  { id: "soft_entry", label: "Entrata morbida" },
+  { id: "cinematic_open", label: "Apertura cinematografica" },
+];
+
+/** Chiusura clip. */
+export const CLIP_CLOSING_STYLES = [
+  { id: "hold", label: "Si ferma sul quadro" },
+  { id: "soft_fade", label: "Dissolvenza morbida" },
+  { id: "slow_pull", label: "Slow pull-back" },
+  { id: "cut_to_black", label: "Taglio netto (stile teaser)" },
+];
+
+/** Intensità movimento camera. */
+export const CLIP_CAMERA_INTENSITY = [
+  { id: "subtle", label: "Leggera" },
+  { id: "medium", label: "Media" },
+  { id: "strong", label: "Marcata" },
+];
+
+/** Focus visivo principale. */
+export const CLIP_FOCUS_SUBJECT = [
+  { id: "environment", label: "Ambiente" },
+  { id: "single_character", label: "Personaggio singolo" },
+  { id: "pair", label: "Coppia / due personaggi" },
+  { id: "action_gesture", label: "Azione / gesto" },
+  { id: "symbolic_place", label: "Luogo simbolico" },
+];
+
+/** Musica di sottofondo (intento creativo). */
+export const CLIP_MUSIC_MOOD = [
+  { id: "none", label: "Nessuna" },
+  { id: "delicate", label: "Delicata" },
+  { id: "spiritual", label: "Spirituale" },
+  { id: "warm_family", label: "Calda / famiglia" },
+  { id: "solemn", label: "Solennità" },
+  { id: "suspended", label: "Sospesa" },
+];
+
+/** Suoni ambiente suggeriti. */
+export const CLIP_AMBIENT_PRESET = [
+  { id: "none", label: "Nessuno" },
+  { id: "village", label: "Villaggio" },
+  { id: "wind", label: "Vento" },
+  { id: "footsteps", label: "Passi" },
+  { id: "woodshop", label: "Falegnameria / bottega" },
+  { id: "nature", label: "Natura" },
+  { id: "indoor_home", label: "Interni casa" },
+];
+
+/** Energia complessiva del momento. */
+export const CLIP_ENERGY_LEVEL = [
+  { id: "very_calm", label: "Molto calmo" },
+  { id: "sweet", label: "Dolce" },
+  { id: "medium", label: "Medio" },
+  { id: "intense", label: "Intenso" },
+];
+
+/** Tono lettura / consegna (narrato). */
+export const CLIP_NARRATOR_TONE = [
+  { id: "", label: "— Default —" },
+  { id: "warm_intimate", label: "Caldo, intimo" },
+  { id: "epic_solemn", label: "Epico, solenne" },
+  { id: "documentary", label: "Documentaristico" },
+  { id: "whisper_soft", label: "Dolce, raccolto" },
+];
+
+export const CLIP_NARRATOR_PACE = [
+  { id: "", label: "— Naturale —" },
+  { id: "slow", label: "Lenta" },
+  { id: "measured", label: "Misurata" },
+  { id: "dynamic", label: "Dinamica" },
+];
+
+export const CLIP_NARRATOR_PAUSES = [
+  { id: "", label: "— Standard —" },
+  { id: "breath_natural", label: "Pause naturali (respiro)" },
+  { id: "minimal", label: "Minime" },
+  { id: "dramatic", label: "Drammatiche (lungo)" },
+];
+
+export const CLIP_DIALOGUE_TONE = [
+  { id: "", label: "— Neutro —" },
+  { id: "gentle", label: "Dolce, sereno" },
+  { id: "tense", label: "Teso" },
+  { id: "playful", label: "Leggero" },
+  { id: "reassuring", label: "Rassicurante" },
 ];
 
 /** Comportamento camera / regia per clip dialogato. */
@@ -144,18 +246,51 @@ export function normalizeCharacterVoiceMaster(raw, characterId) {
     return {
       characterId: id,
       voiceId: "",
+      elevenLabsVoiceId: "",
       voiceLabel: "",
       voiceProvider: "elevenlabs",
+      voiceSourceType: "",
+      voicePreviewUrl: "",
+      voiceAssignedAt: null,
+      voiceCatalogSnapshot: null,
+      voiceAssignmentHistory: [],
       isNarratorDefault: false,
       elevenLabs: {},
     };
   }
   const el = raw.elevenLabs && typeof raw.elevenLabs === "object" ? raw.elevenLabs : {};
+  const voiceId = String(raw.voiceId ?? "").trim();
+  const elevenLabsVoiceId = String(raw.elevenLabsVoiceId ?? raw.voiceId ?? "").trim();
+  const hist = Array.isArray(raw.voiceAssignmentHistory)
+    ? raw.voiceAssignmentHistory
+        .filter((h) => h && typeof h === "object")
+        .map((h) => ({
+          voiceId: String(h.voiceId ?? "").trim(),
+          voiceLabel: String(h.voiceLabel ?? "").trim(),
+          at: h.at != null ? String(h.at).trim() : "",
+          note: String(h.note ?? "").trim() || "reassigned",
+        }))
+        .filter((h) => h.voiceId || h.at)
+        .slice(-12)
+    : [];
+  const snap =
+    raw.voiceCatalogSnapshot && typeof raw.voiceCatalogSnapshot === "object"
+      ? { ...raw.voiceCatalogSnapshot }
+      : null;
   return {
     characterId: id,
-    voiceId: String(raw.voiceId ?? "").trim(),
+    voiceId,
+    elevenLabsVoiceId: elevenLabsVoiceId || voiceId,
     voiceLabel: String(raw.voiceLabel ?? "").trim(),
     voiceProvider: String(raw.voiceProvider || "elevenlabs").trim() || "elevenlabs",
+    voiceSourceType: String(raw.voiceSourceType ?? "").trim(),
+    voicePreviewUrl: String(raw.voicePreviewUrl ?? "").trim(),
+    voiceAssignedAt:
+      raw.voiceAssignedAt != null && String(raw.voiceAssignedAt).trim()
+        ? String(raw.voiceAssignedAt).trim()
+        : null,
+    voiceCatalogSnapshot: snap,
+    voiceAssignmentHistory: hist,
     isNarratorDefault: raw.isNarratorDefault === true,
     elevenLabs: {
       modelId: typeof el.modelId === "string" ? el.modelId.trim() : "",
@@ -168,12 +303,15 @@ export function normalizeCharacterVoiceMaster(raw, characterId) {
 /**
  * Messaggi UX se mancano dati per «Genera clip».
  * @param {object} clip
- * @param {{ characterVoiceMasters?: Record<string, object>, plan?: object|null, sceneResults?: object[] }} [ctx]
+ * @param {{ characterVoiceMasters?: Record<string, object>, plan?: object|null, sceneResults?: object[], projectNarrators?: unknown }} [ctx]
  * @returns {{ ok: boolean, reasons: string[] }}
  */
 export function getClipGenerationReadiness(clip, ctx = {}) {
   const reasons = [];
   const characterVoiceMasters = ctx.characterVoiceMasters && typeof ctx.characterVoiceMasters === "object" ? ctx.characterVoiceMasters : {};
+  const projectCharacterMasters =
+    ctx.projectCharacterMasters && typeof ctx.projectCharacterMasters === "object" ? ctx.projectCharacterMasters : null;
+  const projectNarrators = ctx.projectNarrators;
   const plan = ctx.plan ?? null;
   const sceneResults = Array.isArray(ctx.sceneResults) ? ctx.sceneResults : null;
 
@@ -184,7 +322,7 @@ export function getClipGenerationReadiness(clip, ctx = {}) {
   if (!String(clip.sceneId || "").trim()) reasons.push("Seleziona una scena sorgente approvata.");
   else if (sceneResults) {
     const row = sceneResults.find((r) => r.sceneId === clip.sceneId);
-    if (!row?.imageUrl) reasons.push("La scena selezionata non ha ancora un'immagine generata.");
+    if (!getSceneClipPipelineImageUrl(row)) reasons.push("La scena selezionata non ha ancora un'immagine generata.");
     else if (row.approved !== true) reasons.push("La scena sorgente deve essere approvata.");
   }
 
@@ -206,35 +344,55 @@ export function getClipGenerationReadiness(clip, ctx = {}) {
 
   if (type === CLIP_TYPE.NARRATED) {
     if (!String(clip.narratorText || "").trim()) reasons.push("Inserisci il testo del narratore.");
-    const nv = normalizeNarratorVoice(clip.narratorVoice);
-    if (!nv?.voiceId) reasons.push("Seleziona la voce del narratore.");
-    else {
+    const resolved = resolveNarratedClipNarrator(clip, projectNarrators);
+    const nv = resolved.narratorVoice;
+    if (!nv?.voiceId) {
+      reasons.push(
+        "Assegna un narratore di progetto (con voce) oppure una voce ElevenLabs su questo clip (modalità precedente).",
+      );
+    } else {
       const { voiceId, error } = resolveElevenLabsVoiceId(nv.voiceId);
       if (!voiceId) reasons.push(error || "Voce narratore ElevenLabs non valida.");
+    }
+    if (resolved.narratorResolutionMode === "invalid_narrator_id") {
+      reasons.push("Il clip punta a un narratore di progetto non più valido — riseleziona il narratore.");
     }
   } else {
     const lines = (Array.isArray(clip.dialogLines) ? clip.dialogLines : []).map(normalizeDialogLine).filter(Boolean);
     if (lines.length === 0) reasons.push("Aggiungi almeno una battuta con personaggio.");
-    const resolvedVoiceIds = [];
+    const pcm = projectCharacterMasters;
+    let narratorFallback = null;
+    const nv = normalizeNarratorVoice(clip.narratorVoice);
+    if (nv?.voiceId) {
+      const r = resolveElevenLabsVoiceId(nv.voiceId);
+      if (r.voiceId) narratorFallback = nv.voiceId;
+    }
     for (const line of lines) {
       if (!String(line.text || "").trim()) reasons.push("Ogni battuta deve avere testo.");
+      const char = plan ? findPlanCharacterByPresentRef(plan, line.characterId) : null;
+      const pcmRow = char && pcm ? pcmRowForCharacter(pcm, char) : null;
       const master = normalizeCharacterVoiceMaster(
         voiceMasterRawForRef(characterVoiceMasters, line.characterId, plan),
         line.characterId,
       );
-      if (!String(master.voiceId || "").trim()) {
-        reasons.push(`Voice master obbligatoria per «${charLabel(line.characterId)}» (scheda personaggio o step 6).`);
+      const raw =
+        String(line.voiceId || "").trim() ||
+        (pcmRow && String(pcmRow.elevenLabsVoiceId || "").trim()) ||
+        String(master.voiceId || "").trim() ||
+        (narratorFallback || "");
+      if (!raw) {
+        reasons.push(
+          `Voce non assegnata per «${charLabel(line.characterId)}» (battuta, voice master o narratore fallback).`,
+        );
         continue;
       }
-      const { voiceId, error } = resolveElevenLabsVoiceId(master.voiceId);
+      let { voiceId, error } = resolveElevenLabsVoiceId(raw);
+      if (!voiceId && narratorFallback) {
+        const r2 = resolveElevenLabsVoiceId(narratorFallback);
+        voiceId = r2.voiceId;
+        error = r2.error;
+      }
       if (!voiceId) reasons.push(`«${charLabel(line.characterId)}»: ${error || "Voce ElevenLabs non valida."}`);
-      else resolvedVoiceIds.push(voiceId);
-    }
-    const uniq = new Set(resolvedVoiceIds);
-    if (uniq.size > 1) {
-      reasons.push(
-        "V1: tutti i parlanti devono avere lo stesso voice ID ElevenLabs nelle voice master. Il vero multi-speaker sarà aggiunto in seguito."
-      );
     }
   }
 
@@ -268,6 +426,157 @@ export const SCENE_VIDEO_CLIP_STATUS_LABEL = {
   final: "Finale",
 };
 
+function normalizeClipPresentIds(v) {
+  if (!Array.isArray(v)) return [];
+  return [...new Set(v.map((x) => String(x || "").trim()).filter(Boolean))].slice(0, 24);
+}
+
+function pickOptionId(list, raw, fallback) {
+  const id = String(raw ?? "").trim();
+  const ok = new Set((list || []).map((x) => x.id));
+  if (id && ok.has(id)) return id;
+  return fallback;
+}
+
+function presetLabel(list, id) {
+  const x = (list || []).find((o) => o.id === id);
+  return x?.label || (id ? String(id) : "");
+}
+
+/** @param {unknown} v */
+function normalizeCompiledSlot(v) {
+  if (v == null) return null;
+  if (typeof v !== "object" || Array.isArray(v)) return null;
+  try {
+    return JSON.parse(JSON.stringify(v));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Costruisce prompt finali strutturati (video, audio, brief creativo) dai campi wizard + piano scena.
+ * Testo in italiano, pronto per pipeline / log / export.
+ *
+ * @param {object} clip — clip normalizzato o grezzo
+ * @param {object|null} plan — piano narrativo (opzionale)
+ * @returns {{ clipDirectionPromptFinal: string, clipAudioDirectionPrompt: string, clipCreativeBriefFinal: string }}
+ */
+export function buildClipStructuredPrompts(clip, plan) {
+  const c = clip && typeof clip === "object" ? clip : {};
+  const scene = plan?.scenes ? plan.scenes.find((s) => s.id === c.sceneId) : null;
+  const type = c.clipType === CLIP_TYPE.DIALOGUE ? CLIP_TYPE.DIALOGUE : CLIP_TYPE.NARRATED;
+
+  const sceneBlock = scene
+    ? [
+        `Scena nel piano: «${scene.title_it || c.sceneId || "—"}»`,
+        scene.summary_it ? `Sintesi scena: ${String(scene.summary_it).replace(/\s+/g, " ").trim().slice(0, 420)}` : null,
+      ]
+        .filter(Boolean)
+        .join("\n")
+    : c.sceneId
+      ? `Scena ID: ${c.sceneId} (dettagli piano non disponibili)`
+      : "Scena: non selezionata";
+
+  const opening = presetLabel(CLIP_OPENING_STYLES, c.clipOpeningStyle) || "—";
+  const closing = presetLabel(CLIP_CLOSING_STYLES, c.clipClosingStyle) || "—";
+  const cam = presetLabel(NARRATED_CAMERA_PRESETS, c.clipCameraPreset) || String(c.clipCameraPreset || "").trim() || "—";
+  const camInt = presetLabel(CLIP_CAMERA_INTENSITY, c.clipCameraIntensity) || "—";
+  const focus = presetLabel(CLIP_FOCUS_SUBJECT, c.clipFocusSubject) || "—";
+  const dialogCam =
+    type === CLIP_TYPE.DIALOGUE && c.cameraDirection
+      ? presetLabel(DIALOGUE_CAMERA_BEHAVIORS, c.cameraDirection) || c.cameraDirection
+      : null;
+
+  const toneLine = String(c.clipEmotionalTone || c.mood || "").trim();
+  const intLegacy = String(c.emotionalIntensity || "").trim() || "media";
+
+  const videoLines = [
+    "=== REGIA VIDEO (brief automatico AXSTUDIO) ===",
+    sceneBlock,
+    "",
+    c.clipVisualActionSummary ? `Azione / contenuto visivo: ${c.clipVisualActionSummary}` : null,
+    c.clipNarrativeGoal ? `Obiettivo narrativo: ${c.clipNarrativeGoal}` : null,
+    type === CLIP_TYPE.DIALOGUE && c.clipDialogActionSummary
+      ? `Azioni dei personaggi (dialogo): ${c.clipDialogActionSummary}`
+      : null,
+    `Apertura: ${opening}. Chiusura: ${closing}.`,
+    `Movimento camera (preset): ${cam}. Intensità movimento: ${camInt}.`,
+    `Focus visivo principale: ${focus}.`,
+    dialogCam ? `Inquadratura dialogo (preset): ${dialogCam}.` : null,
+    c.clipProgressionNote ? `Progressione nel tempo: ${c.clipProgressionNote}` : null,
+    toneLine ? `Tono emotivo dichiarato: ${toneLine}.` : null,
+    `Scala intensità (legacy UI): ${intLegacy}.`,
+    String(c.clipDirectionPrompt || "").trim()
+      ? `\n--- Istruzioni regia dettagliate (autore) ---\n${String(c.clipDirectionPrompt).trim()}`
+      : null,
+  ];
+
+  const music = presetLabel(CLIP_MUSIC_MOOD, c.clipMusicMood) || "—";
+  const ambient = presetLabel(CLIP_AMBIENT_PRESET, c.clipAmbientSoundPreset) || "—";
+  const energy = presetLabel(CLIP_ENERGY_LEVEL, c.clipEnergyLevel) || "—";
+  const fx = c.effectsEnabled === true ? "Sì — effetti sonori / sound design richiesti (dettaglio in mix)." : "No — nessun effetto aggiuntivo richiesto.";
+
+  const narrTone = c.narratorDeliveryTone ? presetLabel(CLIP_NARRATOR_TONE, c.narratorDeliveryTone) || c.narratorDeliveryTone : "";
+  const narrPace = c.narratorPace ? presetLabel(CLIP_NARRATOR_PACE, c.narratorPace) || c.narratorPace : "";
+  const narrPause = c.narratorPauseStyle ? presetLabel(CLIP_NARRATOR_PAUSES, c.narratorPauseStyle) || c.narratorPauseStyle : "";
+  const dialTone = c.dialogueDeliveryTone ? presetLabel(CLIP_DIALOGUE_TONE, c.dialogueDeliveryTone) || c.dialogueDeliveryTone : "";
+
+  const audioLines = [
+    "=== DIREZIONE AUDIO (brief automatico AXSTUDIO) ===",
+    `Musica / colonna sonora (intento): ${music}.`,
+    `Sound design / ambiente: ${ambient}.`,
+    `Effetti: ${fx}`,
+    `Energia complessiva del momento: ${energy}.`,
+    toneLine ? `Tono emotivo (allineato al video): ${toneLine}.` : null,
+    String(c.clipAudioDirection || "").trim() ? `Note regia voce / mix: ${String(c.clipAudioDirection).trim()}` : null,
+    type === CLIP_TYPE.NARRATED && (narrTone || narrPace || narrPause)
+      ? `Consegna narratore: tono ${narrTone || "—"}; ritmo ${narrPace || "—"}; pause ${narrPause || "—"}.`
+      : null,
+    type === CLIP_TYPE.DIALOGUE && dialTone ? `Consegna dialoghi (tono battute): ${dialTone}.` : null,
+    String(c.clipExternalNarratorNote || "").trim()
+      ? `Voce / narratore esterno (note): ${String(c.clipExternalNarratorNote).trim()}`
+      : null,
+  ];
+
+  const clipDirectionPromptFinal = videoLines.filter(Boolean).join("\n");
+  const clipAudioDirectionPrompt = audioLines.filter(Boolean).join("\n");
+
+  const see = [c.clipVisualActionSummary, c.clipNarrativeGoal, type === CLIP_TYPE.DIALOGUE ? c.clipDialogActionSummary : null]
+    .map((x) => String(x || "").trim())
+    .filter(Boolean)
+    .join(" — ") || "—";
+
+  const hear = [
+    `Musica: ${music}`,
+    `Ambiente: ${ambient}`,
+    `Effetti: ${c.effectsEnabled === true ? "sì" : "no"}`,
+    `Energia: ${energy}`,
+  ].join(" · ");
+
+  const clipCreativeBriefFinal = [
+    "=== CREATIVE BRIEF CLIP (AXSTUDIO · sintesi automatica) ===",
+    "",
+    "COSA SI VEDE",
+    see,
+    "",
+    "COSA SI SENTE (intent)",
+    hear,
+    "",
+    "EMOZIONE / INTENTO",
+    toneLine || "—",
+    "",
+    "REGIA (estratto)",
+    String(c.clipDirectionPrompt || "").trim().slice(0, 900) || "(vedi clipDirectionPromptFinal)",
+  ].join("\n");
+
+  return {
+    clipDirectionPromptFinal,
+    clipAudioDirectionPrompt,
+    clipCreativeBriefFinal,
+  };
+}
+
 /**
  * @param {object} c
  * @returns {object}
@@ -288,6 +597,13 @@ export function normalizeSceneVideoClip(c) {
   const durationMode = c.durationMode === "manual" ? "manual" : "auto";
   const dialogLines = (Array.isArray(c.dialogLines) ? c.dialogLines : []).map(normalizeDialogLine).filter(Boolean);
   const narratorVoice = normalizeNarratorVoice(c.narratorVoice);
+  const narratorId = String(c.narratorId ?? "").trim() || null;
+  const resolvedNarratorId = String(c.resolvedNarratorId ?? "").trim() || null;
+  const resolvedNarratorVoiceId = String(c.resolvedNarratorVoiceId ?? "").trim() || null;
+  const narratorResolutionMode =
+    c.narratorResolutionMode != null && String(c.narratorResolutionMode).trim()
+      ? String(c.narratorResolutionMode).trim()
+      : null;
   const durationSeconds =
     typeof c.durationSeconds === "number" && Number.isFinite(c.durationSeconds) && c.durationSeconds > 0
       ? Math.round(c.durationSeconds * 10) / 10
@@ -296,6 +612,37 @@ export function normalizeSceneVideoClip(c) {
   const clipCameraPreset = String(c.clipCameraPreset ?? "").trim();
   const mood = String(c.mood ?? "").trim();
   const emotionalIntensity = String(c.emotionalIntensity ?? "").trim();
+  const clipNarrativeGoal = String(c.clipNarrativeGoal ?? "").trim();
+  const clipVisualActionSummary = String(c.clipVisualActionSummary ?? "").trim();
+  const clipDialogActionSummary = String(c.clipDialogActionSummary ?? "").trim();
+  const clipDirectionPrompt = String(c.clipDirectionPrompt ?? "").trim();
+  const clipDirectionSummary = String(c.clipDirectionSummary ?? "").trim();
+  const lastClipDirectionPromptEditedAt =
+    c.lastClipDirectionPromptEditedAt != null && String(c.lastClipDirectionPromptEditedAt).trim()
+      ? String(c.lastClipDirectionPromptEditedAt).trim()
+      : null;
+  const clipOpeningStyle = pickOptionId(CLIP_OPENING_STYLES, c.clipOpeningStyle, "cinematic_open");
+  const clipClosingStyle = pickOptionId(CLIP_CLOSING_STYLES, c.clipClosingStyle, "soft_fade");
+  const clipCameraIntensity = pickOptionId(CLIP_CAMERA_INTENSITY, c.clipCameraIntensity, "medium");
+  const clipFocusSubject = pickOptionId(CLIP_FOCUS_SUBJECT, c.clipFocusSubject, "environment");
+  const clipEmotionalTone = String(c.clipEmotionalTone ?? c.mood ?? "").trim();
+  const clipEnergyLevel = pickOptionId(CLIP_ENERGY_LEVEL, c.clipEnergyLevel, "medium");
+  let clipMusicMood = pickOptionId(CLIP_MUSIC_MOOD, c.clipMusicMood, "none");
+  if (!String(c.clipMusicMood ?? "").trim() && c.backgroundMusicEnabled === true && clipMusicMood === "none") {
+    clipMusicMood = "delicate";
+  }
+  let clipAmbientSoundPreset = pickOptionId(CLIP_AMBIENT_PRESET, c.clipAmbientSoundPreset, "none");
+  if (!String(c.clipAmbientSoundPreset ?? "").trim() && c.ambientSoundEnabled === true && clipAmbientSoundPreset === "none") {
+    clipAmbientSoundPreset = "village";
+  }
+  const clipAudioDirection = String(c.clipAudioDirection ?? "").trim();
+  const clipProgressionNote = String(c.clipProgressionNote ?? "").trim();
+  const clipPresentCharacterIds = normalizeClipPresentIds(c.clipPresentCharacterIds);
+  const narratorDeliveryTone = String(c.narratorDeliveryTone ?? "").trim();
+  const narratorPace = String(c.narratorPace ?? "").trim();
+  const narratorPauseStyle = String(c.narratorPauseStyle ?? "").trim();
+  const dialogueDeliveryTone = String(c.dialogueDeliveryTone ?? "").trim();
+  const clipExternalNarratorNote = String(c.clipExternalNarratorNote ?? "").trim();
   const dialogFirstSpeakerId = String(c.dialogFirstSpeakerId ?? "").trim();
   const dialogLineOrder = Array.isArray(c.dialogLineOrder)
     ? c.dialogLineOrder.map((x) => String(x || "").trim()).filter(Boolean)
@@ -307,6 +654,10 @@ export function normalizeSceneVideoClip(c) {
     typeof c.audioDurationSeconds === "number" && Number.isFinite(c.audioDurationSeconds) && c.audioDurationSeconds > 0
       ? Math.round(c.audioDurationSeconds * 10) / 10
       : null;
+  const videoDurationSeconds =
+    typeof c.videoDurationSeconds === "number" && Number.isFinite(c.videoDurationSeconds) && c.videoDurationSeconds > 0
+      ? Math.round(c.videoDurationSeconds * 10) / 10
+      : null;
   return {
     id: c.id,
     sceneId: c.sceneId,
@@ -317,18 +668,62 @@ export function normalizeSceneVideoClip(c) {
     durationSeconds,
     narratorText: String(c.narratorText ?? "").trim(),
     narratorVoice,
+    narratorId,
+    resolvedNarratorId,
+    resolvedNarratorVoiceId,
+    narratorResolutionMode,
     dialogLines,
     dialogFirstSpeakerId,
     dialogLineOrder,
     cameraDirection: cameraDirection || (inferredType === CLIP_TYPE.NARRATED ? "slow_zoom" : ""),
     clipCameraPreset: clipCameraPreset || (inferredType === CLIP_TYPE.NARRATED ? "slow_zoom" : ""),
-    mood,
+    mood: clipEmotionalTone || mood,
     emotionalIntensity,
-    backgroundMusicEnabled: c.backgroundMusicEnabled === true,
-    ambientSoundEnabled: c.ambientSoundEnabled === true,
+    clipNarrativeGoal,
+    clipVisualActionSummary,
+    clipDialogActionSummary,
+    clipDirectionPrompt,
+    clipDirectionSummary,
+    clipDirectionPromptFinal: String(c.clipDirectionPromptFinal ?? "").trim(),
+    clipAudioDirectionPrompt: String(c.clipAudioDirectionPrompt ?? "").trim(),
+    clipCreativeBriefFinal: String(c.clipCreativeBriefFinal ?? "").trim(),
+    compiledVideoDirection: normalizeCompiledSlot(c.compiledVideoDirection),
+    compiledAudioDirection: normalizeCompiledSlot(c.compiledAudioDirection),
+    compiledCreativeIntent: normalizeCompiledSlot(c.compiledCreativeIntent),
+    compiledPromptBundle: normalizeCompiledSlot(c.compiledPromptBundle),
+    compiledAudioDesignBundle: normalizeCompiledSlot(c.compiledAudioDesignBundle),
+    lastClipDirectionPromptEditedAt,
+    clipOpeningStyle,
+    clipClosingStyle,
+    clipCameraIntensity,
+    clipFocusSubject,
+    clipEmotionalTone,
+    clipEnergyLevel,
+    clipMusicMood,
+    clipAmbientSoundPreset,
+    clipAudioDirection,
+    clipProgressionNote,
+    clipPresentCharacterIds,
+    narratorDeliveryTone,
+    narratorPace,
+    narratorPauseStyle,
+    dialogueDeliveryTone,
+    clipExternalNarratorNote,
+    backgroundMusicEnabled: clipMusicMood !== "none",
+    ambientSoundEnabled: clipAmbientSoundPreset !== "none",
     effectsEnabled: c.effectsEnabled === true,
     audioUrl: c.audioUrl != null && String(c.audioUrl).trim() ? String(c.audioUrl).trim() : null,
+    voiceStem: normalizeAudioStemRecord(c.voiceStem),
+    musicStem: normalizeAudioStemRecord(c.musicStem),
+    ambientStem: normalizeAudioStemRecord(c.ambientStem),
+    sfxStem: normalizeAudioStemRecord(c.sfxStem),
+    audioRenderResult: c.audioRenderResult && typeof c.audioRenderResult === "object" ? c.audioRenderResult : null,
+    audioMixExecutionResult:
+      c.audioMixExecutionResult && typeof c.audioMixExecutionResult === "object" ? c.audioMixExecutionResult : null,
+    lastAudioRenderAt:
+      c.lastAudioRenderAt != null && String(c.lastAudioRenderAt).trim() ? String(c.lastAudioRenderAt).trim() : null,
     audioDurationSeconds,
+    videoDurationSeconds,
     providerVideo: String(c.providerVideo ?? "").trim(),
     providerVoice: String(c.providerVoice ?? "").trim(),
     generationModel: String(c.generationModel ?? "").trim(),
@@ -336,6 +731,15 @@ export function normalizeSceneVideoClip(c) {
     lastGenerationError:
       c.lastGenerationError != null && String(c.lastGenerationError).trim()
         ? String(c.lastGenerationError).trim()
+        : null,
+    lastWorkflowFailure: sanitizeStructuredWorkflowFailure(c.lastWorkflowFailure),
+    clipPipelineLastSuccessAt:
+      c.clipPipelineLastSuccessAt != null && String(c.clipPipelineLastSuccessAt).trim()
+        ? String(c.clipPipelineLastSuccessAt).trim()
+        : null,
+    clipPipelineLastFailedAt:
+      c.clipPipelineLastFailedAt != null && String(c.clipPipelineLastFailedAt).trim()
+        ? String(c.clipPipelineLastFailedAt).trim()
         : null,
     videoUrl: c.videoUrl != null ? String(c.videoUrl) : null,
     status: st,
@@ -345,6 +749,113 @@ export function normalizeSceneVideoClip(c) {
     createdAt: c.createdAt ?? null,
     updatedAt: c.updatedAt ?? null,
     includeInFinal: c.includeInFinal !== false,
+    lastExecutionSnapshot:
+      c.lastExecutionSnapshot && typeof c.lastExecutionSnapshot === "object" ? c.lastExecutionSnapshot : null,
+    videoExecutionStrategy:
+      c.videoExecutionStrategy && typeof c.videoExecutionStrategy === "object" ? c.videoExecutionStrategy : null,
+    videoRenderPlan: c.videoRenderPlan && typeof c.videoRenderPlan === "object" ? c.videoRenderPlan : null,
+    videoConstraintReport:
+      c.videoConstraintReport && typeof c.videoConstraintReport === "object" ? c.videoConstraintReport : null,
+    videoExecutionFailureStage:
+      c.videoExecutionFailureStage != null && String(c.videoExecutionFailureStage).trim()
+        ? String(c.videoExecutionFailureStage).trim()
+        : null,
+    videoExecutionFailureReason:
+      c.videoExecutionFailureReason != null && String(c.videoExecutionFailureReason).trim()
+        ? String(c.videoExecutionFailureReason).trim()
+        : null,
+    videoExecutionFailureDetails:
+      c.videoExecutionFailureDetails && typeof c.videoExecutionFailureDetails === "object"
+        ? c.videoExecutionFailureDetails
+        : null,
+    videoMuxFailure: c.videoMuxFailure === true,
+    videoMuxFailureDetails:
+      c.videoMuxFailureDetails != null && String(c.videoMuxFailureDetails).trim()
+        ? String(c.videoMuxFailureDetails).trim()
+        : null,
+    videoProviderOutputUrl:
+      c.videoProviderOutputUrl != null && String(c.videoProviderOutputUrl).trim()
+        ? String(c.videoProviderOutputUrl).trim()
+        : null,
+    muxedFinalVideoUrl:
+      c.muxedFinalVideoUrl != null && String(c.muxedFinalVideoUrl).trim()
+        ? String(c.muxedFinalVideoUrl).trim()
+        : null,
+    musicExecutionStrategy:
+      c.musicExecutionStrategy && typeof c.musicExecutionStrategy === "object" ? c.musicExecutionStrategy : null,
+    musicRenderPlan: c.musicRenderPlan && typeof c.musicRenderPlan === "object" ? c.musicRenderPlan : null,
+    musicGenerationResult:
+      c.musicGenerationResult && typeof c.musicGenerationResult === "object" ? c.musicGenerationResult : null,
+    musicProvider: c.musicProvider != null && String(c.musicProvider).trim() ? String(c.musicProvider).trim() : null,
+    musicSourceType:
+      c.musicSourceType != null && String(c.musicSourceType).trim() ? String(c.musicSourceType).trim() : null,
+    musicAssetUrl:
+      c.musicAssetUrl != null && String(c.musicAssetUrl).trim() ? String(c.musicAssetUrl).trim() : null,
+    musicAssetDurationSec:
+      typeof c.musicAssetDurationSec === "number" && Number.isFinite(c.musicAssetDurationSec)
+        ? c.musicAssetDurationSec
+        : null,
+    musicFallbackUsed: c.musicFallbackUsed === true,
+    musicConstraintReport:
+      c.musicConstraintReport && typeof c.musicConstraintReport === "object" ? c.musicConstraintReport : null,
+    professionalMixStrategy:
+      c.professionalMixStrategy && typeof c.professionalMixStrategy === "object"
+        ? c.professionalMixStrategy
+        : null,
+    professionalMixRenderPlan:
+      c.professionalMixRenderPlan && typeof c.professionalMixRenderPlan === "object"
+        ? c.professionalMixRenderPlan
+        : null,
+    professionalMixResult:
+      c.professionalMixResult && typeof c.professionalMixResult === "object" ? c.professionalMixResult : null,
+    finalAudioMixUrl:
+      c.finalAudioMixUrl != null && String(c.finalAudioMixUrl).trim()
+        ? String(c.finalAudioMixUrl).trim()
+        : null,
+    finalAudioMixMetrics:
+      c.finalAudioMixMetrics && typeof c.finalAudioMixMetrics === "object" ? c.finalAudioMixMetrics : null,
+    finalAudioMixConstraintReport:
+      c.finalAudioMixConstraintReport && typeof c.finalAudioMixConstraintReport === "object"
+        ? c.finalAudioMixConstraintReport
+        : null,
+    mixFallbackUsed: c.mixFallbackUsed === true,
+    dialogueExecutionStrategy:
+      c.dialogueExecutionStrategy && typeof c.dialogueExecutionStrategy === "object"
+        ? c.dialogueExecutionStrategy
+        : null,
+    dialogueVoiceCastingPlan:
+      c.dialogueVoiceCastingPlan && typeof c.dialogueVoiceCastingPlan === "object"
+        ? c.dialogueVoiceCastingPlan
+        : null,
+    dialogueRenderPlan:
+      c.dialogueRenderPlan && typeof c.dialogueRenderPlan === "object" ? c.dialogueRenderPlan : null,
+    dialogueTimingPlan:
+      c.dialogueTimingPlan && typeof c.dialogueTimingPlan === "object" ? c.dialogueTimingPlan : null,
+    multiVoiceRenderResult:
+      c.multiVoiceRenderResult && typeof c.multiVoiceRenderResult === "object" ? c.multiVoiceRenderResult : null,
+    speakerVoiceMap: c.speakerVoiceMap && typeof c.speakerVoiceMap === "object" ? c.speakerVoiceMap : null,
+    dialogueConstraintReport:
+      c.dialogueConstraintReport && typeof c.dialogueConstraintReport === "object"
+        ? c.dialogueConstraintReport
+        : null,
+    dialogueStem: normalizeAudioStemRecord(c.dialogueStem),
+    dialogueFallbackUsed: c.dialogueFallbackUsed === true,
+    dialogueDirectionPlan:
+      c.dialogueDirectionPlan && typeof c.dialogueDirectionPlan === "object" ? c.dialogueDirectionPlan : null,
+    dialogueSceneType:
+      c.dialogueSceneType != null && String(c.dialogueSceneType).trim()
+        ? String(c.dialogueSceneType).trim()
+        : null,
+    dialogueShotPlan:
+      c.dialogueShotPlan && typeof c.dialogueShotPlan === "object" ? c.dialogueShotPlan : null,
+    dialogueStagingPlan:
+      c.dialogueStagingPlan && typeof c.dialogueStagingPlan === "object" ? c.dialogueStagingPlan : null,
+    dialoguePresencePlan:
+      c.dialoguePresencePlan && typeof c.dialoguePresencePlan === "object" ? c.dialoguePresencePlan : null,
+    dialogueDirectionConstraintReport:
+      c.dialogueDirectionConstraintReport && typeof c.dialogueDirectionConstraintReport === "object"
+        ? c.dialogueDirectionConstraintReport
+        : null,
   };
 }
 
@@ -370,6 +881,10 @@ export function createEmptySceneVideoClip(sceneId, sortOrder = 0) {
     durationSeconds: null,
     narratorText: "",
     narratorVoice: null,
+    narratorId: null,
+    resolvedNarratorId: null,
+    resolvedNarratorVoiceId: null,
+    narratorResolutionMode: null,
     dialogLines: [],
     dialogFirstSpeakerId: "",
     dialogLineOrder: [],
@@ -377,16 +892,27 @@ export function createEmptySceneVideoClip(sceneId, sortOrder = 0) {
     cameraDirection: "over_shoulder",
     mood: "",
     emotionalIntensity: "medium",
+    clipOpeningStyle: "cinematic_open",
+    clipClosingStyle: "soft_fade",
+    clipCameraIntensity: "medium",
+    clipFocusSubject: "environment",
+    clipMusicMood: "none",
+    clipAmbientSoundPreset: "village",
+    clipEnergyLevel: "medium",
     backgroundMusicEnabled: false,
     ambientSoundEnabled: true,
     effectsEnabled: false,
     audioUrl: null,
     audioDurationSeconds: null,
+    videoDurationSeconds: null,
     providerVideo: "",
     providerVoice: "",
     generationModel: "",
     generationStatus: "idle",
     lastGenerationError: null,
+    lastWorkflowFailure: null,
+    clipPipelineLastSuccessAt: null,
+    clipPipelineLastFailedAt: null,
     videoUrl: null,
     status: SCENE_VIDEO_CLIP_STATUS.DRAFT,
     sortOrder,
@@ -555,14 +1081,22 @@ export function allCharacterMastersApprovedForVideo(data) {
   const need = getCharactersNeedingMaster(plan);
   if (!need.length) return true;
   const pcm = data.projectCharacterMasters && typeof data.projectCharacterMasters === "object" ? data.projectCharacterMasters : {};
+  /** Allineato a `characterMasterReadyForScenes` in scenografieProjectPersistence (evita ciclo di import). */
+  const trustedSources = new Set([
+    "user_canonical_lock",
+    "migrated_id_and_name_same_url",
+    "migrated_id_and_name",
+    "migrated_name_only",
+    "migrated_pcid_layout",
+  ]);
   return need.every((c) => {
     if (!approvalEntryForCharacter(data.characterApprovalMap, c)?.approved) return false;
-    const k = stableCharacterKey(c);
-    const row = (k && pcm[k]) || (c.id != null ? pcm[c.id] : null);
+    const row = pcmRowForCharacter(pcm, c);
     const url = row?.masterImageUrl ? String(row.masterImageUrl).trim() : "";
     if (!url) return false;
     if (row.pendingManualReview === true) return false;
-    if (row.source !== "user_canonical_lock") return false;
+    const src = row.source ? String(row.source) : "";
+    if (!trustedSources.has(src)) return false;
     return true;
   });
 }

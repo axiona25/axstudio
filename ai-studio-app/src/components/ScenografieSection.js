@@ -10,10 +10,14 @@ import {
   loadScenografiaProjectById,
   ensureWorkspace,
   summarizeScenografiaWorkspaceForIndex,
+  upsertScenografiaProjectInIndex,
 } from "../services/scenografieProjectPersistence.js";
 
 export default function ScenografieSection({
   scenografieNavRef,
+  /** @type {{ workspaceId: string, chapterId?: string, deepLink?: { focus?: string, sceneId?: string, clipId?: string } } | null} */
+  scenografieBootstrap = null,
+  onConsumedScenografieBootstrap,
   onEditorOpenChange,
   onHeaderTitleChange,
   onSave,
@@ -28,8 +32,14 @@ export default function ScenografieSection({
 }) {
   /** @type {{ type: 'hub' } | { type: 'workspace', workspaceId: string, projectNumber: number } | { type: 'chapter', workspaceId: string, chapterId: string, chapterOrdinal: number, projectNumber: number }} */
   const [route, setRoute] = useState({ type: "hub" });
+  const [editorRecoveryDeepLink, setEditorRecoveryDeepLink] = useState(null);
   const routeRef = useRef(route);
   routeRef.current = route;
+
+  /** Volo scene pipeline ancora in corso dopo navigazione via dall'editor (stesso workspace + capitolo). */
+  const [scenePipelineFlight, setScenePipelineFlight] = useState(null);
+  /** Ref condiviso: sopravvive allo smontaggio dell'editor così il loop async e «Interrompi» restano allineati. */
+  const sharedPipelineAbortRef = useRef(false);
 
   useEffect(() => {
     onEditorOpenChange?.(route.type !== "hub");
@@ -60,6 +70,68 @@ export default function ScenografieSection({
   }, [route.type, route.workspaceId, onHeaderTitleChange]);
 
   useEffect(() => {
+    if (route.type !== "workspace" && route.type !== "chapter") return undefined;
+    const id = route.workspaceId;
+    let cancelled = false;
+    const t = window.setTimeout(() => {
+      void (async () => {
+        try {
+          const raw = await loadScenografiaProjectById(id);
+          if (cancelled) return;
+          await upsertScenografiaProjectInIndex(id, raw);
+        } catch {
+          /* ignore */
+        }
+      })();
+    }, 500);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(t);
+    };
+  }, [route.type, route.workspaceId]);
+
+  useEffect(() => {
+    if (!scenografieBootstrap?.workspaceId) return;
+    const workspaceId = String(scenografieBootstrap.workspaceId).trim();
+    if (!workspaceId) return;
+    const bootChapterId = scenografieBootstrap.chapterId ? String(scenografieBootstrap.chapterId).trim() : "";
+    const deepLink =
+      scenografieBootstrap.deepLink && typeof scenografieBootstrap.deepLink === "object"
+        ? scenografieBootstrap.deepLink
+        : null;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const raw = await loadScenografiaProjectById(workspaceId);
+        if (cancelled) return;
+        const ws = ensureWorkspace(raw);
+        const chapters = [...(ws?.chapters || [])].sort(
+          (a, b) => (a.sortOrder - b.sortOrder) || String(a.id).localeCompare(String(b.id)),
+        );
+        let ch = bootChapterId ? chapters.find((c) => c.id === bootChapterId) : null;
+        if (!ch && chapters[0]) ch = chapters[0];
+        if (ch) {
+          const ord = Math.max(1, chapters.indexOf(ch) + 1);
+          setRoute({ type: "chapter", workspaceId, chapterId: ch.id, chapterOrdinal: ord, projectNumber: 1 });
+        } else {
+          setRoute({ type: "workspace", workspaceId, projectNumber: 1 });
+        }
+        setEditorRecoveryDeepLink(deepLink);
+      } catch {
+        if (!cancelled) {
+          setRoute({ type: "workspace", workspaceId, projectNumber: 1 });
+          setEditorRecoveryDeepLink(deepLink);
+        }
+      } finally {
+        if (!cancelled) onConsumedScenografieBootstrap?.();
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [scenografieBootstrap, onConsumedScenografieBootstrap]);
+
+  useEffect(() => {
     if (!scenografieNavRef) return undefined;
     scenografieNavRef.current.tryBackToHub = () => {
       const r = routeRef.current;
@@ -84,9 +156,14 @@ export default function ScenografieSection({
     setRoute({ type: "workspace", workspaceId, projectNumber: projectNumber || 1 });
   }, []);
 
-  const openChapter = useCallback((chapterId, chapterOrdinal) => {
+  const openChapter = useCallback((chapterId, chapterOrdinal, deepLink) => {
     const r = routeRef.current;
     if (r.type !== "workspace") return;
+    if (deepLink && typeof deepLink === "object" && Object.keys(deepLink).length > 0) {
+      setEditorRecoveryDeepLink(deepLink);
+    } else {
+      setEditorRecoveryDeepLink(null);
+    }
     setRoute({
       type: "chapter",
       workspaceId: r.workspaceId,
@@ -134,6 +211,11 @@ export default function ScenografieSection({
       imageProgress={imageProgress}
       setImageProgress={setImageProgress}
       imageStylePresets={imageStylePresets}
+      sharedPipelineAbortRef={sharedPipelineAbortRef}
+      scenePipelineFlight={scenePipelineFlight}
+      setScenePipelineFlight={setScenePipelineFlight}
+      initialRecoveryDeepLink={editorRecoveryDeepLink}
+      onConsumedRecoveryDeepLink={() => setEditorRecoveryDeepLink(null)}
     />
   );
 }

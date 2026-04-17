@@ -16,13 +16,24 @@ import {
   buildScenografiaWorkspaceFromWizard,
   ensureWorkspace,
   mergeChapterDataWithProjectCharacterPool,
+  indexSummaryNeedsLightReconcile,
 } from "../services/scenografieProjectPersistence.js";
+import {
+  FILM_DELIVERY_STATE,
+  FILM_OUTPUT_READINESS,
+  deriveConsumerFilmConfidence,
+  deriveFinalOutputSimplePresentation,
+  FINAL_OUTPUT_SIMPLE_TIER,
+  describeFinalFilmPlaybackMoment,
+} from "../services/scenografieConsumerReliability.js";
 import { buildProjectStyleFromImagePreset } from "../services/scenografieProjectStyle.js";
 import {
   buildProjectPosterPromptPack,
   executeOfficialProjectPosterFlux,
   PROJECT_POSTER_STATUS,
 } from "../services/scenografieProjectPoster.js";
+import { MODULE_REGISTRY, MODULE_IDS } from "../config/moduleProviderRegistry.js";
+import ScenografieStoryProjectWizard from "./ScenografieStoryProjectWizard.js";
 
 const AX = {
   bg: "#0a0a0f",
@@ -66,6 +77,7 @@ export default function ScenografieProjectHub({ onOpenWorkspace, imageStylePrese
   const [createError, setCreateError] = useState("");
   /** @type {'idle'|'saving'|'poster'|'done'} */
   const [createPhase, setCreatePhase] = useState("idle");
+  const [storyWizardOpen, setStoryWizardOpen] = useState(false);
 
   const defaultPresetId = useMemo(() => {
     const list = imageStylePresets || [];
@@ -85,7 +97,21 @@ export default function ScenografieProjectHub({ onOpenWorkspace, imageStylePrese
 
   const refresh = useCallback(async () => {
     await migrateLegacyScenografiaToMultiIfNeeded();
-    const idx = await loadScenografiaProjectsIndex();
+    let idx = await loadScenografiaProjectsIndex();
+    const stale = (idx.projects || []).filter((p) => indexSummaryNeedsLightReconcile(p.summary)).slice(0, 8);
+    if (stale.length) {
+      await Promise.all(
+        stale.map(async (p) => {
+          try {
+            const raw = await loadScenografiaProjectById(p.id);
+            await upsertScenografiaProjectInIndex(p.id, raw);
+          } catch {
+            /* ignore */
+          }
+        }),
+      );
+      idx = await loadScenografiaProjectsIndex();
+    }
     setIndex(idx);
   }, []);
 
@@ -362,6 +388,99 @@ export default function ScenografieProjectHub({ onOpenWorkspace, imageStylePrese
     }
   }, [newTitle, newDescription, newPresetId, imageStylePresets, onOpenWorkspace, refresh]);
 
+  const handleStoryWizardCommitted = useCallback(
+    async (workspace) => {
+      if (!workspace || creating) return;
+      setCreating(true);
+      setCreateError("");
+      setCreatePhase("saving");
+      const id = createScenografiaProjectId();
+      const title = String(workspace.narrativeProjectTitle || workspace.projectTitle || "").trim();
+      const description = String(workspace.narrativeProjectDescription || workspace.projectDescription || "").trim();
+      const projectStyle = workspace.globalProjectStyle;
+      try {
+        let ws = { ...workspace };
+        await saveScenografiaProjectById(id, ws);
+        await upsertScenografiaProjectInIndex(id, ws);
+
+        const plan0 = ws.chapters[0]?.data?.plan;
+        const characters = Array.isArray(plan0?.characters) ? plan0.characters : null;
+        const plannerKeywords =
+          typeof plan0?.summary_it === "string" && plan0.summary_it.trim()
+            ? plan0.summary_it.trim().split(/\s+/).filter((w) => w.length > 3).slice(0, 14)
+            : null;
+        const pack = buildProjectPosterPromptPack({
+          projectTitle: title,
+          projectDescription: description,
+          projectStyle,
+          characters,
+          plannerKeywords,
+          conceptualOnly: !characters?.length,
+        });
+        const posterStyleSnap = projectStyle
+          ? {
+              presetId: projectStyle.presetId,
+              label: projectStyle.label,
+              isAnimated: projectStyle.isAnimated === true,
+            }
+          : null;
+        ws = {
+          ...ws,
+          projectPosterPrompt: pack.positivePrompt,
+          projectPosterStatus: PROJECT_POSTER_STATUS.GENERATING,
+          posterGenerationStatus: PROJECT_POSTER_STATUS.GENERATING,
+          projectPosterStyle: posterStyleSnap,
+          projectPosterMetadata: pack.metadata,
+          globalProjectStyle: projectStyle,
+          updatedAt: new Date().toISOString(),
+        };
+        await saveScenografiaProjectById(id, ws);
+        await upsertScenografiaProjectInIndex(id, ws);
+        setCreatePhase("poster");
+        try {
+          const { imageUrl } = await executeOfficialProjectPosterFlux(pack, () => {});
+          const tUp = new Date().toISOString();
+          ws = {
+            ...ws,
+            posterImageUrl: imageUrl,
+            projectPosterUrl: imageUrl,
+            projectPosterStatus: PROJECT_POSTER_STATUS.READY,
+            posterGenerationStatus: PROJECT_POSTER_STATUS.READY,
+            projectPosterUpdatedAt: tUp,
+            updatedAt: tUp,
+          };
+          await saveScenografiaProjectById(id, ws);
+          await upsertScenografiaProjectInIndex(id, ws);
+        } catch (e) {
+          if (typeof console !== "undefined" && console.warn) console.warn("[Scenografie] locandina story wizard:", e);
+          const tUp = new Date().toISOString();
+          ws = {
+            ...ws,
+            projectPosterStatus: PROJECT_POSTER_STATUS.FAILED,
+            posterGenerationStatus: PROJECT_POSTER_STATUS.FAILED,
+            projectPosterUpdatedAt: tUp,
+            updatedAt: tUp,
+          };
+          await saveScenografiaProjectById(id, ws);
+          await upsertScenografiaProjectInIndex(id, ws);
+        }
+        setCreatePhase("done");
+        await refresh();
+        setCreatePhase("idle");
+        const idxAfter = await loadScenografiaProjectsIndex();
+        const ord = Math.max(1, (idxAfter.projects || []).length);
+        onOpenWorkspace(id, ord);
+      } catch (e) {
+        setCreateError(e?.message || "Creazione da traccia non riuscita.");
+        setCreatePhase("idle");
+        throw e;
+      } finally {
+        setCreating(false);
+      }
+    },
+    [creating, onOpenWorkspace, refresh]
+  );
+
   const projectsSorted = [...(index.projects || [])].sort((a, b) =>
     String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""))
   );
@@ -374,6 +493,9 @@ export default function ScenografieProjectHub({ onOpenWorkspace, imageStylePrese
             <HiFilm size={24} style={{ color: AX.violet }} />
             Scenografie
           </h2>
+          <p style={{ fontSize: 12, fontWeight: 700, color: AX.electric, margin: "8px 0 0", letterSpacing: "0.02em", maxWidth: 640, lineHeight: 1.45 }}>
+            {MODULE_REGISTRY[MODULE_IDS.SCENOGRAFIE].ui.headerSubtitle}
+          </p>
           <p style={{ fontSize: 13, color: AX.text2, marginTop: 8, maxWidth: 560, lineHeight: 1.55 }}>
             Ogni scheda è un <strong style={{ color: AX.text }}>progetto narrativo</strong>: locandina, più capitoli con scene, personaggi e clip. Apri un progetto per gestire i capitoli in ordine.
           </p>
@@ -423,7 +545,46 @@ export default function ScenografieProjectHub({ onOpenWorkspace, imageStylePrese
             <HiPlus size={18} />
             Nuovo progetto
           </button>
+          <button
+            type="button"
+            onClick={() => !creating && setStoryWizardOpen(true)}
+            disabled={creating || !imageStylePresets.length}
+            title="Crea un progetto partendo da una traccia completa: analisi, scene, personaggi e pre-produzione guidata"
+            style={{
+              padding: "10px 18px",
+              borderRadius: 10,
+              border: `1px solid rgba(123,77,255,0.45)`,
+              background: "rgba(123,77,255,0.12)",
+              color: AX.text,
+              fontWeight: 700,
+              fontSize: 14,
+              cursor: creating || !imageStylePresets.length ? "wait" : "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              opacity: !imageStylePresets.length ? 0.5 : 1,
+            }}
+          >
+            <HiSparkles size={18} style={{ color: AX.violet }} />
+            Da traccia completa
+          </button>
         </div>
+      </div>
+
+      <div
+        style={{
+          marginBottom: 14,
+          padding: "10px 14px",
+          borderRadius: 12,
+          border: "1px solid rgba(41,182,255,0.28)",
+          background: "rgba(41,182,255,0.06)",
+          fontSize: 12,
+          color: AX.text2,
+          lineHeight: 1.5,
+        }}
+      >
+        <strong style={{ color: AX.electric }}>Stato reale</strong> è nell&apos;editor di ogni capitolo. Il wizard «Da traccia completa» produce una{" "}
+        <strong style={{ color: AX.text }}>proposta iniziale</strong> finché non confermi e lavori in Scenografie.
       </div>
 
       {loading ? (
@@ -481,7 +642,7 @@ export default function ScenografieProjectHub({ onOpenWorkspace, imageStylePrese
           {projectsSorted.map((p, idx) => {
             const n = projectsSorted.length - idx;
             const s = p.summary || {};
-            const st = s.uiStatus || "planning";
+            const st = s.workspaceAggregateUiStatus || s.uiStatus || "planning";
             const stLabel = SCENOGRAFIA_UI_STATUS_LABEL[st] || st;
             const stColor = STATUS_COLOR[st] || AX.muted;
             const displayTitle = s.displayTitle || "Senza titolo";
@@ -489,6 +650,40 @@ export default function ScenografieProjectHub({ onOpenWorkspace, imageStylePrese
             const posterSt = s.projectPosterStatus || s.posterGenerationStatus || (poster ? "ready" : "none");
             const posterOutdated = s.projectPosterOutdated === true;
             const chaptersCount = s.chaptersCount != null ? s.chaptersCount : 1;
+            const filmDel = s.filmDeliveryState != null ? String(s.filmDeliveryState).trim() : "";
+            const hasFilmUrl = Boolean(s.completedFilmUrl != null && String(s.completedFilmUrl).trim());
+            const filmReadiness = String(s.filmOutputReadiness || "").trim() || FILM_OUTPUT_READINESS.MISSING_OUTPUT;
+            let filmSimple = null;
+            if (filmDel && filmDel !== FILM_DELIVERY_STATE.NOT_READY) {
+              const conf = deriveConsumerFilmConfidence({
+                filmDeliveryState: filmDel,
+                filmOutputReadiness: filmReadiness,
+                filmOutputTrust: String(s.filmOutputTrust || "").trim(),
+                hasUrl: hasFilmUrl,
+                completedFilmUrl: s.completedFilmUrl,
+                filmReconcileMeta: s.filmReconcileMeta,
+              });
+              const fv =
+                s.filmVerificationEffective && typeof s.filmVerificationEffective === "object"
+                  ? s.filmVerificationEffective
+                  : null;
+              filmSimple = deriveFinalOutputSimplePresentation(conf, {
+                hasUrl: hasFilmUrl,
+                filmDeliveryState: filmDel,
+                filmOutputReadiness: filmReadiness,
+                filmVerificationEffective: fv,
+              });
+            }
+            const hubPlaybackMoment =
+              filmSimple != null
+                ? describeFinalFilmPlaybackMoment(
+                    filmSimple.tier,
+                    filmReadiness,
+                    s.filmVerificationEffective && typeof s.filmVerificationEffective === "object"
+                      ? s.filmVerificationEffective
+                      : null,
+                  )
+                : null;
             const initial = displayTitle.trim().charAt(0).toUpperCase() || "?";
             return (
               <div
@@ -650,6 +845,40 @@ export default function ScenografieProjectHub({ onOpenWorkspace, imageStylePrese
                       <strong style={{ color: AX.electric }}>{chaptersCount}</strong>{" "}
                       {chaptersCount === 1 ? "capitolo" : "capitoli"}
                     </div>
+                    {filmSimple ? (
+                      <div
+                        style={{
+                          marginTop: 10,
+                          fontSize: 10,
+                          lineHeight: 1.45,
+                          color:
+                            filmSimple.tier === FINAL_OUTPUT_SIMPLE_TIER.READY_TO_WATCH ? "#86efac" : "#fbbf24",
+                          fontWeight: 700,
+                        }}
+                      >
+                        <span style={{ display: "block", fontSize: 11 }}>Film finale: {filmSimple.primaryLine}</span>
+                        {filmSimple.detailLine ? (
+                          <span style={{ display: "block", marginTop: 4, fontWeight: 600, color: AX.text2 }}>
+                            {filmSimple.detailLine}
+                          </span>
+                        ) : null}
+                        {chaptersCount > 1 && s.multiChapterFilmHint ? (
+                          <span style={{ display: "block", marginTop: 4, fontWeight: 600, color: AX.muted }}>
+                            {s.multiChapterFilmHint}
+                          </span>
+                        ) : null}
+                        {hubPlaybackMoment ? (
+                          <span style={{ display: "block", marginTop: 6, fontWeight: 600, color: AX.muted }}>
+                            Playback: <strong style={{ color: AX.text2 }}>{hubPlaybackMoment.headline}</strong>
+                          </span>
+                        ) : null}
+                        {filmSimple?.verificationLine ? (
+                          <span style={{ display: "block", marginTop: 4, fontSize: 10, color: AX.muted, lineHeight: 1.45 }}>
+                            Verifica: {filmSimple.verificationLine}
+                          </span>
+                        ) : null}
+                      </div>
+                    ) : null}
                   </div>
                 </button>
                 <div
@@ -1301,6 +1530,16 @@ export default function ScenografieProjectHub({ onOpenWorkspace, imageStylePrese
           </div>
         </div>
       )}
+
+      <ScenografieStoryProjectWizard
+        open={storyWizardOpen}
+        onClose={() => {
+          if (!creating) setStoryWizardOpen(false);
+        }}
+        imageStylePresets={imageStylePresets}
+        defaultPresetId={defaultPresetId}
+        onCommitted={handleStoryWizardCommitted}
+      />
     </div>
   );
 }

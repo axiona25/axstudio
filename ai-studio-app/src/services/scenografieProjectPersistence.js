@@ -14,8 +14,23 @@ import {
   normalizeTimelinePlan,
 } from "./scenografieVideoWorkflow.js";
 import { getCharactersNeedingMaster, resolveItalianPlanLogline } from "./scenografiePlanner.js";
+import { pcmRowForCharacter, approvalEntryForCharacter } from "./scenografiePcidLookup.js";
 import { PROJECT_POSTER_STATUS } from "./scenografieProjectPoster.js";
 import { pickChapterRepresentativeThumbnailUrl } from "./scenografieChapterCover.js";
+import { emptyFinalFilmMontage } from "./montageAssembler.js";
+import {
+  consumerPhaseFromScenografiaUiStatus,
+  reconcileWorkspaceFilmOutputState,
+  FILM_DELIVERY_STATE,
+  FILM_OUTPUT_TRUST,
+  FILM_OUTPUT_READINESS,
+} from "./scenografieConsumerReliability.js";
+import {
+  readFilmOutputVerificationFromWorkspace,
+  computeFilmVerificationEffective,
+  verifyFinalOutputUrl,
+  buildPersistedFilmOutputVerification,
+} from "./scenografieOutputVerification.js";
 
 const LS_KEY_LEGACY = "ai-studio-scenografia-project-v1";
 const LS_KEY_INDEX = "ai-studio-scenografia-projects-index-v1";
@@ -81,7 +96,19 @@ const VALID_MIGRATION_SOURCES = new Set([
   "migrated_id_and_name_same_url",
   "migrated_id_and_name",
   "migrated_name_only",
+  "migrated_pcid_layout",
 ]);
+
+/**
+ * Riga PCM utilizzabile per identity lock e pipeline scene (stessa policy di `source`).
+ * Non implica URL presente né approvazione — vanno verificati a parte.
+ */
+export function pcmRowTrustedForIdentityLock(row) {
+  if (!row || typeof row !== "object") return false;
+  if (row.pendingManualReview === true) return false;
+  if (row.source === PCM_SOURCE_USER_CANONICAL_LOCK) return true;
+  return VALID_MIGRATION_SOURCES.has(row.source);
+}
 
 /**
  * Personaggio pronto per pipeline scene: URL, approvazione, niente revisione pendente e
@@ -90,19 +117,15 @@ const VALID_MIGRATION_SOURCES = new Set([
  * @param {object} d — payload capitolo (plan, projectCharacterMasters, characterApprovalMap)
  */
 export function characterMasterReadyForScenes(char, d) {
-  const p = looksLikePcidKey(char?.pcid) ? String(char.pcid).trim() : "";
-  const pcmKey = p || String(char?.id || "").trim();
-  const row = pcmKey ? d.projectCharacterMasters?.[pcmKey] : null;
+  const pcm = d.projectCharacterMasters && typeof d.projectCharacterMasters === "object" ? d.projectCharacterMasters : {};
+  const row = pcmRowForCharacter(pcm, char);
   const url = row?.masterImageUrl ? String(row.masterImageUrl).trim() : "";
   if (!url) return false;
   if (row.pendingManualReview === true) return false;
-  const ap = (p && d.characterApprovalMap?.[p]) || d.characterApprovalMap?.[char.id];
+  const ap = approvalEntryForCharacter(d.characterApprovalMap, char);
   if (ap?.approved !== true) return false;
   // Policy: ready se lock utente OPPURE source migrato coerente (evita stallo post-STEP1–4).
-  if (
-    row.source !== PCM_SOURCE_USER_CANONICAL_LOCK &&
-    !VALID_MIGRATION_SOURCES.has(row.source)
-  ) {
+  if (!pcmRowTrustedForIdentityLock(row)) {
     return false;
   }
   if (row.source !== PCM_SOURCE_USER_CANONICAL_LOCK && !__migrationReadyLogged) {
@@ -152,6 +175,40 @@ export function deriveScenografiaUiStatus(d) {
   return "final_film_ready";
 }
 
+/** Progresso massimo tra capitoli (hub / indice meno dipendente dal solo primo capitolo). */
+const SCENOGRAFIA_UI_STATUS_RANK = {
+  planning: 10,
+  character_approval: 20,
+  scene_approval: 30,
+  clip_approval: 40,
+  timeline_approval: 50,
+  final_film_ready: 60,
+  video_ready: 65,
+  video_production: 70,
+  final_montage: 80,
+  completed: 100,
+};
+
+/**
+ * @param {Array<{ data?: object }>} chapters
+ * @returns {string}
+ */
+export function deriveAggregateScenografiaUiStatus(chapters) {
+  const list = Array.isArray(chapters) ? chapters : [];
+  if (!list.length) return "planning";
+  let best = "planning";
+  let bestRank = 0;
+  for (const ch of list) {
+    const u = deriveScenografiaUiStatus(ch?.data || {});
+    const r = SCENOGRAFIA_UI_STATUS_RANK[u] ?? 0;
+    if (r > bestRank) {
+      bestRank = r;
+      best = u;
+    }
+  }
+  return best;
+}
+
 export const SCENOGRAFIA_UI_STATUS_LABEL = {
   planning: "In pianificazione",
   character_approval: "Fase 1 · Character approval",
@@ -188,6 +245,7 @@ export function summarizeScenografiaProjectForIndex(data) {
   }
   const clips = Array.isArray(data.sceneVideoClips) ? data.sceneVideoClips : [];
   const clipsCount = clips.filter((c) => c && c.status !== "deleted").length;
+  const uiStatus = deriveScenografiaUiStatus(data);
 
   return {
     displayTitle,
@@ -195,7 +253,8 @@ export function summarizeScenografiaProjectForIndex(data) {
     scenesInPlan,
     scenesGenerated,
     clipsCount,
-    uiStatus: deriveScenografiaUiStatus(data),
+    uiStatus,
+    consumerWorkflowPhase: consumerPhaseFromScenografiaUiStatus(uiStatus),
   };
 }
 
@@ -234,10 +293,38 @@ export function summarizeScenografiaWorkspaceForIndex(ws) {
       posterGenerationStatus: "none",
       projectPosterStatus: PROJECT_POSTER_STATUS.NONE,
       uiStatus: "planning",
+      workspaceAggregateUiStatus: "planning",
+      consumerWorkflowPhase: "draft",
       characterCount: 0,
       scenesGenerated: 0,
       scenesInPlan: 0,
       clipsCount: 0,
+      completedFilmUrl: null,
+      completedFilmDurationSec: null,
+      filmOutputReadiness: FILM_OUTPUT_READINESS.MISSING_OUTPUT,
+      filmDeliveryState: FILM_DELIVERY_STATE.NOT_READY,
+      filmPrimaryChapterId: null,
+      filmPlayableSourceChapterId: null,
+      filmLatestPlayableChapterId: null,
+      filmOutputTrust: FILM_OUTPUT_TRUST.MISSING,
+      filmOutputRecordedAt: null,
+      filmOutputUrlKind: "unknown",
+      filmRenderModeHint: null,
+      filmChaptersCompletedCount: 0,
+      filmChaptersWithPlayableOutput: 0,
+      filmChaptersConsolidated: 0,
+      filmHasPartialMontageFailure: false,
+      filmUserHint: null,
+      lastFilmWorkflowFailure: null,
+      multiChapterFilmHint: null,
+      filmReconcileMeta: null,
+      summaryReconciledAt: null,
+      summaryDerivedFrom: null,
+      summaryFreshness: "none",
+      filmVerificationEffective: computeFilmVerificationEffective(null, null),
+      filmOutputVerificationStatus: null,
+      filmOutputVerificationCheckedAt: null,
+      filmOutputVerificationMethod: null,
     };
   }
   const chapters = [...w.chapters].sort((a, b) => (a.sortOrder - b.sortOrder) || String(a.id).localeCompare(String(b.id)));
@@ -284,6 +371,62 @@ export function summarizeScenografiaWorkspaceForIndex(ws) {
           : "none";
 
   const uiStatus = first ? deriveScenografiaUiStatus(first) : "planning";
+  const workspaceAggregateUiStatus = deriveAggregateScenografiaUiStatus(chapters);
+  const consumerWorkflowPhase = consumerPhaseFromScenografiaUiStatus(workspaceAggregateUiStatus);
+
+  let filmChaptersCompletedCount = 0;
+  for (const ch of chapters) {
+    if (deriveScenografiaUiStatus(ch?.data || {}) === "completed") filmChaptersCompletedCount += 1;
+  }
+
+  const filmRollup = reconcileWorkspaceFilmOutputState(w);
+  let completedFilmUrl = filmRollup.completedFilmUrl;
+  let completedFilmDurationSec = null;
+
+  const nominalCompletedWithoutFilm =
+    workspaceAggregateUiStatus === "completed" &&
+    (!filmRollup.completedFilmUrl ||
+      filmRollup.filmOutputReadiness === FILM_OUTPUT_READINESS.MISSING_OUTPUT ||
+      filmRollup.filmOutputReadiness === FILM_OUTPUT_READINESS.MONTAGE_FAILED);
+
+  const filmReconcileMeta = {
+    ...(filmRollup.reconcileMeta && typeof filmRollup.reconcileMeta === "object" ? filmRollup.reconcileMeta : {}),
+    nominalCompletedWithoutFilm,
+  };
+
+  const primaryData =
+    (filmRollup.primaryChapterId &&
+      chapters.find((c) => c.id === filmRollup.primaryChapterId)?.data) ||
+    first;
+  const primaryMontage =
+    primaryData?.finalFilmMontage && typeof primaryData.finalFilmMontage === "object"
+      ? primaryData.finalFilmMontage
+      : null;
+
+  if (!completedFilmUrl && primaryMontage) {
+    const u = String(primaryMontage.outputUrl || "").trim();
+    if (u) completedFilmUrl = u;
+  }
+  if (primaryMontage) {
+    const est = primaryMontage.compiledMontagePlan?.totalDurationSecEstimate;
+    if (typeof est === "number" && Number.isFinite(est)) completedFilmDurationSec = est;
+  }
+  if (completedFilmDurationSec == null && primaryData) {
+    completedFilmDurationSec = estimateChapterVideoSeconds(primaryData);
+  }
+
+  const filmOutputReadiness = filmRollup.filmOutputReadiness;
+  let filmUserHint = filmRollup.filmUserHint || null;
+  if (nominalCompletedWithoutFilm) {
+    filmUserHint =
+      "Il progetto risulta «completato» ma non c’è un file film consolidato riconosciuto: apri il montaggio e rigenera o verifica il capitolo.";
+  }
+  const lastFilmWorkflowFailure = filmRollup.lastFilmWorkflowFailure || null;
+
+  const summaryReconciledAt = filmReconcileMeta.reconciledAt || new Date().toISOString();
+
+  const storedVerification = readFilmOutputVerificationFromWorkspace(w);
+  const filmVerificationEffective = computeFilmVerificationEffective(storedVerification, completedFilmUrl);
 
   return {
     displayTitle,
@@ -293,12 +436,85 @@ export function summarizeScenografiaWorkspaceForIndex(ws) {
     posterGenerationStatus,
     projectPosterStatus: posterGenerationStatus,
     uiStatus,
+    workspaceAggregateUiStatus,
+    consumerWorkflowPhase,
     characterCount,
     scenesGenerated,
     scenesInPlan,
     clipsCount,
     projectPosterOutdated: w.projectPosterOutdated === true,
+    completedFilmUrl,
+    completedFilmDurationSec,
+    filmOutputReadiness,
+    filmDeliveryState: filmRollup.filmDeliveryState,
+    filmPrimaryChapterId: filmRollup.primaryChapterId,
+    filmPlayableSourceChapterId: filmRollup.pickedOutputSourceChapterId || null,
+    filmLatestPlayableChapterId: filmReconcileMeta.latestPlayableChapterId || null,
+    filmOutputTrust: filmRollup.outputTrust,
+    filmOutputRecordedAt: filmRollup.outputRecordedAt,
+    filmOutputUrlKind: filmRollup.outputUrlKind,
+    filmRenderModeHint: filmRollup.renderModeHint,
+    filmChaptersCompletedCount,
+    filmChaptersWithPlayableOutput: filmRollup.filmChaptersWithPlayableOutput,
+    filmChaptersConsolidated: filmRollup.filmChaptersConsolidated,
+    filmHasPartialMontageFailure: filmRollup.hasPartialMontageFailure === true,
+    filmUserHint,
+    lastFilmWorkflowFailure,
+    multiChapterFilmHint: filmRollup.multiChapterFilmHint,
+    filmReconcileMeta,
+    summaryReconciledAt,
+    summaryDerivedFrom: "workspace_payload",
+    summaryFreshness: "live_recomputed",
+    filmVerificationEffective,
+    filmOutputVerificationStatus: storedVerification?.outputVerificationStatus ?? null,
+    filmOutputVerificationCheckedAt: storedVerification?.outputVerificationCheckedAt ?? null,
+    filmOutputVerificationMethod: storedVerification?.outputVerificationMethod ?? null,
+    filmOutputVerificationError: storedVerification?.outputVerificationError ?? null,
+    filmOutputVerificationSourceUrl: storedVerification?.outputVerificationSourceUrl ?? null,
   };
+}
+
+/**
+ * Esegue verifica reale dell’URL film (HEAD/GET/video probe) e persiste il risultato sul workspace.
+ * @param {string} projectId
+ * @param {string|null} [urlOverride] — URL da controllare (default: sintesi `completedFilmUrl`)
+ */
+export async function runAndPersistFilmOutputVerification(projectId, urlOverride = null) {
+  const raw = await loadScenografiaProjectById(projectId);
+  const ws = ensureWorkspace(raw);
+  if (!ws) {
+    return { ok: false, errorUser: "Progetto non trovato o workspace non valido." };
+  }
+  const sum = summarizeScenografiaWorkspaceForIndex(ws);
+  const url =
+    urlOverride != null && String(urlOverride).trim() ? String(urlOverride).trim() : sum.completedFilmUrl;
+  if (!url) {
+    return { ok: false, errorUser: "Nessun file film indicizzato da verificare." };
+  }
+  const result = await verifyFinalOutputUrl(url);
+  ws.filmOutputVerification = buildPersistedFilmOutputVerification(result, url);
+  ws.updatedAt = new Date().toISOString();
+  await saveScenografiaProjectById(projectId, ws);
+  await upsertScenografiaProjectInIndex(projectId, ws);
+  return {
+    ok: true,
+    result,
+    summary: summarizeScenografiaWorkspaceForIndex(ws),
+    persistedVerification: ws.filmOutputVerification && typeof ws.filmOutputVerification === "object" ? { ...ws.filmOutputVerification } : null,
+  };
+}
+
+/**
+ * Indice su disco potenzialmente precedente alla riconciliazione film: refresh leggero (pochi progetti) in hub.
+ * @param {object|null|undefined} summary
+ */
+export function indexSummaryNeedsLightReconcile(summary) {
+  const s = summary && typeof summary === "object" ? summary : {};
+  if (!s.summaryReconciledAt) return true;
+  if ((s.chaptersCount || 0) > 1 && s.filmPlayableSourceChapterId == null && (s.filmChaptersWithPlayableOutput || 0) > 0) {
+    return true;
+  }
+  return false;
 }
 
 export function createChapterId() {
@@ -1671,6 +1887,10 @@ export function mergeChapterDataWithProjectCharacterPool(chapterData, workspace)
       }
     }
     merged.projectCharacterMasters = mergedPcm;
+    const cacheFromCanonical = syncLegacyMapsFromCanonicalPlan(merged.plan, merged.projectCharacterMasters || {});
+    merged.masterImages = cacheFromCanonical.masterImages;
+    merged.masterByCharName = cacheFromCanonical.masterByCharName;
+    console.info("[CANONICAL_PCM] merge_chapter+pool: masterImages/masterByCharName rigenerati da projectCharacterMasters");
   }
   return merged;
 }
@@ -1959,6 +2179,106 @@ export function emptyScenografiaWorkspace() {
  * Workspace iniziale da creazione guidata (titolo, descrizione, stile globale).
  * @param {{ title: string, description: string, projectStyle: object|null }} opts
  */
+/**
+ * Workspace da wizard story-driven (piano già validato + meta traccia).
+ * @param {{
+ *   title: string,
+ *   description: string,
+ *   projectStyle: object|null,
+ *   storyPrompt: string,
+ *   targetFilmDurationSec?: number,
+ *   plan: object,
+ *   storyAnalysis?: object|null,
+ *   storyPreproductionBundle?: object|null,
+ *   selectedSceneIds?: string[],
+ *   runtimeHints?: object|null,
+ * }} opts
+ */
+export function buildScenografiaWorkspaceFromStoryWizard(opts) {
+  const now = new Date().toISOString();
+  const t = String(opts.title || "").trim();
+  const d = String(opts.description || "").trim();
+  const story = String(opts.storyPrompt || "").trim();
+  const ps = opts.projectStyle && typeof opts.projectStyle === "object" ? { ...opts.projectStyle } : null;
+  const plan = opts.plan && typeof opts.plan === "object" ? opts.plan : null;
+  const targetSec =
+    typeof opts.targetFilmDurationSec === "number" && Number.isFinite(opts.targetFilmDurationSec)
+      ? opts.targetFilmDurationSec
+      : null;
+
+  /** Commit completo: [] (nessuna pre-selezione). Avvio mirato: passare es. [firstSceneId]. */
+  const selected = Array.isArray(opts.selectedSceneIds) ? [...opts.selectedSceneIds] : [];
+
+  const baseHints = { sceneExecuteMode: "ALL", reuseMastersNext: false };
+  const hints =
+    opts.runtimeHints && typeof opts.runtimeHints === "object" ? { ...baseHints, ...opts.runtimeHints } : baseHints;
+
+  const chapterPayload = {
+    ...emptyScenografiaProjectPayload(),
+    prompt: story || d,
+    scenografiaProjectTitle: t,
+    projectStyle: ps,
+    projectStyleLocked: true,
+    plan,
+    selectedSceneIds: selected,
+    runtimeHints: hints,
+    scenografiaPhase: "plan",
+    storyDrivenPreproduction:
+      opts.storyPreproductionBundle && typeof opts.storyPreproductionBundle === "object"
+        ? opts.storyPreproductionBundle
+        : {
+            version: 1,
+            storyPrompt: story,
+            targetFilmDurationSec: targetSec,
+            storyAnalysis: opts.storyAnalysis || null,
+            committedAt: now,
+          },
+    updatedAt: now,
+  };
+
+  return {
+    workspaceVersion: SCENOGRAFIA_WORKSPACE_VERSION,
+    version: SCENOGRAFIA_PROJECT_VERSION,
+    createdAt: now,
+    updatedAt: now,
+    narrativeProjectTitle: t,
+    narrativeProjectDescription: d,
+    projectTitle: t,
+    projectDescription: d,
+    globalProjectStyle: ps,
+    posterImageUrl: null,
+    projectPosterUrl: null,
+    posterGenerationStatus: PROJECT_POSTER_STATUS.PENDING,
+    projectPosterStatus: PROJECT_POSTER_STATUS.PENDING,
+    projectPosterPrompt: null,
+    projectPosterStyle: ps
+      ? { presetId: ps.presetId, label: ps.label, isAnimated: ps.isAnimated === true }
+      : null,
+    projectPosterMetadata: null,
+    projectPosterUpdatedAt: null,
+    projectPosterOutdated: false,
+    projectMasterImages: {},
+    projectMasterByCharName: {},
+    projectCharacterApprovalMap: {},
+    projectCharacterMasters: {},
+    storyDrivenMeta: {
+      storyPrompt: story,
+      targetFilmDurationSec: targetSec,
+      storyAnalysisSnapshot: opts.storyAnalysis || null,
+      projectAutoPlanningStatus: "committed",
+      committedAt: now,
+    },
+    chapters: [
+      {
+        id: createChapterId(),
+        sortOrder: 0,
+        chapterTitle: "",
+        data: chapterPayload,
+      },
+    ],
+  };
+}
+
 export function buildScenografiaWorkspaceFromWizard({ title, description, projectStyle }) {
   const now = new Date().toISOString();
   const t = String(title || "").trim();
@@ -2034,12 +2354,17 @@ export function emptyScenografiaProjectPayload() {
     sceneVideoClips: [],
     /** Voice master per personaggio (ElevenLabs / meta). */
     characterVoiceMasters: {},
+    /** Narratori di progetto (entità distinte dai personaggi). */
+    projectNarrators: [],
     /** none → assembly (auto-montaggio avviato) → done */
     finalMontagePhase: "none",
     /** Ordine clip + note narrative per il montatore automatico (placeholder). */
     finalMontagePlan: { orderedClipIds: [], orderedTimelineEntryIds: [], narrativeBeatNotes: "" },
+    finalFilmMontage: emptyFinalFilmMontage(),
     timelinePlan: { approved: false, approvedAt: null, entries: [] },
     runtimeHints: { sceneExecuteMode: "ALL", reuseMastersNext: false },
+    /** Piano pre-produzione story-driven (opzionale). */
+    storyDrivenPreproduction: null,
   };
 }
 

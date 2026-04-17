@@ -19,6 +19,7 @@ import Timeline from "./Timeline";
 import PreviewPlayer from "./PreviewPlayer";
 import MediaLibraryPanel from "./MediaLibraryPanel";
 import PropertiesPanel from "./PropertiesPanel";
+import { MODULE_REGISTRY, MODULE_IDS } from "../config/moduleProviderRegistry.js";
 
 const AX = {
   bg: "#0A0A0F", sidebar: "#11131A", surface: "#1A1F2B", border: "#2A3142",
@@ -253,7 +254,7 @@ export default function VideoEditor({ projectName, projectMedia, history, mediaF
         <div style={{ minWidth: 0, display: "flex", alignItems: "center", gap: 14 }}>
           <div>
             <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: AX.text, letterSpacing: "-0.02em" }}>Video Editor</h1>
-            <p style={{ margin: "4px 0 0", fontSize: 13, color: AX.muted }}>Crea i tuoi video professionali</p>
+            <p style={{ margin: "4px 0 0", fontSize: 13, color: AX.muted }}>{MODULE_REGISTRY[MODULE_IDS.VIDEO_EDITOR].ui.headerSubtitle}</p>
           </div>
           {editorProjects.activeProject && (
             <div style={{
