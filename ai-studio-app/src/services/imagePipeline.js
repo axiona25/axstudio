@@ -40,6 +40,17 @@ export const JOB_TYPES = {
   SCENOGRAFIA_SCENE_EDIT: "scenografia_scene_edit",
 };
 
+// FLUX 2 Pro: mapping da aspect ratio (es. "9:16") a image_size enum
+function aspectRatioToImageSize(aspectRatio) {
+  const ar = String(aspectRatio || "").trim();
+  if (ar === "1:1") return "square_hd";
+  if (ar === "16:9") return "landscape_16_9";
+  if (ar === "9:16") return "portrait_16_9";
+  if (ar === "4:3") return "landscape_4_3";
+  if (ar === "3:4") return "portrait_4_3";
+  return "square_hd"; // default safe
+}
+
 // ── Image upload to fal storage ──
 
 export async function uploadToFalStorage(base64DataUrl) {
@@ -202,7 +213,7 @@ export async function createMasterCharacter({
 
   const result = await falRequest(MODELS.FLUX_2_PRO, {
     prompt,
-    aspect_ratio: aspectRatio,
+    image_size: aspectRatioToImageSize(aspectRatio),
     num_images: 1,
     enable_safety_checker: false,
     safety_tolerance: "2",
@@ -277,7 +288,7 @@ export async function generateSceneBase({
   const result = await falRequest(MODELS.FLUX_2_PRO, {
     prompt,
     ...(negativePrompt ? { negative_prompt: negativePrompt } : {}),
-    aspect_ratio: aspectRatio,
+    image_size: aspectRatioToImageSize(aspectRatio),
     num_images: 1,
     enable_safety_checker: false,
     safety_tolerance: "2",

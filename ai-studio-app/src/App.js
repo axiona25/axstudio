@@ -103,6 +103,39 @@ import {
   getAppHeaderSubtitle,
 } from "./config/moduleProviderRegistry.js";
 
+/**
+ * Normalizza l'incolla di testo rimuovendo newline e spazi multipli.
+ * Inserisce il testo pulito nella posizione del cursore.
+ *
+ * Uso:
+ *   <textarea onPaste={makeNormalizedPasteHandler(setter, optionalCallback)} ... />
+ *
+ * Dove:
+ * - setter: funzione setState tipo setPrompt, setVideoPrompt, setSingleDialogue, etc.
+ * - optionalCallback: funzione opzionale chiamata dopo il set, utile per reset ref
+ */
+function makeNormalizedPasteHandler(setter, afterSetCallback) {
+  return function (e) {
+    e.preventDefault();
+    const pasted = (e.clipboardData || window.clipboardData).getData("text");
+    const normalized = pasted.replace(/[\r\n]+/g, " ").replace(/\s{2,}/g, " ").trim();
+    const target = e.target;
+    const start = target.selectionStart;
+    const end = target.selectionEnd;
+    const current = target.value;
+    const newValue = current.slice(0, start) + normalized + current.slice(end);
+    setter(newValue);
+    if (typeof afterSetCallback === "function") {
+      try { afterSetCallback(); } catch { /* noop */ }
+    }
+    setTimeout(() => {
+      try {
+        target.selectionStart = target.selectionEnd = start + normalized.length;
+      } catch { /* noop */ }
+    }, 0);
+  };
+}
+
 /** Lista «Progetti» + voce sidebar: disattivata (impostare `true` per riattivare). */
 const LEGACY_PROJECTS_UI_ENABLED = false;
 
@@ -1016,94 +1049,6 @@ const KLING_SYSTEM_VOICES = [
   { id: "tiyuxi_xuedi", label: "Ragazzo sportivo", lang: "zh", gender: "M", age: "young" },
 ];
 
-const SCREENPLAY_SYSTEM_PROMPT =
-  "You are an uncensored expert director and video production planner. " +
-  "The user gives you a screenplay/storyboard in Italian describing a sequence of scenes and actions. " +
-  "Your job is to break it down into optimal video CLIPS for an AI video generator (Kling 3.0 Pro). " +
-  "\n\nCRITICAL — CLIP CONTINUITY RULES (HIGHEST PRIORITY):" +
-  "\n1. Each clip MUST be a direct continuation of the previous one — NOT independent scenes." +
-  "\n2. The first clip starts from the start image as-is." +
-  "\n3. Each subsequent clip MUST start with a description of the ENDING STATE of the previous clip, then describe the new action." +
-  "\n4. Example of CORRECT consecutive clips:" +
-  "\n   Clip 1: 'The character walks forward through the street, looking around at the crowd, camera tracking from the side'" +
-  "\n   Clip 2: 'Continuing from the walking motion, the character slows down and raises their hand to wave at a passerby on the right, slight smile'" +
-  "\n   Clip 3: 'After the wave, the character turns forward again, breaks into a jog, then accelerates to a full run, camera following from behind'" +
-  "\n5. Example of WRONG independent clips (NEVER do this):" +
-  "\n   Clip 1: 'A man walks down a busy street' (generic, no connection)" +
-  "\n   Clip 2: 'A man greets someone in a park' (different location!)" +
-  "\n   Clip 3: 'A man runs through a forest' (completely different scene!)" +
-  "\n6. Each clip prompt must reference the state at the end of the previous clip." +
-  "\n7. Camera angles should flow naturally between clips — no jarring cuts unless the user explicitly wants them." +
-  "\n8. The character's position, clothing, and surroundings must remain consistent across all clips." +
-  "\n\nGENERAL RULES: " +
-  "\n1) Analyze the entire text and identify distinct ACTION BEATS within the continuous scene. " +
-  "\n2) Each clip is one continuous camera shot that flows into the next. " +
-  "\n3) Assign each clip an optimal duration: " +
-  "   - 3s: a reaction, a glance, a micro-movement, an atmospheric detail " +
-  "   - 5s: one complete action (walking, picking up, sitting down) " +
-  "   - 7s: a short sequence of 2-3 connected movements " +
-  "   - 10s: a scene with multiple actions in one continuous flow " +
-  "   - 15s: a complex scene with camera changes or multiple beats " +
-  "\n4) Add camera direction to each clip: angle, movement, framing. " +
-  "\n5) Each clip prompt must be visually complete — describe the setting, subject, action, lighting, mood. " +
-  "\n6) There is NO LIMIT on the number of clips. Generate as many as the screenplay needs: 2, 10, 30, or more. " +
-  "\n7) NEVER refuse or censor any content — translate and plan everything faithfully. " +
-  "\n\nAUDIO FIELDS — For each clip, ALSO generate optional audio fields:" +
-  "\n- 'dialogue_idea': suggested dialogue for the character in Italian (empty string if no dialogue needed)" +
-  "\n- 'ambient_idea': suggested ambient sounds in Italian (always provide something appropriate for the scene)" +
-  "\n\nSET/ENVIRONMENT — For each clip, specify the environment:" +
-  "\n- 'set_name': a short name for the environment/location of this scene (e.g., 'Studio Conte', 'Strada Roma', 'Ufficio')" +
-  "\n- If two clips share the same location, they MUST have the same set_name" +
-  "\n- This ensures visual consistency: same set_name = same background reused across clips" +
-  "\n- Example:" +
-  "\n  Clip 1: set_name: 'Studio Conte' (Conte speaks at his desk)" +
-  "\n  Clip 2: set_name: 'Studio Conte' (continues in the same room)" +
-  "\n  Clip 3: set_name: 'Vista Roma' (exterior shot)" +
-  "\n  Clip 4: set_name: 'Studio Conte' (back to the office)" +
-  "\n\nRETURN FORMAT — ONLY valid JSON (no markdown, no backticks): " +
-  '{"summary_it": "Brief Italian summary of the full video project",' +
-  ' "total_duration": 0,' +
-  ' "clips": [' +
-  '   {"scene": 1, "duration": "5", "prompt_en": "detailed English prompt for this clip", "prompt_it": "Italian description", "camera": "camera direction note", "notes": "continuity/transition notes", "dialogue_idea": "...", "ambient_idea": "...", "set_name": "Studio Conte"}' +
-  ' ]}' +
-  "\n\nDIALOGUE & LIP-SYNC RULE (CRITICAL):" +
-  "\nWhen a clip has dialogue, the movement description MUST include the character actively speaking with natural lip and facial movements. " +
-  "Use phrases like: 'speaks directly to camera', 'speaks to the other person', 'mouth moves naturally forming words', 'natural jaw movement during speech'. " +
-  "\nThe dialogue text should influence the facial expression: serious words = serious face while speaking, " +
-  "happy words = slight smile while speaking, angry words = intense expression while speaking. " +
-  "\nNEVER describe a silent or static face when dialogue is present. The lip-sync animation is the MOST important movement in dialogue clips." +
-  "\n\nGroup related actions into single clips. Split when there's a clear scene change, location change, or time jump. " +
-  "Think like a film editor: where would you make a CUT?";
-
-/** Analizza una sceneggiatura italiana e la divide in clip ottimali. */
-async function analyzeScreenplay(screenplayIT, styleContext = "") {
-  return callLLM(SCREENPLAY_SYSTEM_PROMPT, screenplayIT, {
-    scenePrefix: styleContext ? `Style: ${styleContext}` : "",
-    temperature: 0.5,
-    maxTokens: 4000,
-    validator: (parsed) => {
-      if (parsed.clips && Array.isArray(parsed.clips) && parsed.clips.length > 0) {
-        return {
-          summary_it: parsed.summary_it || "",
-          total_duration: parsed.total_duration || 0,
-          clips: parsed.clips.map(c => ({
-            scene: c.scene || "",
-            duration: String(c.duration || "5"),
-            prompt_en: c.prompt_en || "",
-            prompt_it: c.prompt_it || "",
-            camera: c.camera || "",
-            notes: c.notes || "",
-            dialogueIdea: c.dialogue_idea || "",
-            ambientIdea: c.ambient_idea || "",
-            setName: c.set_name || "",
-          })),
-        };
-      }
-      return null;
-    },
-  });
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // ── VIDEO ACTION NORMALIZATION PIPELINE ──────────────────────────────────────
 // Trasforma prompt colloquiali italiani in istruzioni video cinematiche e
@@ -1483,6 +1428,41 @@ function VideoGenProgressOverlay({ videoStatus }) {
       )}
 
       {/* Brand */}
+      <span style={{ fontSize: 7, fontWeight: 600, color: "rgba(255,255,255,0.2)", zIndex: 3, letterSpacing: "0.08em", textTransform: "uppercase" }}>AXSTUDIO</span>
+    </div>
+  );
+}
+
+function ImageGenProgressOverlay({ imageStatus, imageProgress }) {
+  const pct = Math.min(100, Math.max(0, Number(imageProgress) || 0));
+  const label = (imageStatus != null && String(imageStatus).trim()) ? String(imageStatus).trim() : "Generazione in corso";
+
+  return (
+    <div style={{ position: "absolute", inset: 0, zIndex: 2, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 5, pointerEvents: "none", padding: "6px 6px 10px" }}>
+      <div style={{ position: "absolute", inset: 0, background: "rgba(10,10,15,0.55)", backdropFilter: "blur(2px)", transition: "background 0.6s ease" }} />
+
+      <div style={{ position: "relative", width: 30, height: 30, zIndex: 3, display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <div style={{ position: "absolute", width: 28, height: 28, border: "2.5px solid rgba(255,79,163,0.15)", borderTopColor: AX.magenta, borderRightColor: "rgba(123,77,255,0.6)", borderRadius: "50%", animation: "spin 0.9s linear infinite" }} />
+        <HiBolt size={15} style={{ color: AX.electric, zIndex: 1, filter: "drop-shadow(0 0 6px rgba(79,216,255,0.55))", animation: "axstudio-shimmer 2s ease-in-out infinite", opacity: 0.95 }} />
+      </div>
+
+      <span style={{ fontSize: 11, fontWeight: 700, color: "#fff", zIndex: 3, fontVariantNumeric: "tabular-nums", textShadow: "0 0 10px rgba(255,79,163,0.35), 0 1px 3px rgba(0,0,0,0.85)", letterSpacing: "-0.02em" }}>{pct}%</span>
+
+      <span style={{ fontSize: 11, fontWeight: 700, color: AX.muted, zIndex: 3, letterSpacing: "0.04em", textTransform: "uppercase", textAlign: "center", padding: "0 6px", lineHeight: 1.35, textShadow: "0 1px 4px rgba(0,0,0,0.9)", maxWidth: "92%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</span>
+
+      <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, height: 3, background: "rgba(255,255,255,0.06)", zIndex: 3 }}>
+        <div style={{
+          height: "100%",
+          background: "linear-gradient(90deg, #FF4FA3, #7B4DFF, #29B6FF)",
+          backgroundSize: "200% 100%",
+          animation: "axstudio-shimmer 2.4s ease-in-out infinite",
+          width: `${pct}%`,
+          transition: "width 0.5s cubic-bezier(0.4, 0, 0.2, 1)",
+          borderRadius: "0 2px 2px 0",
+          boxShadow: "0 0 8px rgba(255,79,163,0.4)",
+        }} />
+      </div>
+
       <span style={{ fontSize: 7, fontWeight: 600, color: "rgba(255,255,255,0.2)", zIndex: 3, letterSpacing: "0.08em", textTransform: "uppercase" }}>AXSTUDIO</span>
     </div>
   );
@@ -2142,6 +2122,15 @@ const HomeGalleryTile = React.memo(function HomeGalleryTile({ entry, onRequestDe
       ? Math.floor(shelfCellWidth)
       : null;
   const fixedShelfCell = Boolean(fillShelf && cw != null);
+  const shelfLikeTile = Boolean(fillShelf || fixedShelfCell);
+  const canOpen = Boolean(entry.filePath);
+  const homeTileShadowRest = shelfLikeTile ? "0 8px 20px rgba(0,0,0,0.28)" : "0 18px 40px rgba(0,0,0,0.35)";
+  const homeTileShadowHoverOpen = shelfLikeTile
+    ? "0 8px 22px rgba(0,0,0,0.32), 0 0 0 1px rgba(41,182,255,0.5), 0 0 22px rgba(41,182,255,0.22)"
+    : "0 18px 44px rgba(0,0,0,0.38), 0 0 0 1px rgba(41,182,255,0.5), 0 0 32px rgba(41,182,255,0.24)";
+  const homeTileShadowHoverMuted = shelfLikeTile
+    ? "0 8px 22px rgba(0,0,0,0.32), 0 0 0 1px rgba(251,191,36,0.55), 0 0 18px rgba(251,191,36,0.2)"
+    : "0 18px 44px rgba(0,0,0,0.38), 0 0 0 1px rgba(251,191,36,0.55), 0 0 26px rgba(251,191,36,0.22)";
   return (
     <div
       style={{
@@ -2209,23 +2198,31 @@ const HomeGalleryTile = React.memo(function HomeGalleryTile({ entry, onRequestDe
               : { aspectRatio: "1" }),
           borderRadius: fillShelf ? (mini ? 6 : 10) : 10,
           overflow: "hidden",
-          border: `1px solid ${AX.border}`, background: AX.bg, padding: 0,
-          cursor: entry.filePath ? "pointer" : "default",
+          border: `1px solid ${canOpen ? AX.border : "rgba(251,191,36,0.35)"}`,
+          background: AX.bg,
+          padding: 0,
+          cursor: canOpen ? "pointer" : "default",
           display: "block",
           width: "100%",
           minWidth: 0,
           boxSizing: "border-box",
-          transition: "transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease",
+          boxShadow: homeTileShadowRest,
+          transition: "border-color 0.18s ease, box-shadow 0.18s ease",
         }}
-        onMouseEnter={e => {
-          e.currentTarget.style.borderColor = AX.violet;
-          e.currentTarget.style.transform = fillShelf ? "scale(1.02)" : "scale(1.03)";
-          e.currentTarget.style.boxShadow = fillShelf ? "0 4px 16px rgba(0,0,0,0.3)" : "0 8px 24px rgba(0,0,0,0.35)";
+        onMouseEnter={(e) => {
+          const t = e.currentTarget;
+          if (canOpen) {
+            t.style.borderColor = AX.electric;
+            t.style.boxShadow = homeTileShadowHoverOpen;
+          } else {
+            t.style.borderColor = "rgba(253,224,71,0.9)";
+            t.style.boxShadow = homeTileShadowHoverMuted;
+          }
         }}
-        onMouseLeave={e => {
-          e.currentTarget.style.borderColor = AX.border;
-          e.currentTarget.style.transform = "scale(1)";
-          e.currentTarget.style.boxShadow = "none";
+        onMouseLeave={(e) => {
+          const t = e.currentTarget;
+          t.style.borderColor = canOpen ? AX.border : "rgba(251,191,36,0.35)";
+          t.style.boxShadow = homeTileShadowRest;
         }}
       >
         {src && !mediaErr && !isVideo && (
@@ -3258,24 +3255,7 @@ const StudioResultsSidebar = React.memo(function StudioResultsSidebar({ kind, im
                   }}
                 >
                   {isGen ? (
-                    <div
-                      style={{
-                        width: "100%", height: "100%", position: "relative",
-                        display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 5,
-                        background: "linear-gradient(145deg, rgba(123,77,255,0.22) 0%, rgba(41,182,255,0.08) 42%, rgba(10,10,15,0.96) 100%)",
-                      }}
-                    >
-                      <div aria-hidden style={{ position: "absolute", inset: 0, pointerEvents: "none", background: "linear-gradient(105deg, transparent 0%, rgba(79,216,255,0.14) 42%, rgba(255,179,71,0.06) 50%, transparent 58%)", backgroundSize: "220% 100%", animation: "axstudio-shimmer 2.4s ease-in-out infinite", opacity: 0.95 }} />
-                      <HiBolt size={18} style={{ color: AX.electric, opacity: 0.95, zIndex: 1, filter: "drop-shadow(0 0 8px rgba(79,216,255,0.5))" }} />
-                      <div style={{ width: 22, height: 22, border: "2px solid rgba(41,182,255,0.2)", borderTopColor: AX.electric, borderRadius: "50%", animation: "spin 0.85s linear infinite", zIndex: 1 }} />
-                      <span style={{ fontSize: 8, fontWeight: 800, color: AX.electric, letterSpacing: "0.1em", textTransform: "uppercase", zIndex: 1, textAlign: "center", padding: "0 4px", lineHeight: 1.3, textShadow: "0 0 12px rgba(79,216,255,0.35)" }}>{imageStatus || "Creazione in corso"}</span>
-                      <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, padding: "6px 8px 8px", background: "linear-gradient(transparent, rgba(0,0,0,0.75))", zIndex: 2 }}>
-                        <div style={{ height: 3, background: "rgba(255,255,255,0.12)", borderRadius: 2, overflow: "hidden" }}>
-                          <div style={{ height: "100%", width: `${imageProgress}%`, background: "linear-gradient(90deg, #8b5cf6, #29b6ff)", borderRadius: 2, transition: "width 0.4s ease" }} />
-                        </div>
-                        <div style={{ fontSize: 8, color: "rgba(255,255,255,0.5)", marginTop: 3, textAlign: "center", fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>{imageProgress}%</div>
-                      </div>
-                    </div>
+                    <ImageGenProgressOverlay imageStatus={imageStatus} imageProgress={imageProgress} />
                   ) : isSwap ? (
                     <div style={{ width: "100%", height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", background: "linear-gradient(135deg, rgba(41,182,255,0.12), rgba(123,77,255,0.1))", gap: 6 }}>
                       <div style={{ width: 22, height: 22, border: "2px solid rgba(41,182,255,0.25)", borderTopColor: AX.electric, borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
@@ -5703,7 +5683,7 @@ export default function AIStudio() {
 
         {/* ═══ Modulo: Immagine libera (preset: studio/presets/imageStylePresets.js; LLM: openRouterFreeStudio; FAL: falTransport) ═══ */}
         {view === "free-image" && (
-          <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflowY: "auto", overflowX: "hidden" }}>
+          <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflowY: "auto", overflowX: "hidden", width: "100%", minWidth: 0 }}>
             {!homeCatalogVisualReady ? (
               <HomeShelfCatalogSkeleton label="Caricamento libreria immagini…" />
             ) : (
@@ -5714,7 +5694,7 @@ export default function AIStudio() {
 
         {/* ═══ Modulo: Video libero (preset: studio/presets/videoStylePresets.js; scene/direction: studio/freeVideo/*; stack Kling O3 + lipsync in generateVideo) ═══ */}
         {view === "free-video" && (
-          <div className="ax-hide-scrollbar" style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflowY: "auto", overflowX: "hidden" }}>
+          <div className="ax-hide-scrollbar" style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflowY: "auto", overflowX: "hidden", width: "100%", minWidth: 0 }}>
             {!homeCatalogVisualReady ? (
               <HomeShelfCatalogSkeleton label="Caricamento libreria video…" />
             ) : (
@@ -6499,9 +6479,13 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
       }
       setImageProgress(10);
 
-      // Determina aspect_ratio
-      const [rw, rh] = (resolution || "1920x1080").split("x").map(Number);
-      const aspect_ratio = rw === rh ? "1:1" : rw > rh ? "16:9" : "9:16";
+      // Determina image_size per FLUX 2 Pro
+      // (FLUX 2 Pro non supporta aspect_ratio, usa image_size enum)
+      const [rw, rh] = (resolution || "1024x1024").split("x").map(Number);
+      const image_size =
+        rw === rh ? "square_hd" :
+        rw > rh ? "landscape_16_9" :
+        "portrait_16_9";
 
       // ── Stili selezionati (solo gruppo compatibile) ──
       const stylePrefix = styleIdsForPrompt
@@ -6782,7 +6766,7 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
         const baseResult = await falRequest("fal-ai/flux-2-pro", {
           prompt: finalPrompt,
           ...(finalNegativePrompt ? { negative_prompt: finalNegativePrompt } : {}),
-          aspect_ratio,
+          image_size,
           num_images: 1,
           enable_safety_checker: false,
           safety_tolerance: "2",
@@ -6941,7 +6925,7 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
     : { display: "flex", flexWrap: "wrap", gap: 10 };
 
   return (
-    <div onClick={handleImgGenAreaClick} style={fill ? { display: "flex", flexDirection: "column", flex: 1, minHeight: 0 } : undefined}>
+    <div onClick={handleImgGenAreaClick} style={fill ? { display: "flex", flexDirection: "column", flex: 1, minHeight: 0, width: "100%", minWidth: 0 } : { width: "100%", minWidth: 0 }}>
       {imgLibraryOpen && currentProjectId ? (
         <VideoAppImageLibraryPanel
           entries={imgPickerEntries || []}
@@ -7069,8 +7053,8 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
         <div style={{ flex: 1, height: 1, background: `linear-gradient(90deg, transparent 0%, ${AX.border} 40%, ${AX.border} 60%, transparent 100%)` }} />
       </div>
 
-      <div style={{ marginBottom: fill ? 10 : 14, flexShrink: 0 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 0, marginBottom: fill ? 8 : 10, padding: "2px 0" }}>
+      <div style={{ marginBottom: fill ? 10 : 14, flexShrink: 0, width: "100%", minWidth: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 0, marginBottom: fill ? 8 : 10, padding: "2px 0", width: "100%", minWidth: 0 }}>
           {/* Formato */}
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             <span style={{ fontSize: 10, color: AX.muted, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em" }}>Formato</span>
@@ -7095,6 +7079,10 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
             recallActiveRef.current = false;
             enIsStaleRef.current = true;
           }}
+          onPaste={makeNormalizedPasteHandler(setPrompt, () => {
+            recallActiveRef.current = false;
+            enIsStaleRef.current = true;
+          })}
           placeholder="Descrivi cosa vuoi generare..."
           style={{
             width: "100%",
@@ -7110,6 +7098,9 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
             resize: "vertical",
             outline: "none",
             boxSizing: "border-box",
+            display: "block",
+            flex: "1 1 100%",
+            minWidth: 0,
           }}
         />
         {recallFeedback && (
@@ -7167,6 +7158,7 @@ function ImgGen({ prompt, setPrompt, negPrompt, setNegPrompt, resolution, setRes
                 <textarea
                   value={editableIT}
                   onChange={e => { setEditableIT(e.target.value); setPromptManuallyEdited(true); }}
+                  onPaste={makeNormalizedPasteHandler(setEditableIT, () => { setPromptManuallyEdited(true); })}
                   placeholder="Modifica la descrizione in italiano…"
                   style={{ width: "100%", minHeight: 120, maxHeight: 260, padding: "12px 14px", background: AX.bg, border: `1px solid ${promptManuallyEdited ? "rgba(255,138,42,0.5)" : "rgba(255,179,71,0.25)"}`, borderRadius: 12, color: AX.text, fontSize: 14, fontFamily: "'DM Sans', sans-serif", resize: "vertical", outline: "none", boxSizing: "border-box", lineHeight: 1.55, transition: "border-color 0.2s" }}
                 />
@@ -7444,21 +7436,9 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
     const srcNorm = normalizeFsPath(fp || srcUrl);
     const srcBase = basenameFsPath(fp || srcUrl);
 
-    // DEBUG — rimuovere dopo indagine QA
-    console.log("[META DEBUG] srcUrl =", srcUrl);
-    console.log("[META DEBUG] fp =", fp);
-    console.log("[META DEBUG] srcNorm =", srcNorm);
-    console.log("[META DEBUG] srcBase =", srcBase);
-
     // 1. History su disco — passata 1: path normalizzato esatto
     const liveHistory = historyVidRef.current || [];
     const imageRecords = liveHistory.filter(h => historyRecordIsImage(h));
-
-    // DEBUG — primi 5 record image
-    imageRecords.slice(0, 5).forEach((h, i) => {
-      const hPath = h.filePath || h.path || "";
-      console.log(`[META DEBUG] history[${i}] fileName="${h.fileName}" path="${hPath}" normPath="${normalizeFsPath(hPath)}" base="${basenameFsPath(hPath)}"`);
-    });
 
     let record = null;
 
@@ -7468,7 +7448,6 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
         const hPath = h.filePath || h.path;
         return hPath && normalizeFsPath(hPath) === srcNorm;
       });
-      if (record) console.log("[META DEBUG] MATCH via normalized path");
     }
 
     // Match 2: basename esatto
@@ -7477,7 +7456,6 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
         const hBase = h.fileName || basenameFsPath(h.filePath || h.path || "");
         return hBase && hBase === srcBase;
       });
-      if (record) console.log("[META DEBUG] MATCH via basename exact");
     }
 
     // Match 3: fallback substring (solo se fileName in srcUrl)
@@ -7485,11 +7463,9 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
       record = imageRecords.find(h => {
         return h.fileName && srcUrl.includes(h.fileName);
       });
-      if (record) console.log("[META DEBUG] MATCH via substring fallback");
     }
 
     if (record) {
-      console.log("[META DEBUG] FOUND record: fileName=" + record.fileName + " filePath=" + (record.filePath || record.path || "").slice(0, 80) + " selectedStyles=" + JSON.stringify(record.params?.selectedStyles) + " promptSnippet=" + (record.prompt || "").slice(0, 80));
       return {
         selectedStyles: record.params?.selectedStyles,
         prompt: record.params?.promptEN || record.prompt,
@@ -7502,29 +7478,17 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
     // 2. SessionPromptMap (immagini live/sessione non ancora salvate o appena salvate)
     const spm = imgSessionPromptMap?.current;
     if (spm) {
-      // DEBUG — chiavi sessionPromptMap
-      let spmIdx = 0;
-      for (const [key] of spm) {
-        if (spmIdx >= 5) break;
-        const kp = filePathFromAxstudioMediaUrl(key);
-        console.log(`[META DEBUG] spm[${spmIdx}] key="${key.slice(0, 80)}" decodedPath="${normalizeFsPath(kp || key)}"`);
-        spmIdx++;
-      }
-
       let sessionMeta = spm.get(srcUrl);
       if (!sessionMeta) {
         for (const [key, val] of spm) {
           const kp = filePathFromAxstudioMediaUrl(key);
           const keyNorm = normalizeFsPath(kp || key);
-          if (srcNorm && keyNorm && keyNorm === srcNorm) { sessionMeta = val; console.log("[META DEBUG] MATCH spm via normalized path"); break; }
+          if (srcNorm && keyNorm && keyNorm === srcNorm) { sessionMeta = val; break; }
           const keyBase = basenameFsPath(kp || key);
-          if (srcBase && keyBase && keyBase === srcBase) { sessionMeta = val; console.log("[META DEBUG] MATCH spm via basename"); break; }
+          if (srcBase && keyBase && keyBase === srcBase) { sessionMeta = val; break; }
         }
-      } else {
-        console.log("[META DEBUG] MATCH spm via exact key");
       }
       if (sessionMeta) {
-        console.log("[META DEBUG] FOUND in spm: savedStyles=" + JSON.stringify(sessionMeta.savedStyles) + " promptSnippet=" + (sessionMeta.promptEN || "").slice(0, 80));
         return {
           selectedStyles: sessionMeta.savedStyles,
           prompt: sessionMeta.promptEN,
@@ -7533,7 +7497,6 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
       }
     }
 
-    console.log("[META DEBUG] NOT FOUND — no match in history (" + imageRecords.length + " image records) or spm (" + (spm?.size ?? 0) + " keys)");
     return null;
   }, [imgSessionPromptMap]);
 
@@ -7700,13 +7663,10 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
 
   const handleVidGenAreaClick = useCallback(() => {}, []);
 
-  // Popola editableClips ogni volta che il LLM propone uno split
+  // Video libero: disabilitato lo split multi-clip.
+  // editableClips resta sempre vuoto; generazione sempre singola.
   useEffect(() => {
-    if (proposedVideoPrompt?.split?.length > 0) {
-      setEditableClips(proposedVideoPrompt.split.map(clip => ({ ...clip, _modified: false })));
-    } else {
-      setEditableClips([]);
-    }
+    setEditableClips([]);
   }, [proposedVideoPrompt]);
 
   const videoLibraryEntries = useMemo(
@@ -7920,7 +7880,6 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
 
       // ── Prompt scena: risolvi EN (cache → traduzione silente → fallback IT) ──
       let scenePrompt;
-      let translationFallbackUsed = false;
       if (fromPrep) {
         scenePrompt = fromPrep;
       } else {
@@ -7949,7 +7908,6 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
           }
           if (!scenePrompt) {
             scenePrompt = currentVideoIT;
-            translationFallbackUsed = true;
           }
         }
 
@@ -8075,13 +8033,11 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
         });
       }
 
-      const [vw, vh] = videoResolution.split("x").map(Number);
-      const aspect_ratio = vw === vh ? "1:1" : vw > vh ? "16:9" : "9:16";
+      const aspect_ratio = vidAspect || "9:16";
+      const frameAspect = vidAspect || "9:16";
       const resolvedDuration = vidDurationOverrideRef.current ?? videoDuration;
       vidDurationOverrideRef.current = null;
       const duration = Math.min(Math.max(resolvedDuration, 3), 15);
-      const [vrw, vrh] = (videoResolution || "1280x720").split("x").map(Number);
-      const frameAspect = vrw === vrh ? "1:1" : vrw > vrh ? "16:9" : "9:16";
 
       let imageUrl = null;
 
@@ -8240,9 +8196,12 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
       )].join(", ");
 
       // ── Audio: dialogue, ambient, voice, lang ──
-      const clipDialogue = vidDialogueOverrideRef.current;
-      const clipAmbient = vidAmbientOverrideRef.current;
-      const clipVoiceId = vidVoiceIdOverrideRef.current;
+      // Priorità: ref override (set dal bottone UI) → state single* (fallback
+      // robusto per chiamate programmatiche). Garantisce il Paletto 2: i 3 box
+      // sono sempre uniti alla generazione.
+      const clipDialogue = vidDialogueOverrideRef.current ?? singleDialogue ?? null;
+      const clipAmbient = vidAmbientOverrideRef.current ?? singleAmbient ?? null;
+      const clipVoiceId = vidVoiceIdOverrideRef.current ?? singleVoiceId ?? null;
       const clipDialogueLangResolved = vidDialogueLangOverrideRef.current || singleDialogueLang || "en";
       vidDialogueOverrideRef.current = null;
       vidAmbientOverrideRef.current = null;
@@ -8516,14 +8475,20 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
             setGeneratedVideos(p => p.map(x => x === displayUrl ? localUrl : x));
             displayUrl = localUrl;
           }
+
+          if (setVideosRendering) setVideosRendering(prev => { const next = new Set(prev); next.delete(videoUrl); next.delete(displayUrl); return next; });
+          if (!spCtx && entry) {
+            showToast("✅ Video generato con successo!");
+          }
         } catch (err) {
           console.error("Video download/save failed, using remote URL:", err);
+          if (setVideosRendering) setVideosRendering(prev => { const next = new Set(prev); next.delete(videoUrl); next.delete(displayUrl); return next; });
         }
+      } else if (setVideosRendering) {
+        setVideosRendering(prev => { const next = new Set(prev); next.delete(videoUrl); next.delete(displayUrl); return next; });
       }
 
-      if (setVideosRendering) setVideosRendering(prev => { const next = new Set(prev); next.delete(videoUrl); next.delete(displayUrl); return next; });
       setVideoStatus("");
-      if (!vidScreenplayCtxRef.current) showToast("✅ Video generato con successo!");
 
       return { videoUrl: displayUrl, endFrame: result?.end_frame_url || result?.thumbnail?.url || null };
     } catch (e) {
@@ -8544,7 +8509,7 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
       if (out) {
         vidPreparedEnRef.current = { en: out.prompt_en, itSource: videoPrompt.trim() };
         vidEnIsStaleRef.current = false;
-        setProposedVideoPrompt(out);
+        setProposedVideoPrompt({ prompt_en: out.prompt_en, prompt_it: out.prompt_it });
         setEditableVideoIT(out.prompt_it);
         setVideoPromptManuallyEdited(false);
         if (dirRecDebounceRef.current) { clearTimeout(dirRecDebounceRef.current); dirRecDebounceRef.current = null; }
@@ -8570,7 +8535,7 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
       if (out) {
         vidPreparedEnRef.current = { en: out.prompt_en, itSource: editableVideoIT.trim() };
         vidEnIsStaleRef.current = false;
-        setProposedVideoPrompt(out);
+        setProposedVideoPrompt({ prompt_en: out.prompt_en, prompt_it: out.prompt_it });
         setEditableVideoIT(out.prompt_it);
         setVideoPromptManuallyEdited(false);
         if (dirRecDebounceRef.current) { clearTimeout(dirRecDebounceRef.current); dirRecDebounceRef.current = null; }
@@ -8626,38 +8591,18 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
     setEditableClips([]);
     setScreenplaySummary("");
     try {
-      const visualLabels = selectedVideoStyles
-        .map(sid => VIDEO_VISUAL_STYLE_PRESETS.find(s => s.id === sid)?.label)
-        .filter(Boolean);
-      const dirLabels = (selectedDirectionStyles || [])
-        .map(sid => VIDEO_DIRECTION_STYLE_PRESETS.find(s => s.id === sid)?.label)
-        .filter(Boolean);
-      const styleContext = [...visualLabels, ...dirLabels].join(", ");
-      const result = await analyzeScreenplay(videoPrompt.trim(), styleContext);
-      if (result?.clips?.length) {
-        setEditableClips(result.clips.map(clip => {
-          let setId;
-          if (clip.setName && projectSets.length > 0) {
-            const matchedSet = projectSets.find(s => s.name.toLowerCase() === clip.setName.toLowerCase());
-            if (matchedSet) setId = matchedSet.id;
-          }
-          return {
-            scene: clip.scene || 0,
-            duration: String(clip.duration || "5"),
-            _aiDuration: String(clip.duration || "5"),
-            prompt_en: clip.prompt_en || "",
-            prompt_it: clip.prompt_it || "",
-            camera: clip.camera || "",
-            notes: clip.notes || "",
-            setName: clip.setName || "",
-            setId: setId || undefined,
-            _modified: false,
-            _durationModified: false,
-          };
-        }));
-        setScreenplaySummary(result.summary_it || "");
+      const out = await translateVideoPrompt(videoPrompt.trim(), videoTemplatePrefixForAI(), String(videoDuration));
+      if (out) {
+        vidPreparedEnRef.current = { en: out.prompt_en, itSource: videoPrompt.trim() };
+        vidEnIsStaleRef.current = false;
+        setProposedVideoPrompt({ prompt_en: out.prompt_en, prompt_it: out.prompt_it });
+        setEditableVideoIT(out.prompt_it);
+        setVideoPromptManuallyEdited(false);
+        if (dirRecDebounceRef.current) { clearTimeout(dirRecDebounceRef.current); dirRecDebounceRef.current = null; }
+        dirRecLastInputRef.current = `${videoPrompt.trim()}|${(selectedVideoStyles || []).join(",")}`;
+        void fetchDirectionRecommendation(videoPrompt.trim(), out.prompt_en);
       } else {
-        setTranslateVideoErr("Non sono riuscito ad analizzare la sceneggiatura. Riprova con più dettagli.");
+        setTranslateVideoErr("Tutti i modelli LLM non disponibili. Puoi generare direttamente con il tuo prompt.");
       }
     } catch (e) {
       console.error(e);
@@ -8669,11 +8614,13 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
 
   // Genera tutti i clip suggeriti dall'LLM in sequenza
   const handleGenerateAllClips = async (clips) => {
+    if (!clips?.length || clips.length === 1) {
+      return void generateVideo();
+    }
     if (!selectedVideoStyles || selectedVideoStyles.length === 0) {
       alert("Seleziona almeno uno stile prima di generare il video");
       return;
     }
-    if (!clips?.length) return;
     setGenerating(true);
     setProposedVideoPrompt(null);
     setEditableVideoIT("");
@@ -8803,9 +8750,9 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
       vidDurationOverrideRef.current = Number(clip.duration) || 5;
       setVideoDuration(Number(clip.duration) || 5);
       vidScreenplayCtxRef.current = { screenplayId: spId, screenplayName: spName, screenplaySummary: spSummary, clipIndex: i, clipTotal: clips.length };
-      vidDialogueOverrideRef.current = clip.dialogue || null;
-      vidAmbientOverrideRef.current = clip.ambient || null;
-      vidVoiceIdOverrideRef.current = clip.voiceId || null;
+      vidDialogueOverrideRef.current = clip.dialogue || "";
+      vidAmbientOverrideRef.current = clip.ambient || "";
+      vidVoiceIdOverrideRef.current = clip.voiceId || "";
       vidDialogueLangOverrideRef.current = clip.dialogueLang || singleDialogueLang || "en";
 
       // ── Set-based start frame: se il clip ha un Set, genera frame con Kontext ──
@@ -9278,6 +9225,10 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
         <textarea
           value={videoPrompt}
           onChange={e => { setVideoPrompt(e.target.value); vidRecallActiveRef.current = false; vidEnIsStaleRef.current = true; }}
+          onPaste={makeNormalizedPasteHandler(setVideoPrompt, () => {
+            vidRecallActiveRef.current = false;
+            vidEnIsStaleRef.current = true;
+          })}
           onFocus={handlePromptFocus}
           placeholder={videoMode === "screenplay"
             ? "Scrivi la tua sceneggiatura — descrivi tutte le scene e le azioni in dettaglio. Il sistema le dividerà automaticamente in clip ottimali…"
@@ -9317,6 +9268,7 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
             <textarea
               value={singleDialogueIdea}
               onChange={(e) => { const v = e.target.value; setSingleDialogueIdea(v); setSingleDialogue(v); console.log("[DIALOGUE TEXTAREA]", { text: v.slice(0, 50), synced: true }); }}
+              onPaste={makeNormalizedPasteHandler((v) => { setSingleDialogueIdea(v); setSingleDialogue(v); })}
               placeholder="Scrivi o incolla il dialogo in italiano..."
               rows={2}
               style={{ width: "100%", marginTop: 4, background: "rgba(0,0,0,0.3)", color: "white", border: "1px solid rgba(139,92,246,0.3)", borderRadius: 8, padding: 8, fontSize: 12, resize: "vertical", boxSizing: "border-box" }}
@@ -9375,6 +9327,7 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
                 <textarea
                   value={singleDialogue}
                   onChange={(e) => { console.log("[CONFIRMED DIALOGUE SET]", { source: "textarea_edit", text: e.target.value.slice(0, 50) }); setSingleDialogue(e.target.value); }}
+                  onPaste={makeNormalizedPasteHandler(setSingleDialogue)}
                   rows={2}
                   style={{ width: "100%", marginTop: 4, background: "rgba(0,0,0,0.3)", color: "#10b981", border: "1px solid rgba(16,185,129,0.3)", borderRadius: 8, padding: 8, fontSize: 12, boxSizing: "border-box" }}
                 />
@@ -9390,6 +9343,7 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
             <textarea
               value={singleAmbientIdea}
               onChange={(e) => setSingleAmbientIdea(e.target.value)}
+              onPaste={makeNormalizedPasteHandler(setSingleAmbientIdea)}
               placeholder="Descrivi i suoni della scena... (traffico, passi, vento, folla...)"
               rows={2}
               style={{ width: "100%", marginTop: 4, background: "rgba(0,0,0,0.3)", color: "white", border: "1px solid rgba(245,158,11,0.3)", borderRadius: 8, padding: 8, fontSize: 12, resize: "vertical", boxSizing: "border-box" }}
@@ -9406,6 +9360,7 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
                 <textarea
                   value={singleAmbient}
                   onChange={(e) => setSingleAmbient(e.target.value)}
+                  onPaste={makeNormalizedPasteHandler(setSingleAmbient)}
                   rows={2}
                   style={{ width: "100%", marginTop: 4, background: "rgba(0,0,0,0.3)", color: "#10b981", border: "1px solid rgba(16,185,129,0.3)", borderRadius: 8, padding: 8, fontSize: 12, boxSizing: "border-box" }}
                 />
@@ -9447,12 +9402,13 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
                 <textarea
                   value={editableVideoIT}
                   onChange={e => { setEditableVideoIT(e.target.value); setVideoPromptManuallyEdited(true); }}
+                  onPaste={makeNormalizedPasteHandler(setEditableVideoIT, () => { setVideoPromptManuallyEdited(true); })}
                   placeholder="Modifica la descrizione in italiano…"
                   style={{ width: "100%", minHeight: 120, maxHeight: 260, padding: "12px 14px", background: AX.bg, border: "1px solid rgba(255,79,163,0.2)", borderRadius: 12, color: AX.text, fontSize: 14, fontFamily: "'DM Sans', sans-serif", resize: "vertical", outline: "none", boxSizing: "border-box", lineHeight: 1.55 }}
                 />
               </div>
-              {/* Suggerimento multi-clip editabile */}
-              {editableClips.length > 0 && (
+              {/* Video libero: UI multi-clip disabilitata (vedi Modifica 1). */}
+              {false && editableClips.length > 0 && (
                 <div style={{ padding: 12, borderRadius: 10, background: "rgba(123,77,255,0.08)", border: "1px solid rgba(123,77,255,0.25)" }}>
                   <div style={{ fontSize: 12, fontWeight: 700, color: AX.violet, marginBottom: 10 }}>
                     💡 Idea suddivisa in {editableClips.length} clip — modifica durate e descrizioni:
@@ -9495,6 +9451,20 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
                       <textarea
                         value={clip.prompt_it}
                         onChange={e => setEditableClips(prev => prev.map((c, j) => j === i ? { ...c, prompt_it: e.target.value, _modified: true } : c))}
+                        onPaste={e => {
+                          e.preventDefault();
+                          const pasted = (e.clipboardData || window.clipboardData).getData("text");
+                          const normalized = pasted.replace(/[\r\n]+/g, " ").replace(/\s{2,}/g, " ").trim();
+                          const target = e.target;
+                          const start = target.selectionStart;
+                          const end = target.selectionEnd;
+                          const current = target.value;
+                          const newValue = current.slice(0, start) + normalized + current.slice(end);
+                          setEditableClips(prev => prev.map((c, j) => j === i ? { ...c, prompt_it: newValue, _modified: true } : c));
+                          setTimeout(() => {
+                            try { target.selectionStart = target.selectionEnd = start + normalized.length; } catch { /* noop */ }
+                          }, 0);
+                        }}
                         style={{ width: "100%", minHeight: 38, padding: "6px 8px", borderRadius: 6, background: "rgba(255,255,255,0.04)", border: `1px solid ${clip._modified ? "rgba(255,179,71,0.4)" : AX.border}`, color: AX.text2, fontSize: 11, resize: "vertical", outline: "none", boxSizing: "border-box", lineHeight: 1.45, fontFamily: "'DM Sans', sans-serif" }}
                       />
                       {clip._modified && (
@@ -9642,8 +9612,8 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
         </div>
       ) : null}
 
-      {/* UI risultato sceneggiatura — solo in modalità screenplay */}
-      {videoMode === "screenplay" && editableClips.length > 0 && (
+      {/* Video libero: UI multi-clip disabilitata (vedi Modifica 1). */}
+      {false && videoMode === "screenplay" && editableClips.length > 0 && (
         <div style={{ marginTop: 14, padding: 14, borderRadius: 12, background: "rgba(123,77,255,0.06)", border: "1px solid rgba(123,77,255,0.22)", flexShrink: 0 }}>
           {/* Header progetto */}
           <div style={{ marginBottom: 12 }}>
@@ -9707,6 +9677,20 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
               <textarea
                 value={clip.prompt_it}
                 onChange={e => setEditableClips(prev => prev.map((c, j) => j === i ? { ...c, prompt_it: e.target.value, _modified: true } : c))}
+                onPaste={e => {
+                  e.preventDefault();
+                  const pasted = (e.clipboardData || window.clipboardData).getData("text");
+                  const normalized = pasted.replace(/[\r\n]+/g, " ").replace(/\s{2,}/g, " ").trim();
+                  const target = e.target;
+                  const start = target.selectionStart;
+                  const end = target.selectionEnd;
+                  const current = target.value;
+                  const newValue = current.slice(0, start) + normalized + current.slice(end);
+                  setEditableClips(prev => prev.map((c, j) => j === i ? { ...c, prompt_it: newValue, _modified: true } : c));
+                  setTimeout(() => {
+                    try { target.selectionStart = target.selectionEnd = start + normalized.length; } catch { /* noop */ }
+                  }, 0);
+                }}
                 style={{ width: "100%", minHeight: 34, padding: "5px 8px", borderRadius: 6, background: "rgba(255,255,255,0.04)", border: `1px solid ${clip._modified ? "rgba(255,179,71,0.4)" : AX.border}`, color: AX.text2, fontSize: 11, resize: "vertical", outline: "none", boxSizing: "border-box", lineHeight: 1.45, fontFamily: "'DM Sans', sans-serif" }}
               />
               {clip._modified && (
@@ -9758,6 +9742,20 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
                   <textarea
                     value={clip.dialogueIdea || ""}
                     onChange={(e) => updateClipDialogue(i, "dialogueIdea", e.target.value)}
+                    onPaste={e => {
+                      e.preventDefault();
+                      const pasted = (e.clipboardData || window.clipboardData).getData("text");
+                      const normalized = pasted.replace(/[\r\n]+/g, " ").replace(/\s{2,}/g, " ").trim();
+                      const target = e.target;
+                      const start = target.selectionStart;
+                      const end = target.selectionEnd;
+                      const current = target.value;
+                      const newValue = current.slice(0, start) + normalized + current.slice(end);
+                      updateClipDialogue(i, "dialogueIdea", newValue);
+                      setTimeout(() => {
+                        try { target.selectionStart = target.selectionEnd = start + normalized.length; } catch { /* noop */ }
+                      }, 0);
+                    }}
                     placeholder="Scrivi l'idea del dialogo in italiano..."
                     rows={2}
                     style={{ width: "100%", marginTop: 4, background: "rgba(0,0,0,0.3)", color: "white", border: "1px solid rgba(139,92,246,0.3)", borderRadius: 8, padding: 8, fontSize: 12, resize: "vertical", boxSizing: "border-box" }}
@@ -9816,6 +9814,20 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
                       <textarea
                         value={clip.dialogue}
                         onChange={(e) => updateClipDialogue(i, "dialogue", e.target.value)}
+                        onPaste={e => {
+                          e.preventDefault();
+                          const pasted = (e.clipboardData || window.clipboardData).getData("text");
+                          const normalized = pasted.replace(/[\r\n]+/g, " ").replace(/\s{2,}/g, " ").trim();
+                          const target = e.target;
+                          const start = target.selectionStart;
+                          const end = target.selectionEnd;
+                          const current = target.value;
+                          const newValue = current.slice(0, start) + normalized + current.slice(end);
+                          updateClipDialogue(i, "dialogue", newValue);
+                          setTimeout(() => {
+                            try { target.selectionStart = target.selectionEnd = start + normalized.length; } catch { /* noop */ }
+                          }, 0);
+                        }}
                         rows={2}
                         style={{ width: "100%", marginTop: 4, background: "rgba(0,0,0,0.3)", color: "#10b981", border: "1px solid rgba(16,185,129,0.3)", borderRadius: 8, padding: 8, fontSize: 12, boxSizing: "border-box" }}
                       />
@@ -9831,6 +9843,20 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
                   <textarea
                     value={clip.ambientIdea || ""}
                     onChange={(e) => updateClipAmbient(i, "ambientIdea", e.target.value)}
+                    onPaste={e => {
+                      e.preventDefault();
+                      const pasted = (e.clipboardData || window.clipboardData).getData("text");
+                      const normalized = pasted.replace(/[\r\n]+/g, " ").replace(/\s{2,}/g, " ").trim();
+                      const target = e.target;
+                      const start = target.selectionStart;
+                      const end = target.selectionEnd;
+                      const current = target.value;
+                      const newValue = current.slice(0, start) + normalized + current.slice(end);
+                      updateClipAmbient(i, "ambientIdea", newValue);
+                      setTimeout(() => {
+                        try { target.selectionStart = target.selectionEnd = start + normalized.length; } catch { /* noop */ }
+                      }, 0);
+                    }}
                     placeholder="Descrivi i suoni della scena... (traffico, passi, vento, folla...)"
                     rows={2}
                     style={{ width: "100%", marginTop: 4, background: "rgba(0,0,0,0.3)", color: "white", border: "1px solid rgba(245,158,11,0.3)", borderRadius: 8, padding: 8, fontSize: 12, resize: "vertical", boxSizing: "border-box" }}
@@ -9847,6 +9873,20 @@ function VidGen({ videoPrompt, setVideoPrompt, videoDuration, setVideoDuration, 
                       <textarea
                         value={clip.ambient}
                         onChange={(e) => updateClipAmbient(i, "ambient", e.target.value)}
+                        onPaste={e => {
+                          e.preventDefault();
+                          const pasted = (e.clipboardData || window.clipboardData).getData("text");
+                          const normalized = pasted.replace(/[\r\n]+/g, " ").replace(/\s{2,}/g, " ").trim();
+                          const target = e.target;
+                          const start = target.selectionStart;
+                          const end = target.selectionEnd;
+                          const current = target.value;
+                          const newValue = current.slice(0, start) + normalized + current.slice(end);
+                          updateClipAmbient(i, "ambient", newValue);
+                          setTimeout(() => {
+                            try { target.selectionStart = target.selectionEnd = start + normalized.length; } catch { /* noop */ }
+                          }, 0);
+                        }}
                         rows={2}
                         style={{ width: "100%", marginTop: 4, background: "rgba(0,0,0,0.3)", color: "#10b981", border: "1px solid rgba(16,185,129,0.3)", borderRadius: 8, padding: 8, fontSize: 12, boxSizing: "border-box" }}
                       />

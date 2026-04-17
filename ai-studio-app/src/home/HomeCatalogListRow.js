@@ -22,7 +22,7 @@ const THUMB_H = 68;
 
 /**
  * Riga elenco catalogo Home (immagini / video liberi).
- * @param {{ entry: object, onOpenPreview: (e: object) => void, ax: { border: string, surface: string, text: string, text2: string, muted: string, violet: string, bg: string } }} props
+ * @param {{ entry: object, onOpenPreview: (e: object) => void, ax: { border: string, surface: string, text: string, text2: string, muted: string, electric: string, violet: string, bg: string } }} props
  */
 export const HomeCatalogListRow = React.memo(function HomeCatalogListRow({ entry, onOpenPreview, ax }) {
   const isVideo = entry.type === "video";
@@ -79,12 +79,16 @@ export const HomeCatalogListRow = React.memo(function HomeCatalogListRow({ entry
   };
 
   const src = displaySrc;
+  const canOpen = Boolean(entry.filePath);
+  const rowShadowRest = "0 2px 10px rgba(0,0,0,0.18)";
+  const rowShadowHoverOpen =
+    "0 18px 44px rgba(0,0,0,0.38), 0 0 0 1px rgba(41,182,255,0.5), 0 0 32px rgba(41,182,255,0.24)";
 
   return (
     <button
       type="button"
       onClick={onRowClick}
-      disabled={!entry.filePath}
+      disabled={!canOpen}
       title={title}
       style={{
         display: "flex",
@@ -95,23 +99,26 @@ export const HomeCatalogListRow = React.memo(function HomeCatalogListRow({ entry
         minWidth: 0,
         padding: "10px 12px",
         borderRadius: 10,
-        border: `1px solid ${ax.border}`,
+        border: `1px solid ${canOpen ? ax.border : "rgba(251,191,36,0.35)"}`,
         background: "rgba(16,18,26,0.75)",
-        cursor: entry.filePath ? "pointer" : "default",
+        cursor: canOpen ? "pointer" : "default",
         textAlign: "left",
         boxSizing: "border-box",
-        transition: "border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease",
+        boxShadow: rowShadowRest,
+        transition: "border-color 0.18s ease, background 0.18s ease, box-shadow 0.18s ease",
       }}
       onMouseEnter={(e) => {
-        if (!entry.filePath) return;
-        e.currentTarget.style.borderColor = ax.violet;
-        e.currentTarget.style.background = "rgba(123,77,255,0.08)";
-        e.currentTarget.style.boxShadow = "0 4px 20px rgba(0,0,0,0.25)";
+        if (!canOpen) return;
+        const t = e.currentTarget;
+        t.style.borderColor = ax.electric;
+        t.style.background = "rgba(41,182,255,0.07)";
+        t.style.boxShadow = rowShadowHoverOpen;
       }}
       onMouseLeave={(e) => {
-        e.currentTarget.style.borderColor = ax.border;
-        e.currentTarget.style.background = "rgba(16,18,26,0.75)";
-        e.currentTarget.style.boxShadow = "none";
+        const t = e.currentTarget;
+        t.style.borderColor = canOpen ? ax.border : "rgba(251,191,36,0.35)";
+        t.style.background = "rgba(16,18,26,0.75)";
+        t.style.boxShadow = rowShadowRest;
       }}
     >
       <div
