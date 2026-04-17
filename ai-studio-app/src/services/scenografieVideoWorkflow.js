@@ -856,6 +856,9 @@ export function normalizeSceneVideoClip(c) {
       c.dialogueDirectionConstraintReport && typeof c.dialogueDirectionConstraintReport === "object"
         ? c.dialogueDirectionConstraintReport
         : null,
+    /** Metadati export clip (preview vs final) — vedi `videoRenderProfiles.js`. */
+    clipVideoExportMeta:
+      c.clipVideoExportMeta && typeof c.clipVideoExportMeta === "object" ? c.clipVideoExportMeta : null,
   };
 }
 

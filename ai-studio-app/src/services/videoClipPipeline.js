@@ -34,7 +34,8 @@ import {
   pickKlingO3DurationSec,
   KLING_O3_REFERENCE_TO_VIDEO_ENDPOINT,
 } from "./scenografieCinematicKlingO3.js";
-import { muxVideoUrlWithAudioUrlToMp4Blob } from "./montageFfmpegWasm.js";
+import { muxVideoUrlWithAudioUrlToMp4Blob, transcodeVideoUrlToProfileMp4Blob } from "./montageFfmpegWasm.js";
+import { getVideoRenderProfile, resolvePreviewEncodeTier } from "./videoRenderProfiles.js";
 import { imageUrlToBase64, uploadToFalStorage, uploadBlobToFalStorage } from "./imagePipeline.js";
 import { sanitizeClipPipelineErrorForUser } from "./scenografieClipUserMessages.js";
 import {
@@ -138,6 +139,7 @@ async function ensureImageUrlOnFal(imageUrl) {
  * @param {Record<string, object>} opts.characterVoiceMasters
  * @param {(partial: object) => void} opts.patchClip — merge sul clip (stato intermedio)
  * @param {(phase: string, detail?: string) => void} [opts.onProgress]
+ * @param {string|null} [opts.previewRenderIntentId] — `preview_fast` | `preview_balanced` (da copilota); altri intent → tier fast.
  */
 export async function runScenografieClipVideoPipeline(opts) {
   const {
@@ -151,6 +153,7 @@ export async function runScenografieClipVideoPipeline(opts) {
     chapterMeta,
     projectCharacterMasters = null,
     projectNarrators = null,
+    previewRenderIntentId = null,
   } = opts;
   if (!clip?.id) throw new Error("Clip non valido.");
 
@@ -159,6 +162,13 @@ export async function runScenografieClipVideoPipeline(opts) {
   }
   if (!getElevenLabsApiKey()) {
     throw new Error("REACT_APP_ELEVENLABS_API_KEY non configurata nel .env");
+  }
+
+  /** Encode ffmpeg preview (mux/transcode) — tier da copilota; mai legato a `finalRenderSettings`. */
+  const previewTier = resolvePreviewEncodeTier(previewRenderIntentId);
+  const previewVideoProfile = getVideoRenderProfile({ mode: "preview", previewTier });
+  if (typeof console !== "undefined" && console.info) {
+    console.info("[AXSTUDIO · preview encode tier]", { previewTier, previewRenderIntentId });
   }
 
   const { row, sceneImageUrl } = assertSceneApprovedWithImage(clip, sceneResults);
@@ -697,6 +707,7 @@ export async function runScenografieClipVideoPipeline(opts) {
           videoUrl: cinematicRemoteUrl,
           audioUrl: klingAudioUrl,
           onProgress: (m) => onProgress?.("video", m),
+          renderProfile: previewVideoProfile,
         });
       } catch (e) {
         const msg = e?.message || String(e);
@@ -803,7 +814,26 @@ export async function runScenografieClipVideoPipeline(opts) {
         audioUrl: klingAudioUrl,
         onProgress: (s) => onProgress?.("video", s),
       });
-      videoUrl = avatarRes.videoUrl;
+      let avatarUrl = avatarRes.videoUrl;
+      try {
+        onProgress?.("video", "AXSTUDIO · preview clip: normalizzazione locale 720p…");
+        const previewBlob = await transcodeVideoUrlToProfileMp4Blob({
+          videoUrl: avatarUrl,
+          renderProfile: previewVideoProfile,
+          onProgress: (m) => onProgress?.("video", m),
+        });
+        avatarUrl = await uploadBlobToFalStorage(
+          previewBlob,
+          `sceno_clip_${clip.id}_avatar_preview_720p.mp4`,
+          "video/mp4",
+        );
+      } catch (normErr) {
+        if (typeof console !== "undefined" && console.warn) {
+          console.warn("[AXSTUDIO · preview clip · transcode fallback — uso output provider grezzo]", normErr);
+        }
+        onProgress?.("video", "Preview: transcode 720p non riuscito — uso video provider.");
+      }
+      videoUrl = avatarUrl;
       finalizeAvatarVideoAssembly(videoRenderPlan, { finalVideoUrl: videoUrl });
     }
 
@@ -856,6 +886,11 @@ export async function runScenografieClipVideoPipeline(opts) {
       videoUrl,
       audioUrl: klingAudioUrl,
       audioDurationSeconds: audioDur,
+      clipVideoExportMeta: {
+        ...previewVideoProfile,
+        pipeline: "scenografie_clip_preview",
+        normalizedAt: now(),
+      },
       providerVideo: "fal.ai",
       providerVoice: "elevenlabs",
       generationModel: videoStrategy.videoExecutorModel,

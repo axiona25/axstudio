@@ -125,6 +125,7 @@ import {
 import { ScenografieNarratorSection } from "./ScenografieNarratorSection.js";
 import { runScenografieClipVideoPipeline } from "../services/videoClipPipeline.js";
 import { sanitizeClipPipelineErrorForUser } from "../services/scenografieClipUserMessages.js";
+import { FINAL_RENDER_RESOLUTIONS, normalizeFinalRenderSettings } from "../services/videoRenderProfiles.js";
 import {
   buildMontageFailureRecord,
   logConsumerReliabilityEvent,
@@ -156,6 +157,16 @@ import {
   logSceneVariantState,
 } from "../services/scenografieSceneVariants.js";
 import { ASSET_DOMAIN } from "../mediaAssetDomain.js";
+import { deriveWizardStepsWithStatus, scrollToWizardAnchor, WIZARD_STEP_DEFS, WIZARD_STEP_IDS } from "../guided/axstudioWizardModel.js";
+import { StepProgressNavigator } from "./guided/StepProgressNavigator.js";
+import { AxstudioCopilotLauncher } from "./guided/AxstudioCopilotLauncher.js";
+import { AxstudioCopilotModal } from "./guided/AxstudioCopilotModal.js";
+import { WizardStepPageFooter } from "./guided/WizardStepPage.js";
+import { WizardStepContentTransition } from "./guided/WizardStepContentTransition.js";
+import { buildAxstudioGuideContent, axstudioCopilotWantsAttention, axstudioCopilotAttentionDigest } from "../services/axstudioCopilotHeuristics.js";
+import { getCopilotTemplate, appendTemplateNonDestructive } from "../services/axstudioCopilotTemplates.js";
+import { loadWizardPrefs, saveWizardPrefs } from "../services/axstudioWizardLocalPrefs.js";
+import { finalResolutionFromRenderIntent } from "../config/axstudioRenderIntentProfiles.js";
 
 const AX = {
   bg: "#0a0a0f", surface: "#13131a", card: "#1a1a24", border: "#23232e",
@@ -658,6 +669,7 @@ export function ScenografieProjectEditor({
   setScenePipelineFlight = null,
   initialRecoveryDeepLink = null,
   onConsumedRecoveryDeepLink,
+  onScenografieHeaderActionsChange = null,
 }) {
   const [prompt, setPrompt] = useState("");
   /** Nome progetto scenografico (persistito). */
@@ -727,6 +739,8 @@ export function ScenografieProjectEditor({
     narrativeBeatNotes: "",
   });
   const [finalFilmMontage, setFinalFilmMontage] = useState(() => emptyFinalFilmMontage());
+  /** Impostazioni export filmato finale (montaggio) — indipendenti dal profilo preview clip. */
+  const [finalRenderSettings, setFinalRenderSettings] = useState(() => normalizeFinalRenderSettings(null));
   const [montageRenderBusy, setMontageRenderBusy] = useState(false);
   const [timelinePlan, setTimelinePlan] = useState({ approved: false, approvedAt: null, entries: [] });
   const dragTimelineIdxRef = useRef(null);
@@ -751,6 +765,18 @@ export function ScenografieProjectEditor({
   const [modifyingSceneId, setModifyingSceneId] = useState(null);
   /** Hover card fase (workflow Scenografie — feedback premium). */
   const [hoveredPhase, setHoveredPhase] = useState(null);
+  /** Wizard AXSTUDIO guidato (barra step + pannello copilota). */
+  const [axGuidedMode, setAxGuidedMode] = useState(true);
+  const [axWizardStepId, setAxWizardStepId] = useState("concept");
+  const [axGuideAdvancedExpanded, setAxGuideAdvancedExpanded] = useState(false);
+  /** Intent render copilota (preview vs final target) — anche persistito in localStorage. */
+  const [axCopilotRenderIntentId, setAxCopilotRenderIntentId] = useState("preview_fast");
+  const [axGuidedSubmode, setAxGuidedSubmode] = useState("default");
+  const [axCopilotAudioMode, setAxCopilotAudioMode] = useState("unset");
+  const [axCopilotModalOpen, setAxCopilotModalOpen] = useState(false);
+  const [copilotAckDigest, setCopilotAckDigest] = useState("");
+  const axCopilotLauncherRef = useRef(null);
+  const [wizardPrefsReady, setWizardPrefsReady] = useState(false);
   const [modifyDraftPrompt, setModifyDraftPrompt] = useState("");
   const [sceneEditBusyId, setSceneEditBusyId] = useState(null);
   /** Anteprima ingrandita (solo doppio click su immagine / miniatura). */
@@ -879,6 +905,7 @@ export function ScenografieProjectEditor({
             setFinalMontagePhase("none");
             setFinalMontagePlan({ orderedClipIds: [], orderedTimelineEntryIds: [], narrativeBeatNotes: "" });
             setFinalFilmMontage(emptyFinalFilmMontage());
+            setFinalRenderSettings(normalizeFinalRenderSettings(null));
             setTimelinePlan({ approved: false, approvedAt: null, entries: [] });
             setSceneVideoClips([]);
             setClipBuilderClipId(null);
@@ -977,6 +1004,7 @@ export function ScenografieProjectEditor({
             } else {
               setFinalFilmMontage(emptyFinalFilmMontage());
             }
+            setFinalRenderSettings(normalizeFinalRenderSettings(d.finalRenderSettings));
             if (d.timelinePlan && typeof d.timelinePlan === "object") {
               setTimelinePlan(normalizeTimelinePlan(d.timelinePlan));
             } else {
@@ -1064,6 +1092,7 @@ export function ScenografieProjectEditor({
           setFinalMontagePhase("none");
           setFinalMontagePlan({ orderedClipIds: [], orderedTimelineEntryIds: [], narrativeBeatNotes: "" });
           setFinalFilmMontage(emptyFinalFilmMontage());
+          setFinalRenderSettings(normalizeFinalRenderSettings(null));
           setTimelinePlan({ approved: false, approvedAt: null, entries: [] });
           setSceneVideoClips([]);
           setClipBuilderClipId(null);
@@ -1157,6 +1186,7 @@ export function ScenografieProjectEditor({
       finalMontagePhase,
       finalMontagePlan,
       finalFilmMontage,
+      finalRenderSettings,
       timelinePlan,
       runtimeHints: {
         sceneExecuteMode: sceneExecuteModeRef.current,
@@ -1187,6 +1217,7 @@ export function ScenografieProjectEditor({
       finalMontagePhase,
       finalMontagePlan,
       finalFilmMontage,
+      finalRenderSettings,
       timelinePlan,
     ],
   );
@@ -1270,6 +1301,7 @@ export function ScenografieProjectEditor({
     finalMontagePhase,
     finalMontagePlan,
     finalFilmMontage,
+    finalRenderSettings,
     timelinePlan,
     buildCurrentChapterPayload,
   ]);
@@ -1298,6 +1330,7 @@ export function ScenografieProjectEditor({
       finalMontagePhase,
       finalMontagePlan,
       finalFilmMontage,
+      finalRenderSettings,
       timelinePlan,
       runtimeHints: {
         sceneExecuteMode: sceneExecuteModeRef.current,
@@ -1327,6 +1360,7 @@ export function ScenografieProjectEditor({
     finalMontagePhase,
     finalMontagePlan,
     finalFilmMontage,
+    finalRenderSettings,
     timelinePlan,
   ]);
 
@@ -1344,6 +1378,18 @@ export function ScenografieProjectEditor({
       return ok;
     },
     [projectId, chapterId]
+  );
+
+  const commitFinalRenderSettings = useCallback(
+    async (partial) => {
+      const base = persistSnapshotRef.current;
+      const prev = base?.finalRenderSettings && typeof base.finalRenderSettings === "object" ? base.finalRenderSettings : finalRenderSettings;
+      const next = normalizeFinalRenderSettings({ ...prev, ...partial });
+      setFinalRenderSettings(next);
+      if (!projectId || !chapterId || !base) return;
+      await persistChapterPayload({ ...base, finalRenderSettings: next });
+    },
+    [projectId, chapterId, persistChapterPayload, finalRenderSettings],
   );
 
   useEffect(() => {
@@ -2599,6 +2645,19 @@ export function ScenografieProjectEditor({
     [plan, sceneResults, deletedSceneIds]
   );
 
+  /** Mappa preset immagine reali → scorciatoie copilota Concept. */
+  const copilotStylePick = useMemo(() => {
+    const cat = imageStylePresets || [];
+    const byId = (id) => cat.find((p) => p.id === id)?.id ?? null;
+    return {
+      cinematic_realistic: byId("cinematic") || byId("realistic"),
+      spot_premium: byId("fashion") || byId("cinematic"),
+      doc_emotional: byId("portrait") || byId("vintage"),
+      fantasy_stylized: byId("ghibli") || byId("anime"),
+      horror_atmos: byId("noir") || byId("cinematic"),
+    };
+  }, [imageStylePresets]);
+
   const projectUiStatus = useMemo(
     () =>
       deriveScenografiaUiStatus({
@@ -2817,25 +2876,39 @@ export function ScenografieProjectEditor({
       };
       if (clipId) {
         if (sceneId) setSceneCardFocusId(sceneId);
+        setAxWizardStepId("clip_builder");
         setClipBuilderClipId(clipId);
         scrollTo(`ax-scenografie-clip-${clipId}`);
         return;
       }
       if (sceneId) {
         setSceneCardFocusId(sceneId);
+        setAxWizardStepId("scenes");
         scrollTo(`ax-scenografie-scene-${sceneId}`);
         return;
       }
       if (focus === "montage") {
+        setAxWizardStepId("final_render");
         scrollTo("ax-scenografie-anchor-montage");
         if (typeof document !== "undefined" && !document.getElementById("ax-scenografie-anchor-montage")) {
           scrollTo("ax-scenografie-anchor-clips");
         }
-      } else if (focus === "clips") scrollTo("ax-scenografie-anchor-clips");
-      else if (focus === "timeline") scrollTo("ax-scenografie-anchor-timeline");
-      else if (focus === "scenes") scrollTo("ax-scenografie-anchor-scenes");
-      else if (focus === "characters") scrollTo("ax-scenografie-anchor-cast");
-      else if (focus === "narrators") scrollTo("ax-scenografie-anchor-narrators");
+      } else if (focus === "clips") {
+        setAxWizardStepId("clip_builder");
+        scrollTo("ax-scenografie-anchor-clips");
+      } else if (focus === "timeline") {
+        setAxWizardStepId("preview_production");
+        scrollTo("ax-scenografie-anchor-timeline");
+      } else if (focus === "scenes") {
+        setAxWizardStepId("scenes");
+        scrollTo("ax-scenografie-anchor-scenes");
+      } else if (focus === "characters") {
+        setAxWizardStepId("characters");
+        scrollTo("ax-scenografie-anchor-cast");
+      } else if (focus === "narrators") {
+        setAxWizardStepId("audio");
+        scrollTo("ax-scenografie-anchor-narrators");
+      }
     });
   }, []);
 
@@ -3008,8 +3081,10 @@ export function ScenografieProjectEditor({
       await persistChapterPayload(working);
       setFinalFilmMontage(working.finalFilmMontage);
       console.info("[AXSTUDIO · montage · execution]", montageExecutionPlan);
+      const fr = normalizeFinalRenderSettings(base.finalRenderSettings);
       const { outputUrl, blobSizeBytes, renderSummary } = await runFinalMontageRender(compiledMontagePlan, {
         onProgress: (s) => console.info("[AXSTUDIO · montage · execution]", s),
+        finalRenderSettings: fr,
       });
       console.info("[AXSTUDIO · montage · output]", {
         outputUrl,
@@ -3250,6 +3325,7 @@ export function ScenografieProjectEditor({
         characterVoiceMasters,
         projectCharacterMasters,
         projectNarrators,
+        previewRenderIntentId: axCopilotRenderIntentId,
         projectMeta: {
           id: projectId,
           title: workspaceNarrativeTitle || projectTitle || null,
@@ -3289,6 +3365,7 @@ export function ScenografieProjectEditor({
     chapterOrdinal,
     projectCharacterMasters,
     projectNarrators,
+    axCopilotRenderIntentId,
   ]);
 
   const clipBuilderOpenClip = useMemo(
@@ -3298,6 +3375,158 @@ export function ScenografieProjectEditor({
       ) || null,
     [sceneVideoClips, clipBuilderClipId]
   );
+
+  const axWizardSnapshot = useMemo(
+    () => ({
+      hasPlan: !!plan,
+      projectTitle: projectTitle || "",
+      promptLength: (prompt || "").trim().length,
+      sceneCount: plan?.scenes?.length ?? 0,
+      scenesMissingCount,
+      projectStyleChosen: !!(projectStyle && (projectStyle.presetId || projectStyle.label)),
+      projectStyleLocked,
+      mastersTotalNeeded: getCharactersNeedingMaster(plan).length,
+      mastersReadyCount: getCharactersNeedingMaster(plan).filter((c) =>
+        characterMasterReadyForScenes(c, { projectCharacterMasters, characterApprovalMap }),
+      ).length,
+      allCharacterMastersApproved,
+      narratorsCount: (projectNarrators || []).length,
+      narratorsWithVoiceCount: (projectNarrators || []).filter((n) => String(n.voiceId || "").trim()).length,
+      approvedScenesCount: approvedScenesForClips.length,
+      clipsReadyForMontage: clipsReadyForFinalMontage(gatePayload),
+      timelineApproved: timelinePlan.approved === true,
+      finalMontagePhase,
+      clipBuilderOpen: !!clipBuilderOpenClip,
+      planning,
+      projectUiStatus,
+      pipelineLocked:
+        finalMontagePhase === "assembly" ||
+        finalMontagePhase === "done" ||
+        scenografiaVideoPhase === "completed",
+      scenografiaPhase,
+      copilotStylePick,
+      firstApprovedSceneId: approvedScenesForClips[0]?.id ?? null,
+      activeRenderIntentId: axCopilotRenderIntentId,
+      guidedSubmode: axGuidedSubmode,
+      audioMode: axCopilotAudioMode,
+    }),
+    [
+      plan,
+      projectTitle,
+      prompt,
+      scenesMissingCount,
+      projectStyle,
+      projectStyleLocked,
+      projectCharacterMasters,
+      characterApprovalMap,
+      allCharacterMastersApproved,
+      projectNarrators,
+      approvedScenesForClips,
+      gatePayload,
+      timelinePlan.approved,
+      finalMontagePhase,
+      scenografiaVideoPhase,
+      clipBuilderOpenClip,
+      planning,
+      projectUiStatus,
+      scenografiaPhase,
+      copilotStylePick,
+      axCopilotRenderIntentId,
+      axGuidedSubmode,
+      axCopilotAudioMode,
+    ],
+  );
+
+  const axWizardSteps = useMemo(() => deriveWizardStepsWithStatus(axWizardSnapshot), [axWizardSnapshot]);
+
+  const axWizardStepsRef = useRef(axWizardSteps);
+  axWizardStepsRef.current = axWizardSteps;
+
+  const axCopilotModel = useMemo(
+    () => buildAxstudioGuideContent(axWizardStepId, axWizardSnapshot),
+    [axWizardStepId, axWizardSnapshot],
+  );
+  const axWizardActiveRow = useMemo(
+    () => axWizardSteps.find((s) => s.id === axWizardStepId) || null,
+    [axWizardSteps, axWizardStepId],
+  );
+  const axCopilotDigest = useMemo(
+    () => axstudioCopilotAttentionDigest(axWizardStepId, axCopilotModel, axWizardActiveRow),
+    [axWizardStepId, axCopilotModel, axWizardActiveRow],
+  );
+  const copilotAttentionRaw = useMemo(
+    () => axGuidedMode && axstudioCopilotWantsAttention(axCopilotModel, axWizardActiveRow),
+    [axGuidedMode, axCopilotModel, axWizardActiveRow],
+  );
+  const launcherCopilotAttention = copilotAttentionRaw && !axCopilotModalOpen && axCopilotDigest !== copilotAckDigest;
+
+  const axWizardPage = useMemo(() => {
+    const id = axWizardStepId;
+    const gate =
+      (approvedScenesForClips?.length || 0) > 0 || clipsReadyForFinalMontage(gatePayload);
+    return {
+      showPhase1: id === "concept" || id === "narrative_plan",
+      showNarrativeBlock: id === "narrative_plan" && !!plan,
+      showPhase2: !!plan && (id === "characters" || id === "audio"),
+      showAudioBlock: id === "audio",
+      showCharactersBlock: id === "characters",
+      showPhase3: !!plan && id === "scenes",
+      showCompletionCard:
+        !!plan && ["scenes", "clip_builder", "preview_production", "final_render"].includes(id),
+      phase4Gate: !!plan && gate,
+      showPhase4: !!plan && gate && (id === "clip_builder" || id === "preview_production" || id === "final_render"),
+      showPhase4Clips: id === "clip_builder",
+      showPhase4Timeline: id === "preview_production",
+      showPhase4FinalStrip: id === "final_render",
+      showMontageBlock: id === "final_render" && finalMontagePhase === "assembly",
+      showClipDivider:
+        id === "clip_builder" && sceneResults.length > 0 && approvedScenesForClips.length > 0,
+      needsPlanPlaceholder:
+        !plan &&
+        ["characters", "audio", "scenes", "clip_builder", "preview_production", "final_render"].includes(id),
+      needsPhase4Placeholder:
+        !!plan &&
+        !gate &&
+        (id === "clip_builder" || id === "preview_production" || id === "final_render"),
+    };
+  }, [
+    axWizardStepId,
+    plan,
+    approvedScenesForClips,
+    gatePayload,
+    finalMontagePhase,
+    sceneResults.length,
+  ]);
+
+  const wizardFooterStatusIt = useMemo(() => {
+    const s = axWizardActiveRow?.status;
+    switch (s) {
+      case "complete":
+        return "Completato";
+      case "in_progress":
+        return "In corso";
+      case "needs_review":
+        return "Da revisionare";
+      case "not_started":
+        return "Non iniziato";
+      default:
+        return "";
+    }
+  }, [axWizardActiveRow]);
+
+  const wizardNavPrevNext = useMemo(() => {
+    const idx = WIZARD_STEP_IDS.indexOf(axWizardStepId);
+    return {
+      prevId: idx > 0 ? WIZARD_STEP_IDS[idx - 1] : null,
+      nextId: idx >= 0 && idx < WIZARD_STEP_IDS.length - 1 ? WIZARD_STEP_IDS[idx + 1] : null,
+    };
+  }, [axWizardStepId]);
+
+  const handleSelectWizardStep = useCallback((id) => {
+    setAxWizardStepId(id);
+    const def = WIZARD_STEP_DEFS.find((d) => d.id === id);
+    if (def?.anchor) scrollToWizardAnchor(def.anchor);
+  }, []);
 
   const runProtagonistMastersBatch = async () => {
     if (!plan || !projectStyle) {
@@ -3673,6 +3902,229 @@ export function ScenografieProjectEditor({
     finalMontagePhase === "done" ||
     scenografiaVideoPhase === "completed";
 
+  const applyImageStylePresetFromCopilot = useCallback(
+    (presetId) => {
+      if (!presetId || pipelineLocked || projectStyleLocked) return;
+      const p = imageStylePresets.find((x) => x.id === presetId);
+      if (!p) {
+        if (typeof console !== "undefined" && console.warn) {
+          console.warn("[AXSTUDIO copilot] apply_project_style: preset non in catalogo", presetId);
+        }
+        return;
+      }
+      if (scenografiaPhase !== "plan") {
+        if (typeof console !== "undefined" && console.warn) {
+          console.warn('[AXSTUDIO copilot] apply_project_style: solo in fase "plan".');
+        }
+        return;
+      }
+      if (!plan) {
+        setProjectStyle({
+          presetId: p.id,
+          label: p.label,
+          stylePrompt: p.prompt,
+          negativePrompt: p.negative_prompt || "",
+          plannerVisualNotes: `${p.label}, look coerente per il progetto scenografico`,
+          isAnimated: isAnimatedStyle([p.id]),
+        });
+        return;
+      }
+      applyPresetChoice(presetId);
+    },
+    [plan, pipelineLocked, projectStyleLocked, scenografiaPhase, imageStylePresets, applyPresetChoice],
+  );
+
+  const handleAxstudioGuideAction = useCallback(
+    (action) => {
+      if (!action || typeof action !== "object") return;
+      const type = action.type;
+      switch (type) {
+        case "scroll_to_anchor":
+          if (action.anchorId) scrollToWizardAnchor(String(action.anchorId));
+          return;
+        case "focus_field":
+          if (action.field === "concept_prompt") {
+            scrollToWizardAnchor("ax-wizard-concept");
+            window.setTimeout(() => {
+              promptTextareaRef.current?.focus();
+            }, 320);
+          }
+          return;
+        case "apply_project_style":
+          applyImageStylePresetFromCopilot(action.presetId);
+          return;
+        case "set_guided_submode":
+          if (action.value != null) setAxGuidedSubmode(String(action.value));
+          return;
+        case "set_audio_mode":
+          if (action.value != null) setAxCopilotAudioMode(String(action.value));
+          scrollToWizardAnchor("ax-scenografie-anchor-narrators");
+          return;
+        case "set_render_profile":
+          if (action.profile == null) return;
+          setAxCopilotRenderIntentId(String(action.profile));
+          {
+            const fin = finalResolutionFromRenderIntent(String(action.profile));
+            if (fin) {
+              setFinalRenderSettings((prev) =>
+                normalizeFinalRenderSettings({ ...prev, resolution: fin.resolution }),
+              );
+            }
+          }
+          return;
+        case "insert_template": {
+          const templateId = action.templateId;
+          const t = getCopilotTemplate(templateId);
+          if (!t) {
+            if (typeof console !== "undefined" && console.warn) {
+              console.warn("[AXSTUDIO copilot] insert_template sconosciuto", templateId);
+            }
+            return;
+          }
+          const mergeTarget =
+            action.target === "character_master" ? "character_master_prompt" : t.target;
+          if (
+            mergeTarget === "concept_prompt" ||
+            mergeTarget === "narrative_structure" ||
+            mergeTarget === "scene_direction"
+          ) {
+            setPrompt((prev) => appendTemplateNonDestructive(prev, t.text));
+            return;
+          }
+          if (mergeTarget === "character_master_prompt") {
+            if (!plan || pipelineLocked) return;
+            const need = getCharactersNeedingMaster(plan);
+            const ch = need[0];
+            if (!ch) {
+              addLog("Copilota: nessun personaggio richiede master al momento.");
+              return;
+            }
+            const row = pcmRowForCharacter(projectCharacterMasters, ch);
+            const prevPrompt = typeof row?.characterMasterPrompt === "string" ? row.characterMasterPrompt : "";
+            setMasterPromptDraft(appendTemplateNonDestructive(prevPrompt, t.text));
+            setMasterPromptModalCharId(ch.id);
+            scrollToWizardAnchor("ax-wizard-characters");
+          }
+          return;
+        }
+        case "open_clip_builder_for_scene": {
+          const sid = action.sceneId != null ? String(action.sceneId) : "";
+          if (!sid || pipelineLocked) return;
+          setAxWizardStepId("clip_builder");
+          const clip = sceneVideoClips.find(
+            (c) => c.sceneId === sid && c.status !== SCENE_VIDEO_CLIP_STATUS.DELETED,
+          );
+          if (clip) openClipBuilder(clip.id);
+          else addSceneVideoClip(sid);
+          scrollToWizardAnchor("ax-scenografie-anchor-clips");
+          return;
+        }
+        case "go_to_next_recommended_step": {
+          const next = axWizardStepsRef.current.find((x) => x.recommendedNext);
+          if (next) {
+            setAxWizardStepId(next.id);
+            scrollToWizardAnchor(next.anchor);
+          }
+          return;
+        }
+        default:
+          if (typeof console !== "undefined" && console.warn) {
+            console.warn("[AXSTUDIO copilot] azione non gestita:", type, action);
+          }
+      }
+    },
+    [
+      pipelineLocked,
+      plan,
+      projectCharacterMasters,
+      sceneVideoClips,
+      openClipBuilder,
+      addSceneVideoClip,
+      addLog,
+      applyImageStylePresetFromCopilot,
+    ],
+  );
+
+  useEffect(() => {
+    if (!onScenografieHeaderActionsChange) return undefined;
+    onScenografieHeaderActionsChange(
+      <>
+        <AxstudioCopilotLauncher
+          ref={axCopilotLauncherRef}
+          ax={AX}
+          attention={launcherCopilotAttention}
+          ariaExpanded={axCopilotModalOpen}
+          onClick={() => {
+            setCopilotAckDigest(axCopilotDigest);
+            setAxCopilotModalOpen(true);
+          }}
+        />
+        <AxstudioCopilotModal
+          open={axCopilotModalOpen}
+          onClose={() => setAxCopilotModalOpen(false)}
+          launcherRef={axCopilotLauncherRef}
+          ax={AX}
+          stepId={axWizardStepId}
+          snapshot={axWizardSnapshot}
+          model={axCopilotModel}
+          guidedMode={axGuidedMode}
+          onGuideAction={handleAxstudioGuideAction}
+          advancedExpanded={axGuideAdvancedExpanded}
+          onToggleAdvanced={() => setAxGuideAdvancedExpanded((v) => !v)}
+        />
+      </>,
+    );
+    return () => onScenografieHeaderActionsChange(null);
+  }, [
+    onScenografieHeaderActionsChange,
+    launcherCopilotAttention,
+    axCopilotModalOpen,
+    axWizardStepId,
+    axWizardSnapshot,
+    axCopilotModel,
+    axCopilotDigest,
+    axGuidedMode,
+    handleAxstudioGuideAction,
+    axGuideAdvancedExpanded,
+  ]);
+
+  useEffect(() => {
+    setWizardPrefsReady(false);
+  }, [projectId, chapterId]);
+
+  useEffect(() => {
+    if (!persistReady || !chapterId) return;
+    const p = loadWizardPrefs(projectId, chapterId);
+    if (typeof p.activeStepId === "string" && WIZARD_STEP_IDS.includes(p.activeStepId)) {
+      setAxWizardStepId(p.activeStepId);
+    }
+    if (typeof p.guidedMode === "boolean") setAxGuidedMode(p.guidedMode);
+    if (typeof p.renderIntentId === "string") setAxCopilotRenderIntentId(p.renderIntentId);
+    if (typeof p.guidedSubmode === "string") setAxGuidedSubmode(p.guidedSubmode);
+    if (typeof p.audioMode === "string") setAxCopilotAudioMode(p.audioMode);
+    setWizardPrefsReady(true);
+  }, [persistReady, projectId, chapterId]);
+
+  useEffect(() => {
+    if (!wizardPrefsReady || !chapterId) return;
+    saveWizardPrefs(projectId, chapterId, {
+      activeStepId: axWizardStepId,
+      guidedMode: axGuidedMode,
+      renderIntentId: axCopilotRenderIntentId,
+      guidedSubmode: axGuidedSubmode,
+      audioMode: axCopilotAudioMode,
+    });
+  }, [
+    wizardPrefsReady,
+    projectId,
+    chapterId,
+    axWizardStepId,
+    axGuidedMode,
+    axCopilotRenderIntentId,
+    axGuidedSubmode,
+    axCopilotAudioMode,
+  ]);
+
   sceneReorderSyncBundleRef.current = {
     plan,
     sceneVideoClips,
@@ -3902,6 +4354,81 @@ export function ScenografieProjectEditor({
         </div>
       </div>
 
+      <StepProgressNavigator
+        ax={AX}
+        steps={axWizardSteps}
+        activeStepId={axWizardStepId}
+        onSelectStep={handleSelectWizardStep}
+        guidedMode={axGuidedMode}
+        onToggleGuidedMode={() => setAxGuidedMode((v) => !v)}
+        disabled={false}
+      />
+
+      <div
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          flex: 1,
+          minHeight: 0,
+          minWidth: 0,
+        }}
+      >
+        <div style={{ width: "100%", minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column" }}>
+      <WizardStepContentTransition stepId={axWizardStepId}>
+      {axWizardPage.needsPlanPlaceholder && (
+        <div
+          style={{
+            marginBottom: 16,
+            padding: 14,
+            borderRadius: 12,
+            border: `1px dashed ${AX.border}`,
+            background: "rgba(251,191,36,0.06)",
+            fontSize: 12,
+            color: AX.text2,
+            lineHeight: 1.5,
+          }}
+        >
+          <strong style={{ color: AX.text }}>Prima serve un piano narrativo</strong>
+          <p style={{ margin: "8px 0 12px" }}>
+            Questo passaggio si sblocca dopo «Analizza prompt». Torna al concept oppure apri AXSTUDIO AI per un suggerimento rapido.
+          </p>
+          <button
+            type="button"
+            onClick={() => handleSelectWizardStep("concept")}
+            style={{
+              padding: "8px 14px",
+              borderRadius: 10,
+              border: "none",
+              background: AX.gradPrimary,
+              color: "#fff",
+              fontWeight: 700,
+              fontSize: 12,
+              cursor: "pointer",
+            }}
+          >
+            Vai allo step Concept
+          </button>
+        </div>
+      )}
+      {axWizardPage.needsPhase4Placeholder && (
+        <div
+          style={{
+            marginBottom: 16,
+            padding: 14,
+            borderRadius: 12,
+            border: `1px dashed ${AX.border}`,
+            background: "rgba(123,77,255,0.08)",
+            fontSize: 12,
+            color: AX.text2,
+            lineHeight: 1.5,
+          }}
+        >
+          <strong style={{ color: AX.text }}>Clip e timeline non ancora disponibili</strong>
+          <p style={{ margin: "8px 0 0" }}>
+            Approva le scene e genera almeno i clip necessari, poi potrai usare timeline e azioni di chiusura qui.
+          </p>
+        </div>
+      )}
       {pipelineLocked && (
         <div
           style={{
@@ -3923,7 +4450,7 @@ export function ScenografieProjectEditor({
         </div>
       )}
 
-      {plan && (
+      {plan && axWizardPage.showCompletionCard && (
         <div
           style={{
             marginBottom: 16,
@@ -4046,7 +4573,9 @@ export function ScenografieProjectEditor({
         )}
 
       {/* FASE 1 — Generazione Trama */}
+      {axWizardPage.showPhase1 && (
       <div
+        id="ax-wizard-concept"
         style={{ ...p1.shell, ...p1.shellHover(hoveredPhase === 1) }}
         onMouseEnter={() => setHoveredPhase(1)}
         onMouseLeave={() => setHoveredPhase(null)}
@@ -4102,12 +4631,13 @@ export function ScenografieProjectEditor({
             </div>
           )}
           {plan &&
+            axWizardPage.showNarrativeBlock &&
             (!executing ||
               scenografiaPhase === "character_gen" ||
               scenografiaPhase === "scene_gen" ||
               sceneGenFlightActive) && (
           <>
-          <div style={{ marginTop: 18, paddingTop: 16, borderTop: `1px solid ${AX.border}` }}>
+          <div id="ax-wizard-narrative" style={{ marginTop: 18, paddingTop: 16, borderTop: `1px solid ${AX.border}` }}>
             <div style={{ fontSize: 11, fontWeight: 800, color: AX.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 10 }}>
               Piano narrativo
             </div>
@@ -4335,9 +4865,10 @@ export function ScenografieProjectEditor({
           )}
         </div>
       </div>
+      )}
 
       {/* FASE 2 — Generazione Personaggi */}
-      {plan && (
+      {plan && axWizardPage.showPhase2 && (
         <div
           id="ax-scenografie-anchor-cast"
           style={{ ...p2.shell, ...p2.shellHover(hoveredPhase === 2) }}
@@ -4357,6 +4888,7 @@ export function ScenografieProjectEditor({
             </p>
           </div>
           <div style={p2.body}>
+            {axWizardPage.showAudioBlock ? (
             <div style={{ marginBottom: 28 }} id="ax-scenografie-anchor-narrators">
               <div
                 style={{
@@ -4377,7 +4909,11 @@ export function ScenografieProjectEditor({
                 disabled={pipelineLocked || sceneExecuteBlocked}
               />
             </div>
+            ) : null}
+            {axWizardPage.showCharactersBlock ? (
+            <>
             <div
+              id="ax-wizard-characters"
               style={{
                 fontSize: 11,
                 fontWeight: 800,
@@ -4829,9 +5365,14 @@ export function ScenografieProjectEditor({
                 </div>
               </details>
             ) : null}
+            </>
+            ) : null}
           </div>
           <div style={p2.footer}>
-            {scenografiaPhase === "plan" && projectStyle && mastersStillMissingForPlan > 0 && (
+            {axWizardPage.showCharactersBlock &&
+            scenografiaPhase === "plan" &&
+            projectStyle &&
+            mastersStillMissingForPlan > 0 && (
               <button
                 type="button"
                 onClick={runProtagonistMastersBatch}
@@ -4860,7 +5401,7 @@ export function ScenografieProjectEditor({
       )}
 
       {/* FASE 3 — Generazione Scene */}
-      {plan && (
+      {plan && axWizardPage.showPhase3 && (
         <div
           id="ax-scenografie-anchor-scenes"
           style={{ ...p3.shell, ...p3.shellHover(hoveredPhase === 3) }}
@@ -5696,7 +6237,7 @@ export function ScenografieProjectEditor({
         </div>
       )}
 
-      {sceneResults.length > 0 && approvedScenesForClips.length > 0 && (
+      {axWizardPage.showClipDivider && (
         <div
           aria-hidden
           style={{
@@ -5712,7 +6253,7 @@ export function ScenografieProjectEditor({
       )}
 
       {/* FASE 4 — Generazione Clip video */}
-      {(approvedScenesForClips.length > 0 || clipsReadyForFinalMontage(gatePayload)) && (
+      {axWizardPage.showPhase4 && (
         <div
           id="ax-scenografie-anchor-clips"
           style={{ ...p4.shell, ...p4.shellHover(hoveredPhase === 4) }}
@@ -5731,11 +6272,27 @@ export function ScenografieProjectEditor({
             </p>
           </div>
           <div style={p4.body}>
-            {approvedScenesForClips.length > 0 && (
+            {axWizardPage.showPhase4Clips && approvedScenesForClips.length > 0 && (
             <div style={{ marginBottom: 8 }}>
           <p style={{ fontSize: 12, color: AX.text2, marginBottom: 12, lineHeight: 1.55 }}>
             Ogni clip è legato a una <strong style={{ color: AX.text }}>scena approvata</strong>. Dal Clip Builder: validazione → ElevenLabs (TTS) → fal storage → <strong style={{ color: AX.text }}>Kling Avatar v2 Pro</strong>. Dialogato V1: un solo MP3 con battute unite; stessa voice master ElevenLabs per tutti i parlanti.
           </p>
+          <div
+            style={{
+              marginBottom: 14,
+              padding: "10px 12px",
+              borderRadius: 10,
+              background: "rgba(41,182,255,0.08)",
+              border: `1px solid rgba(41,182,255,0.28)`,
+              fontSize: 11,
+              color: AX.text2,
+              lineHeight: 1.55,
+            }}
+          >
+            <strong style={{ color: AX.electric }}>Anteprima clip</strong> — bozza tecnica leggera (720p, preset veloce) solo per
+            revisione in app; <strong style={{ color: AX.text }}>non</strong> segue la risoluzione del filmato finale. L&apos;export HQ è
+            nel montaggio (Fase 5).
+          </div>
           <div
             style={{
               marginBottom: 16,
@@ -6015,30 +6572,7 @@ export function ScenografieProjectEditor({
             </div>
             )}
 
-      {clipBuilderOpenClip && plan && (
-        <ScenografieClipBuilder
-          ax={AX}
-          plan={plan}
-          sceneResults={sceneResults}
-          approvedScenes={approvedScenesForClips}
-          characterVoiceMasters={characterVoiceMasters}
-          projectCharacterMasters={projectCharacterMasters}
-          projectNarrators={projectNarrators}
-          onVoiceMasterPatch={patchCharacterVoiceMaster}
-          directorProject={projectId ? { id: projectId, title: projectTitle } : null}
-          directorChapter={chapterId ? { id: chapterId, ordinal: chapterOrdinal } : null}
-          clip={clipBuilderOpenClip}
-          onPatch={patchActiveClip}
-          onClose={closeClipBuilder}
-          pipelineLocked={pipelineLocked}
-          pipelineBusy={clipPipelineUi.busy && clipPipelineUi.clipId === clipBuilderOpenClip.id}
-          pipelineStage={clipPipelineUi.busy && clipPipelineUi.clipId === clipBuilderOpenClip.id ? clipPipelineUi.stage : null}
-          onRequestGenerate={handleGenerateClipFromBuilder}
-          onMarkNeedsReview={markClipNeedsReviewFromBuilder}
-        />
-      )}
-
-            {clipsReadyForFinalMontage(gatePayload) && (
+            {axWizardPage.showPhase4Timeline && clipsReadyForFinalMontage(gatePayload) && (
             <div
               id="ax-scenografie-anchor-timeline"
               style={{
@@ -6241,7 +6775,8 @@ export function ScenografieProjectEditor({
         </div>
             )}
           </div>
-          <div style={p4.footer}>
+          {axWizardPage.showPhase4FinalStrip ? (
+          <div id="ax-scenografie-anchor-final-actions" style={p4.footer}>
             <button
               type="button"
               disabled={!approvedScenesForClips.length || pipelineLocked}
@@ -6360,11 +6895,12 @@ export function ScenografieProjectEditor({
               </button>
             )}
           </div>
+          ) : null}
         </div>
       )}
 
       {/* ── Fase 5: auto-montaggio (struttura sequenza) ── */}
-      {finalMontagePhase === "assembly" && (
+      {axWizardPage.showMontageBlock && (
         <div
           id="ax-scenografie-anchor-montage"
           style={{ marginBottom: 22, padding: 16, borderRadius: 14, background: "rgba(123,77,255,0.08)", border: `1px solid rgba(123,77,255,0.35)` }}
@@ -6675,6 +7211,61 @@ export function ScenografieProjectEditor({
               ))}
             </ul>
           )}
+          <div
+            style={{
+              marginBottom: 14,
+              padding: "12px 14px",
+              borderRadius: 12,
+              border: `1px solid ${AX.border}`,
+              background: AX.surface,
+            }}
+          >
+            <div style={{ fontSize: 10, fontWeight: 800, color: AX.muted, letterSpacing: "0.06em", marginBottom: 8 }}>
+              Risoluzione filmato finale (solo montaggio)
+            </div>
+            <p style={{ fontSize: 11, color: AX.text2, margin: "0 0 10px", lineHeight: 1.5 }}>
+              Il filmato concatenato viene ricodificato in browser verso l&apos;export scelto (HQ, audio più alto). Le clip di anteprima
+              restano in bozza leggera e non cambiano.
+            </p>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+              {[
+                { id: "1080p", spec: FINAL_RENDER_RESOLUTIONS["1080p"] },
+                { id: "2k", spec: FINAL_RENDER_RESOLUTIONS["2k"] },
+                { id: "4k", spec: FINAL_RENDER_RESOLUTIONS["4k"] },
+              ].map(({ id, spec }) => {
+                const active = finalRenderSettings.resolution === id;
+                return (
+                  <button
+                    key={id}
+                    type="button"
+                    disabled={sceneExecuteBlocked || montageRenderBusy}
+                    onClick={() => void commitFinalRenderSettings({ resolution: id, fps: 24 })}
+                    style={{
+                      padding: "8px 12px",
+                      borderRadius: 10,
+                      border: active ? `1px solid ${AX.electric}` : `1px solid ${AX.border}`,
+                      background: active ? "rgba(41,182,255,0.12)" : AX.bg,
+                      color: active ? AX.electric : AX.text2,
+                      fontWeight: 700,
+                      fontSize: 11,
+                      cursor: sceneExecuteBlocked || montageRenderBusy ? "not-allowed" : "pointer",
+                    }}
+                  >
+                    {spec.label}{" "}
+                    <span style={{ fontWeight: 600, color: AX.muted }}>
+                      ({spec.width}×{spec.height})
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+            {finalFilmMontage.lastRenderSummary?.deliveryMeta?.fallbackReason === "delivery_encode_failed" ? (
+              <p style={{ fontSize: 10, color: "#fbbf24", margin: "10px 0 0", lineHeight: 1.45 }}>
+                Ultimo render: richiesto {finalFilmMontage.lastRenderSummary.deliveryMeta.requestedResolution} — effettivo{" "}
+                {finalFilmMontage.lastRenderSummary.deliveryMeta.effectiveResolution} (fallback per errore encode).
+              </p>
+            ) : null}
+          </div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 14 }}>
             <button
               type="button"
@@ -7001,7 +7592,7 @@ export function ScenografieProjectEditor({
       )}
 
       {/* ── Empty state ── */}
-      {!plan && !planning && sceneResults.length === 0 && (
+      {axWizardStepId === "concept" && !plan && !planning && sceneResults.length === 0 && (
         <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", opacity: 0.5 }}>
           <HiFilm size={48} style={{ color: AX.muted, marginBottom: 12 }} />
           <div style={{ fontSize: 14, color: AX.text2, textAlign: "center", maxWidth: 380 }}>
@@ -7021,6 +7612,47 @@ export function ScenografieProjectEditor({
           </div>
         </div>
       )}
+
+      </WizardStepContentTransition>
+
+      {clipBuilderOpenClip && plan && (
+        <ScenografieClipBuilder
+          ax={AX}
+          plan={plan}
+          sceneResults={sceneResults}
+          approvedScenes={approvedScenesForClips}
+          characterVoiceMasters={characterVoiceMasters}
+          projectCharacterMasters={projectCharacterMasters}
+          projectNarrators={projectNarrators}
+          onVoiceMasterPatch={patchCharacterVoiceMaster}
+          directorProject={projectId ? { id: projectId, title: projectTitle } : null}
+          directorChapter={chapterId ? { id: chapterId, ordinal: chapterOrdinal } : null}
+          clip={clipBuilderOpenClip}
+          onPatch={patchActiveClip}
+          onClose={closeClipBuilder}
+          pipelineLocked={pipelineLocked}
+          pipelineBusy={clipPipelineUi.busy && clipPipelineUi.clipId === clipBuilderOpenClip.id}
+          pipelineStage={clipPipelineUi.busy && clipPipelineUi.clipId === clipBuilderOpenClip.id ? clipPipelineUi.stage : null}
+          onRequestGenerate={handleGenerateClipFromBuilder}
+          onMarkNeedsReview={markClipNeedsReviewFromBuilder}
+        />
+      )}
+
+      <WizardStepPageFooter
+        ax={AX}
+        stepLabel={WIZARD_STEP_DEFS.find((d) => d.id === axWizardStepId)?.label || axWizardStepId}
+        stepStatusLabel={wizardFooterStatusIt ? `Stato: ${wizardFooterStatusIt}` : ""}
+        prevId={wizardNavPrevNext.prevId}
+        nextId={wizardNavPrevNext.nextId}
+        onGoStep={handleSelectWizardStep}
+        onOpenCopilot={() => {
+          setCopilotAckDigest(axCopilotDigest);
+          setAxCopilotModalOpen(true);
+        }}
+      />
+
+        </div>
+      </div>
 
       {sceneImageLightbox && (
         <div

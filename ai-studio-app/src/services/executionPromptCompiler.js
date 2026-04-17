@@ -5,6 +5,7 @@
  * - Audio clip: H6 musica (provider o synth fallback), H4 ambiente/SFX MVP se attivi, H7 mix stereo su fal quando i bed esistono.
  * - Video Scenografie: **Avatar** Kling v2 Pro (image+audio mix) **oppure** **Cinematic** O3 (prompt+frame; mix muxato dopo, non nel body O3).
  * - Regia camera/shot: advisory su Avatar; su O3 solo ciò che entra nel prompt (niente parametri camera nativi).
+ * - Risoluzione/qualità **preview clip** vs **final montaggio**: profili separati in `videoRenderProfiles.js` (questo modulo non eredita export finale).
  */
 
 import { CLIP_TYPE, buildClipStructuredPrompts } from "./scenografieVideoWorkflow.js";

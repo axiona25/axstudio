@@ -20,6 +20,7 @@ export default function ScenografieSection({
   onConsumedScenografieBootstrap,
   onEditorOpenChange,
   onHeaderTitleChange,
+  onHeaderActionsChange,
   onSave,
   onGoToVideoProduction,
   generatedImages,
@@ -45,6 +46,10 @@ export default function ScenografieSection({
     onEditorOpenChange?.(route.type !== "hub");
     return () => onEditorOpenChange?.(false);
   }, [route.type, onEditorOpenChange]);
+
+  useEffect(() => {
+    if (route.type !== "chapter") onHeaderActionsChange?.(null);
+  }, [route.type, onHeaderActionsChange]);
 
   useEffect(() => {
     if (!onHeaderTitleChange) return undefined;
@@ -216,6 +221,7 @@ export default function ScenografieSection({
       setScenePipelineFlight={setScenePipelineFlight}
       initialRecoveryDeepLink={editorRecoveryDeepLink}
       onConsumedRecoveryDeepLink={() => setEditorRecoveryDeepLink(null)}
+      onScenografieHeaderActionsChange={onHeaderActionsChange}
     />
   );
 }

@@ -4,6 +4,7 @@
  */
 
 import React, { useMemo, useState, useCallback, useEffect } from "react";
+import { createPortal } from "react-dom";
 import {
   HiXMark,
   HiFilm,
@@ -1366,7 +1367,7 @@ export function ScenografieClipBuilder({
         })
         .join("\n") || "—";
 
-  return (
+  const modal = (
     <div
       role="dialog"
       aria-modal="true"
@@ -1381,13 +1382,15 @@ export function ScenografieClipBuilder({
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        padding: 16,
+        padding: "clamp(10px, 2.5vw, 20px)",
       }}
     >
       <div
         style={{
-          width: "min(860px, 100%)",
-          maxHeight: "min(92vh, 920px)",
+          width: "min(1180px, calc(100vw - 20px))",
+          height: "min(96vh, 1080px)",
+          maxHeight: "min(96vh, 1080px)",
+          minHeight: "min(520px, 92vh)",
           overflow: "hidden",
           display: "flex",
           flexDirection: "column",
@@ -1447,8 +1450,8 @@ export function ScenografieClipBuilder({
           </button>
         </div>
 
-        <div style={{ padding: "10px 14px", borderBottom: `1px solid ${ax.border}`, background: ax.surface, flexShrink: 0 }}>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+        <div style={{ padding: "8px 16px 10px", borderBottom: `1px solid ${ax.border}`, background: ax.surface, flexShrink: 0 }}>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, rowGap: 6 }}>
             {STEPS.map((s) => {
               const active = s.n === step;
               const Ico = s.icon;
@@ -1479,7 +1482,18 @@ export function ScenografieClipBuilder({
           </div>
         </div>
 
-        <div className="ax-modal-scroll-y" style={{ flex: 1, overflowY: "auto", padding: 16 }}>
+        <div
+          className="ax-modal-scroll-y"
+          style={{
+            flex: 1,
+            minHeight: 0,
+            overflowY: "auto",
+            overflowX: "hidden",
+            padding: "20px 22px 24px",
+            WebkitOverflowScrolling: "touch",
+            scrollbarGutter: "stable",
+          }}
+        >
           {/* Step 1 — Tipo, titolo, scena */}
           {step === 1 && (
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -2464,12 +2478,13 @@ export function ScenografieClipBuilder({
 
         <div
           style={{
-            padding: "12px 16px",
+            padding: "14px 20px",
             borderTop: `1px solid ${ax.border}`,
             display: "flex",
             flexWrap: "wrap",
             gap: 8,
             justifyContent: "space-between",
+            alignItems: "center",
             flexShrink: 0,
             background: ax.surface,
           }}
@@ -2491,6 +2506,8 @@ export function ScenografieClipBuilder({
       </div>
     </div>
   );
+
+  return createPortal(modal, document.body);
 }
 
 function miniBtn(ax) {

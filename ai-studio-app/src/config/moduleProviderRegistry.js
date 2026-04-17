@@ -195,7 +195,7 @@ export const MODULE_REGISTRY = {
   },
   [MODULE_IDS.SCENOGRAFIE]: {
     moduleId: MODULE_IDS.SCENOGRAFIE,
-    displayLabel: "Scenografie",
+    displayLabel: "Film Studio",
     productTier: "premium",
     primaryUseCases: [
       "Progetti e capitoli con piano narrativo",
@@ -230,7 +230,7 @@ export const MODULE_REGISTRY = {
     ui: {
       headerSubtitle: "Percorso guidato verso il film · capitoli, personaggi, clip, montaggio (stack premium)",
       headerSubtitleInProject: "Percorso guidato · stesso stack premium (planner, scene, clip, audio)",
-      homeCardTitle: "Scenografie",
+      homeCardTitle: "Film Studio",
       homeCardDescription: "Il percorso strutturato del prodotto: progetto, capitoli, approvazioni e film finale.",
     },
     providersLegacy: [

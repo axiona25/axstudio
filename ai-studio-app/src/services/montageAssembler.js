@@ -11,6 +11,11 @@ import {
 import { preflightMontageClipUrls, renderMontageWithFfmpegWasm } from "./montageFfmpegWasm.js";
 import { uploadBlobToFalStorage } from "./imagePipeline.js";
 import { sanitizeStructuredWorkflowFailure } from "./scenografieConsumerReliability.js";
+import {
+  getVideoRenderProfile,
+  normalizeFinalRenderSettings,
+  resolveMontageDeliveryDimensions,
+} from "./videoRenderProfiles.js";
 
 const MONTAGE_PLAN_VERSION = 2;
 const TRIM_EPS_SEC = 0.12;
@@ -502,10 +507,29 @@ export function validateMontageRenderable(compiledMontagePlan) {
 
 /**
  * @param {object} compiledMontagePlan
- * @param {{ fileNamePrefix?: string, onProgress?: (s: string) => void }} [opts]
+ * @param {{
+ *   fileNamePrefix?: string,
+ *   onProgress?: (s: string) => void,
+ *   finalRenderSettings?: { resolution?: string, fps?: number },
+ * }} [opts]
  */
 export async function runFinalMontageRender(compiledMontagePlan, opts = {}) {
   const { fileNamePrefix = "axstudio_final_film", onProgress } = opts;
+  const fr = normalizeFinalRenderSettings(opts.finalRenderSettings || null);
+  const dims = resolveMontageDeliveryDimensions(fr.resolution);
+  let deliveryProfile = getVideoRenderProfile({
+    mode: "final",
+    finalResolutionKey: dims.effectiveResolution,
+    finalFps: fr.fps,
+  });
+  /** @type {object} */
+  let deliveryMeta = {
+    requestedResolution: dims.requestedResolution,
+    effectiveResolution: dims.effectiveResolution,
+    fallbackReason: dims.fallbackReason,
+    exportPurpose: "delivery",
+    isFinal: true,
+  };
   const p = compiledMontagePlan && typeof compiledMontagePlan === "object" ? compiledMontagePlan : {};
   const urls = Array.isArray(p.orderedClipUrls) ? p.orderedClipUrls : [];
   if (!urls.length) throw new Error("Piano montaggio senza URL video.");
@@ -543,15 +567,65 @@ export async function runFinalMontageRender(compiledMontagePlan, opts = {}) {
         }));
 
   onProgress?.("Avvio render ffmpeg.wasm…");
-  const { blob, renderModeUsed, segmentResults, concatHadToReencode } = await renderMontageWithFfmpegWasm(
-    { segments: wasmSegments },
-    onProgress,
-  );
+  let blob;
+  let renderModeUsed;
+  let segmentResults;
+  let concatHadToReencode;
+  let deliveryEncode;
+  let deliveryMetaOut;
+  try {
+    ({
+      blob,
+      renderModeUsed,
+      segmentResults,
+      concatHadToReencode,
+      deliveryEncode,
+      deliveryMeta: deliveryMetaOut,
+    } = await renderMontageWithFfmpegWasm(
+      { segments: wasmSegments, deliveryProfile, deliveryMeta },
+      onProgress,
+    ));
+  } catch (firstErr) {
+    const canFallback =
+      fr.resolution !== "1080p" &&
+      dims.effectiveResolution !== "1080p" &&
+      deliveryProfile.finalResolutionKey !== "1080p";
+    if (!canFallback) throw firstErr;
+    if (typeof console !== "undefined" && console.warn) {
+      console.warn("[AXSTUDIO · montage · delivery encode fallback → 1080p]", {
+        requested: fr.resolution,
+        error: firstErr?.message || String(firstErr),
+      });
+    }
+    deliveryProfile = getVideoRenderProfile({ mode: "final", finalResolutionKey: "1080p", finalFps: fr.fps });
+    deliveryMeta = {
+      requestedResolution: fr.resolution,
+      effectiveResolution: "1080p",
+      fallbackReason: "delivery_encode_failed",
+      fallbackFromError: firstErr?.message || String(firstErr),
+      exportPurpose: "delivery",
+      isFinal: true,
+    };
+    onProgress?.("Riprovo montaggio in Full HD (fallback)…");
+    ({
+      blob,
+      renderModeUsed,
+      segmentResults,
+      concatHadToReencode,
+      deliveryEncode,
+      deliveryMeta: deliveryMetaOut,
+    } = await renderMontageWithFfmpegWasm(
+      { segments: wasmSegments, deliveryProfile, deliveryMeta },
+      onProgress,
+    ));
+  }
 
   if (typeof console !== "undefined" && console.info) {
     console.info("[AXSTUDIO · montage · render mode]", {
       renderModeUsed,
       concatHadToReencode,
+      deliveryEncode,
+      deliveryMeta: deliveryMetaOut,
       segmentResults,
     });
   }
@@ -574,6 +648,9 @@ export async function runFinalMontageRender(compiledMontagePlan, opts = {}) {
       segmentResults,
       concatHadToReencode,
       wasmSegmentsSnapshot: wasmSegments,
+      deliveryEncode: deliveryEncode ?? false,
+      deliveryMeta: deliveryMetaOut || deliveryMeta,
+      finalRenderSettingsApplied: fr,
     },
   };
 }

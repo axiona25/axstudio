@@ -31,6 +31,7 @@ import {
   verifyFinalOutputUrl,
   buildPersistedFilmOutputVerification,
 } from "./scenografieOutputVerification.js";
+import { normalizeFinalRenderSettings } from "./videoRenderProfiles.js";
 
 const LS_KEY_LEGACY = "ai-studio-scenografia-project-v1";
 const LS_KEY_INDEX = "ai-studio-scenografia-projects-index-v1";
@@ -2362,6 +2363,8 @@ export function emptyScenografiaProjectPayload() {
     finalMontagePlan: { orderedClipIds: [], orderedTimelineEntryIds: [], narrativeBeatNotes: "" },
     finalFilmMontage: emptyFinalFilmMontage(),
     timelinePlan: { approved: false, approvedAt: null, entries: [] },
+    /** Risoluzione export filmato finale (montaggio) — le clip preview restano su profilo fisso nel codice. */
+    finalRenderSettings: normalizeFinalRenderSettings(null),
     runtimeHints: { sceneExecuteMode: "ALL", reuseMastersNext: false },
     /** Piano pre-produzione story-driven (opzionale). */
     storyDrivenPreproduction: null,

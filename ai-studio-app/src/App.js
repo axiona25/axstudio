@@ -40,6 +40,7 @@ import {
   HiCheck,
   HiCheckCircle,
   HiRectangleGroup,
+  HiPlayCircle,
   HiSpeakerWave,
   HiExclamationTriangle,
   HiWallet,
@@ -3498,8 +3499,9 @@ export default function AIStudio() {
   const scenografieNavRef = useRef({ tryBackToHub: () => false });
   /** Su hub Scenografie (solo griglia progetti) il back è nascosto; visibile dentro Progetto o Capitolo. */
   const [scenografieSectionStacked, setScenografieSectionStacked] = useState(false);
-  /** Titolo workspace in header quando si è dentro un progetto (null → etichetta «Scenografie»). */
+  /** Titolo workspace in header quando si è dentro un progetto (null → etichetta «Film Studio»). */
   const [scenografieHeaderTitle, setScenografieHeaderTitle] = useState(null);
+  const [scenografieHeaderActions, setScenografieHeaderActions] = useState(null);
   /** Da Home film completati: apre capitolo (se possibile) + deep-link recovery in editor. */
   const [scenografieBootstrap, setScenografieBootstrap] = useState(null);
   const clearScenografieBootstrap = useCallback(() => setScenografieBootstrap(null), []);
@@ -4393,7 +4395,7 @@ export default function AIStudio() {
   const headerTitle = view === "home" ? "Benvenuto"
     : view === "free-image" ? (getRegistryForAppView("free-image")?.displayLabel ?? "Immagine libera")
       : view === "free-video" ? (getRegistryForAppView("free-video")?.displayLabel ?? "Video libero")
-        : view === "scenografie" ? (scenografieHeaderTitle || getRegistryForAppView("scenografie")?.displayLabel || "Scenografie")
+        : view === "scenografie" ? (scenografieHeaderTitle || getRegistryForAppView("scenografie")?.displayLabel || "Film Studio")
           : view === "video-editor" ? (getRegistryForAppView("video-editor")?.displayLabel ?? "Video Editor")
             : view === "settings" ? "Impostazioni"
               : view === "projects" ? "Progetti"
@@ -4507,6 +4509,11 @@ export default function AIStudio() {
         @keyframes axstudio-shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
         @keyframes axstudio-glow-pulse{0%,100%{box-shadow:inset 0 0 24px rgba(79,216,255,0.06),0 0 0 1px rgba(123,77,255,0.15)}50%{box-shadow:inset 0 0 32px rgba(123,77,255,0.14),0 0 12px rgba(41,182,255,0.12)}}
         @keyframes axstudio-fade-in{from{opacity:0;transform:translateX(-50%) translateY(6px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}
+        @keyframes ax-copilot-soft-pulse{0%,100%{box-shadow:0 0 0 0 rgba(41,182,255,0),0 0 0 0 rgba(123,77,255,0)}50%{box-shadow:0 0 0 3px rgba(41,182,255,0.22),0 0 18px rgba(123,77,255,0.18)}}
+        .ax-copilot-launcher--attention{animation:ax-copilot-soft-pulse 2.4s ease-in-out infinite}
+        @keyframes ax-wizard-step-page-enter{from{opacity:0.86;transform:translateY(5px)}to{opacity:1;transform:translateY(0)}}
+        .ax-wizard-step-page-animating{animation:ax-wizard-step-page-enter 0.2s cubic-bezier(0.25,0.46,0.45,0.94) both}
+        @media (prefers-reduced-motion:reduce){.ax-wizard-step-page-animating{animation:none!important}}
         textarea:focus,input:focus{outline:none;border-color:${AX.electric}!important;box-shadow:0 0 0 2px rgba(79,216,255,0.2)!important}
         ::selection{background:rgba(79,216,255,0.25);color:${AX.bg}}
         ::-webkit-scrollbar{width:8px;height:8px}
@@ -4533,8 +4540,8 @@ export default function AIStudio() {
         <nav style={{ flex: 1, padding: "18px 14px", display: "flex", flexDirection: "column", gap: 6 }}>
           <NavBtn icon={<HiHome size={20} />} label="Home" active={view === "home"} onClick={() => { setView("home"); setCurrentProject(null); }} />
           <NavBtn icon={<HiPhoto size={20} />} label="Immagine libera" active={view === "free-image"} title={MODULE_REGISTRY[MODULE_IDS.FREE_IMAGE]?.routingIntent?.headline} onClick={() => { setView("free-image"); setCurrentProject(null); }} />
-          <NavBtn icon={<HiFilm size={20} />} label="Video libero" active={view === "free-video"} title={MODULE_REGISTRY[MODULE_IDS.FREE_VIDEO]?.routingIntent?.headline} onClick={() => { setView("free-video"); setCurrentProject(null); }} />
-          <NavBtn icon={<HiRectangleGroup size={20} />} label="Scenografie" active={view === "scenografie"} title={MODULE_REGISTRY[MODULE_IDS.SCENOGRAFIE]?.routingIntent?.headline} onClick={() => { setView("scenografie"); setCurrentProject(null); }} />
+          <NavBtn icon={<HiPlayCircle size={20} />} label="Video libero" active={view === "free-video"} title={MODULE_REGISTRY[MODULE_IDS.FREE_VIDEO]?.routingIntent?.headline} onClick={() => { setView("free-video"); setCurrentProject(null); }} />
+          <NavBtn icon={<HiFilm size={20} />} label="Film Studio" active={view === "scenografie"} title={MODULE_REGISTRY[MODULE_IDS.SCENOGRAFIE]?.routingIntent?.headline} onClick={() => { setView("scenografie"); setCurrentProject(null); }} />
           {LEGACY_PROJECTS_UI_ENABLED ? (
             <NavBtn icon={<HiFolder size={20} />} label="Progetti" active={view === "projects" || view === "project"} onClick={() => { setView("projects"); setCurrentProject(null); }} />
           ) : null}
@@ -4563,6 +4570,7 @@ export default function AIStudio() {
             </div>
           </div>
           <div style={{ flexShrink: 0, marginLeft: "auto", display: "flex", alignItems: "center", gap: 12 }}>
+            {view === "scenografie" && scenografieSectionStacked ? scenografieHeaderActions : null}
             <FalAiBadge />
           </div>
         </header>
@@ -4599,7 +4607,7 @@ export default function AIStudio() {
         {view === "home" && <>
           <h2 style={{ fontSize: 13, fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", color: AX.muted, margin: "0 0 8px", flexShrink: 0 }}>Cosa vuoi creare oggi?</h2>
           <p style={{ fontSize: 12, color: AX.text2, margin: "0 0 16px", lineHeight: 1.5, maxWidth: 720, flexShrink: 0 }}>
-            <strong style={{ color: AX.text }}>Scenografie</strong> è il percorso strutturato verso un film (progetto e montaggio finale).{" "}
+            <strong style={{ color: AX.text }}>Film Studio</strong> è il percorso strutturato verso un film (progetto e montaggio finale).{" "}
             <strong style={{ color: AX.text }}>Immagine libera</strong> e <strong style={{ color: AX.text }}>Video libero</strong> sono strumenti rapidi e separati.{" "}
             <strong style={{ color: AX.text }}>Video Editor</strong> serve solo a montare file video già esistenti.
           </p>
@@ -4619,13 +4627,13 @@ export default function AIStudio() {
                   <div style={{ fontSize: 13, fontWeight: 800, color: AX.text, marginBottom: 8 }}>Dove entrare nel prodotto</div>
                   <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: AX.text2, lineHeight: 1.55 }}>
                     <li>
-                      <strong style={{ color: AX.text }}>Scenografie</strong> — percorso guidato per progetto/film (capitoli, clip, montaggio finale). «Film completati» in Home usa gli stessi file progetto.
+                      <strong style={{ color: AX.text }}>Film Studio</strong> — percorso guidato per progetto/film (capitoli, clip, montaggio finale). «Film completati» in Home usa gli stessi file progetto.
                     </li>
                     <li>
                       <strong style={{ color: AX.text }}>Immagine libera</strong> — crea o modifica immagini da prompt; modulo rapido, non il percorso film.
                     </li>
                     <li>
-                      <strong style={{ color: AX.text }}>Video libero</strong> — video rapidi o sperimentali da prompt; non è la produzione strutturata di Scenografie.
+                      <strong style={{ color: AX.text }}>Video libero</strong> — video rapidi o sperimentali da prompt; non è la produzione strutturata di Film Studio.
                     </li>
                     <li>
                       <strong style={{ color: AX.text }}>Video Editor</strong> — monta e rifinisce video MP4 già esistenti; editing, non generazione guidata.
@@ -4677,17 +4685,17 @@ export default function AIStudio() {
               {
                 v: "scenografie",
                 thumb: "linear-gradient(135deg, #7B4DFF 0%, #29B6FF 100%)",
-                title: MODULE_REGISTRY[MODULE_IDS.SCENOGRAFIE]?.ui?.homeCardTitle || "Scenografie",
+                title: MODULE_REGISTRY[MODULE_IDS.SCENOGRAFIE]?.ui?.homeCardTitle || "Film Studio",
                 desc: MODULE_REGISTRY[MODULE_IDS.SCENOGRAFIE]?.ui?.homeCardDescription || "Percorso guidato: progetto, clip e film finito strutturato.",
                 tag: "Percorso film",
-                CardIcon: HiRectangleGroup,
+                CardIcon: HiFilm,
                 onClick: () => {
                   setView("scenografie");
                   setCurrentProject(null);
                 },
               },
               { v: "free-image", thumb: AX.gradPrimary, title: MODULE_REGISTRY[MODULE_IDS.FREE_IMAGE].ui.homeCardTitle || "Immagine libera", desc: MODULE_REGISTRY[MODULE_IDS.FREE_IMAGE].ui.homeCardDescription || "Genera un’immagine da prompt", CardIcon: HiPhoto, onClick: () => setView("free-image") },
-              { v: "free-video", thumb: AX.gradCreative, title: MODULE_REGISTRY[MODULE_IDS.FREE_VIDEO].ui.homeCardTitle || "Video libero", desc: MODULE_REGISTRY[MODULE_IDS.FREE_VIDEO].ui.homeCardDescription || "Animazione e motion da prompt", CardIcon: HiFilm, onClick: () => setView("free-video") },
+              { v: "free-video", thumb: AX.gradCreative, title: MODULE_REGISTRY[MODULE_IDS.FREE_VIDEO].ui.homeCardTitle || "Video libero", desc: MODULE_REGISTRY[MODULE_IDS.FREE_VIDEO].ui.homeCardDescription || "Animazione e motion da prompt", CardIcon: HiPlayCircle, onClick: () => setView("free-video") },
               {
                 v: "video-editor",
                 thumb: "linear-gradient(135deg, #1A1F2B 0%, #3d4a63 100%)",
@@ -5738,6 +5746,7 @@ export default function AIStudio() {
               onConsumedScenografieBootstrap={clearScenografieBootstrap}
               onEditorOpenChange={setScenografieSectionStacked}
               onHeaderTitleChange={setScenografieHeaderTitle}
+              onHeaderActionsChange={setScenografieHeaderActions}
               onSave={saveGeneratedImage}
               onGoToVideoProduction={() => {
                 setView("free-video");
