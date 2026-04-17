@@ -3,22 +3,12 @@
  */
 
 import React, { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef } from "react";
-import {
-  HiFilm,
-  HiPlay,
-  HiXMark,
-  HiArrowPath,
-  HiMagnifyingGlass,
-  HiArrowTopRightOnSquare,
-  HiRectangleStack,
-  HiShieldCheck,
-} from "react-icons/hi2";
+import { HiFilm, HiXMark, HiMagnifyingGlass } from "react-icons/hi2";
 import {
   loadScenografiaProjectsIndex,
   loadScenografiaProjectById,
   ensureWorkspace,
   summarizeScenografiaWorkspaceForIndex,
-  runAndPersistFilmOutputVerification,
 } from "../services/scenografieProjectPersistence.js";
 import {
   FILM_OUTPUT_READINESS,
@@ -123,7 +113,6 @@ export default function ScenografieCompletedFilmsLibrary({
   const [player, setPlayer] = useState(null);
   const [playbackError, setPlaybackError] = useState(null);
   const [playerReloadKey, setPlayerReloadKey] = useState(0);
-  const [verifyBusyId, setVerifyBusyId] = useState(null);
   const filmShelfGridRef = useRef(null);
 
   const refresh = useCallback(async () => {
@@ -268,17 +257,6 @@ export default function ScenografieCompletedFilmsLibrary({
     }
   }, []);
 
-  const runCardVerification = useCallback(async (projectId) => {
-    if (!projectId) return;
-    setVerifyBusyId(projectId);
-    try {
-      await runAndPersistFilmOutputVerification(projectId);
-      await refresh();
-    } finally {
-      setVerifyBusyId(null);
-    }
-  }, [refresh]);
-
   const openPlayerForRow = useCallback((r) => {
     setPlaybackError(null);
     setPlayerReloadKey((k) => k + 1);
@@ -394,8 +372,8 @@ export default function ScenografieCompletedFilmsLibrary({
   const useShelfCell = simplifiedHomeCards && shelfCellH > 0;
   const cardRadius = useShelfCell ? Math.max(5, Math.min(14, Math.round(shelfCellH * 0.11))) : 18;
   const badgeFont = useShelfCell ? Math.max(7, Math.min(11, Math.round(shelfCellH * 0.095))) : 11;
-  const titleFont = useShelfCell ? Math.max(9, Math.min(15, Math.round(shelfCellH * 0.14))) : 16;
-  const metaFont = useShelfCell ? Math.max(8, Math.min(11, Math.round(shelfCellH * 0.08))) : 11;
+  const titleFont = useShelfCell ? Math.max(10, Math.min(16, Math.round(shelfCellH * 0.152))) : 17;
+  const footerDateFont = useShelfCell ? Math.max(11, Math.min(14, Math.round(shelfCellH * 0.12))) : 14;
   const showFilmFooter = !useShelfCell || shelfCellH >= 76;
 
   const gridMinHeight =
@@ -581,27 +559,38 @@ export default function ScenografieCompletedFilmsLibrary({
         {rowsToShow.map((r) => {
           const primaryKind = completedFilmPrimaryKind(r);
           const fin = filmFinalAvailabilityShort(r);
-          const chLine = filmChaptersMetaLine(r);
-          const iconSz = useShelfCell ? Math.max(14, Math.min(20, Math.round(shelfCellH * 0.12))) : 18;
-          const actionBtn = useShelfCell ? Math.max(28, Math.min(40, Math.round(shelfCellH * 0.26))) : 36;
           const microShelfClick = () => {
+            if (!r.canTryPlayback) return;
             if (primaryKind === "watch" || primaryKind === "verify_final") {
               openPlayerForRow(r);
-              return;
-            }
-            if (typeof onOpenScenografieProject === "function") {
-              onOpenScenografieProject(r.id, { focus: "project" });
             }
           };
-          const posterInteractive = useShelfCell && showFilmFooter;
+          const posterInteractive = useShelfCell && showFilmFooter && r.canTryPlayback;
+          const footerDate = r.updatedAt ? (
+            <div
+              style={{
+                fontSize: footerDateFont,
+                fontWeight: 600,
+                color: AX.text2,
+                lineHeight: 1.2,
+                flexShrink: 0,
+                textAlign: "right",
+                whiteSpace: "nowrap",
+                paddingLeft: 8,
+                alignSelf: "center",
+              }}
+            >
+              {new Date(r.updatedAt).toLocaleDateString("it-IT", { day: "numeric", month: "short" })}
+            </div>
+          ) : null;
           return (
           <div
             key={r.id}
             data-ax-shelf-tile={useShelfCell ? "film" : undefined}
-            role={useShelfCell && !showFilmFooter ? "button" : undefined}
-            tabIndex={useShelfCell && !showFilmFooter ? 0 : undefined}
+            role={useShelfCell && !showFilmFooter && r.canTryPlayback ? "button" : undefined}
+            tabIndex={useShelfCell && !showFilmFooter && r.canTryPlayback ? 0 : undefined}
             onKeyDown={
-              useShelfCell && !showFilmFooter
+              useShelfCell && !showFilmFooter && r.canTryPlayback
                 ? (e) => {
                     if (e.key === "Enter" || e.key === " ") {
                       e.preventDefault();
@@ -610,7 +599,26 @@ export default function ScenografieCompletedFilmsLibrary({
                   }
                 : undefined
             }
-            onClick={useShelfCell && !showFilmFooter ? microShelfClick : undefined}
+            onClick={useShelfCell && !showFilmFooter && r.canTryPlayback ? microShelfClick : undefined}
+            onMouseEnter={(e) => {
+              const t = e.currentTarget;
+              if (r.canTryPlayback) {
+                t.style.borderColor = AX.electric;
+                t.style.boxShadow = useShelfCell
+                  ? "0 8px 22px rgba(0,0,0,0.32), 0 0 0 1px rgba(41,182,255,0.5), 0 0 22px rgba(41,182,255,0.22)"
+                  : "0 18px 44px rgba(0,0,0,0.38), 0 0 0 1px rgba(41,182,255,0.5), 0 0 32px rgba(41,182,255,0.24)";
+              } else {
+                t.style.borderColor = "rgba(253,224,71,0.9)";
+                t.style.boxShadow = useShelfCell
+                  ? "0 8px 22px rgba(0,0,0,0.32), 0 0 0 1px rgba(251,191,36,0.55), 0 0 18px rgba(251,191,36,0.2)"
+                  : "0 18px 44px rgba(0,0,0,0.38), 0 0 0 1px rgba(251,191,36,0.55), 0 0 26px rgba(251,191,36,0.22)";
+              }
+            }}
+            onMouseLeave={(e) => {
+              const t = e.currentTarget;
+              t.style.borderColor = r.canTryPlayback ? AX.border : "rgba(251,191,36,0.35)";
+              t.style.boxShadow = useShelfCell ? "0 8px 20px rgba(0,0,0,0.28)" : "0 18px 40px rgba(0,0,0,0.35)";
+            }}
             style={{
               borderRadius: cardRadius,
               border: `1px solid ${r.canTryPlayback ? AX.border : "rgba(251,191,36,0.35)"}`,
@@ -620,6 +628,7 @@ export default function ScenografieCompletedFilmsLibrary({
               flexDirection: "column",
               opacity: 1,
               boxShadow: useShelfCell ? "0 8px 20px rgba(0,0,0,0.28)" : "0 18px 40px rgba(0,0,0,0.35)",
+              transition: "border-color 0.18s ease, box-shadow 0.18s ease",
               ...(useShelfCell
                 ? {
                     width: homeShelfMetrics.cellWidth,
@@ -628,7 +637,7 @@ export default function ScenografieCompletedFilmsLibrary({
                     justifySelf: "start",
                     height: "100%",
                     minHeight: 0,
-                    cursor: "pointer",
+                    cursor: r.canTryPlayback ? "pointer" : "default",
                     boxSizing: "border-box",
                   }
                 : {}),
@@ -680,9 +689,10 @@ export default function ScenografieCompletedFilmsLibrary({
               <div
                 style={{
                   position: "absolute",
-                  bottom: useShelfCell ? Math.max(6, Math.round(shelfCellH * 0.06)) : 10,
+                  top: useShelfCell ? Math.max(6, Math.round(shelfCellH * 0.06)) : 10,
                   right: useShelfCell ? Math.max(6, Math.round(shelfCellH * 0.06)) : 10,
                   left: "auto",
+                  bottom: "auto",
                   maxWidth: "58%",
                   pointerEvents: "none",
                 }}
@@ -713,284 +723,44 @@ export default function ScenografieCompletedFilmsLibrary({
             {showFilmFooter ? (
             <div
               style={{
-                padding: useShelfCell ? `${Math.max(6, Math.round(shelfCellH * 0.07))}px ${Math.max(8, Math.round(shelfCellH * 0.08))}px` : "12px 14px 14px",
+                padding: useShelfCell
+                  ? `${Math.max(3, Math.round(shelfCellH * 0.028))}px ${Math.max(5, Math.round(shelfCellH * 0.05))}px`
+                  : "8px 12px 9px",
                 flex: useShelfCell ? "0 0 auto" : 1,
                 display: "flex",
                 flexDirection: "column",
-                gap: useShelfCell ? Math.max(3, Math.round(shelfCellH * 0.04)) : 8,
+                gap: 0,
                 minHeight: 0,
                 borderTop: "1px solid rgba(255,255,255,0.05)",
               }}
             >
               <div
                 style={{
-                  fontSize: titleFont,
-                  fontWeight: 800,
-                  color: AX.text,
-                  lineHeight: 1.2,
-                  letterSpacing: "-0.02em",
-                  display: "-webkit-box",
-                  WebkitLineClamp: 2,
-                  WebkitBoxOrient: "vertical",
-                  overflow: "hidden",
-                  wordBreak: "break-word",
-                }}
-              >
-                {r.title}
-              </div>
-              <div
-                style={{
-                  fontSize: metaFont,
-                  color: AX.muted,
-                  lineHeight: 1.3,
                   display: "flex",
-                  flexWrap: "wrap",
-                  alignItems: "center",
-                  gap: "4px 8px",
+                  alignItems: "flex-start",
+                  gap: 0,
+                  minWidth: 0,
                 }}
               >
-                {chLine ? <span>{chLine}</span> : null}
-                {chLine ? <span style={{ opacity: 0.35 }}>·</span> : null}
-                <span style={{ color: fin.ok ? "rgba(134,239,172,0.95)" : AX.text2 }}>Finale: {fin.label}</span>
-                {r.updatedAt ? (
-                  <span style={{ fontSize: Math.max(9, metaFont - 1), opacity: 0.75 }}>
-                    · {new Date(r.updatedAt).toLocaleDateString("it-IT", { day: "numeric", month: "short" })}
-                  </span>
-                ) : null}
-              </div>
-              <div
-                style={{
-                  display: "flex",
-                  flexWrap: "wrap",
-                  alignItems: "center",
-                  justifyContent: "flex-end",
-                  gap: useShelfCell ? 4 : 6,
-                  marginTop: "auto",
-                  paddingTop: useShelfCell ? 4 : 6,
-                }}
-                onClick={(e) => e.stopPropagation()}
-              >
-                {primaryKind === "verify_final" ? (
-                  <button
-                    type="button"
-                    title={verifyBusyId === r.id ? "Verifica in corso…" : "Verifica file finale"}
-                    aria-label={verifyBusyId === r.id ? "Verifica in corso" : "Verifica file finale"}
-                    disabled={verifyBusyId === r.id}
-                    onClick={() => void runCardVerification(r.id)}
-                    style={{
-                      width: actionBtn,
-                      height: actionBtn,
-                      borderRadius: Math.max(8, Math.round(actionBtn * 0.22)),
-                      border: `1px solid rgba(41,182,255,0.45)`,
-                      background: "rgba(41,182,255,0.12)",
-                      color: AX.electric,
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      cursor: verifyBusyId === r.id ? "wait" : "pointer",
-                      opacity: verifyBusyId === r.id ? 0.75 : 1,
-                      flexShrink: 0,
-                    }}
-                  >
-                    <HiShieldCheck size={iconSz} />
-                  </button>
-                ) : null}
-                {(primaryKind === "watch" || primaryKind === "verify_final") && r.canTryPlayback ? (
-                  <button
-                    type="button"
-                    title="Riproduci"
-                    aria-label="Riproduci"
-                    onClick={() => openPlayerForRow(r)}
-                    style={{
-                      width: actionBtn,
-                      height: actionBtn,
-                      borderRadius: Math.max(8, Math.round(actionBtn * 0.22)),
-                      border: "none",
-                      background: AX.gradPrimary,
-                      color: "#fff",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      cursor: "pointer",
-                      flexShrink: 0,
-                    }}
-                  >
-                    <HiPlay size={iconSz} />
-                  </button>
-                ) : null}
-                {primaryKind === "watch" && r.hasUrl ? (
-                  <button
-                    type="button"
-                    title="Verifica file finale"
-                    aria-label="Verifica file finale"
-                    disabled={verifyBusyId === r.id}
-                    onClick={() => void runCardVerification(r.id)}
-                    style={{
-                      width: actionBtn,
-                      height: actionBtn,
-                      borderRadius: Math.max(8, Math.round(actionBtn * 0.22)),
-                      border: `1px solid rgba(41,182,255,0.35)`,
-                      background: "rgba(41,182,255,0.08)",
-                      color: AX.electric,
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      cursor: verifyBusyId === r.id ? "wait" : "pointer",
-                      flexShrink: 0,
-                    }}
-                  >
-                    <HiShieldCheck size={Math.round(iconSz * 0.92)} />
-                  </button>
-                ) : null}
-                {primaryKind === "verify" && r.filmUrl ? (
-                  <button
-                    type="button"
-                    title="Apri file in nuova scheda"
-                    aria-label="Apri file in nuova scheda"
-                    onClick={() => {
-                      try {
-                        window.open(r.filmUrl, "_blank", "noopener,noreferrer");
-                      } catch {
-                        /* ignore */
-                      }
-                    }}
-                    style={{
-                      width: actionBtn,
-                      height: actionBtn,
-                      borderRadius: Math.max(8, Math.round(actionBtn * 0.22)),
-                      border: "none",
-                      background: AX.gradPrimary,
-                      color: "#fff",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      cursor: "pointer",
-                      flexShrink: 0,
-                    }}
-                  >
-                    <HiArrowTopRightOnSquare size={iconSz} />
-                  </button>
-                ) : null}
-                {primaryKind === "watch" && r.hasUrl ? (
-                  <button
-                    type="button"
-                    title="Apri link in nuova scheda"
-                    aria-label="Apri link in nuova scheda"
-                    onClick={() => {
-                      try {
-                        window.open(r.filmUrl, "_blank", "noopener,noreferrer");
-                      } catch {
-                        /* ignore */
-                      }
-                    }}
-                    style={{
-                      width: actionBtn,
-                      height: actionBtn,
-                      borderRadius: Math.max(8, Math.round(actionBtn * 0.22)),
-                      border: `1px solid ${AX.border}`,
-                      background: "rgba(20,20,28,0.75)",
-                      color: AX.text2,
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      cursor: "pointer",
-                      flexShrink: 0,
-                    }}
-                  >
-                    <HiArrowTopRightOnSquare size={Math.round(iconSz * 0.9)} />
-                  </button>
-                ) : null}
-                {typeof onOpenScenografieProject === "function" && r.showOpenChapterWithFile && r.playableSourceChapterId ? (
-                  <button
-                    type="button"
-                    title="Apri capitolo con il file"
-                    aria-label="Apri capitolo con il file"
-                    onClick={() => onOpenScenografieProject(r.id, { chapterId: r.playableSourceChapterId, focus: "montage" })}
-                    style={{
-                      width: actionBtn,
-                      height: actionBtn,
-                      borderRadius: Math.max(8, Math.round(actionBtn * 0.22)),
-                      border: "1px solid rgba(74,222,128,0.4)",
-                      background: "rgba(74,222,128,0.08)",
-                      color: "#86efac",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      cursor: "pointer",
-                      flexShrink: 0,
-                    }}
-                  >
-                    <HiFilm size={Math.round(iconSz * 0.92)} />
-                  </button>
-                ) : null}
-                {typeof onOpenScenografieProject === "function" ? (
-                  primaryKind === "montage" ? (
-                    <button
-                      type="button"
-                      title="Apri montaggio"
-                      aria-label="Apri montaggio"
-                      onClick={() => onOpenScenografieProject(r.id, r.montageDeepLink)}
-                      style={{
-                        width: actionBtn,
-                        height: actionBtn,
-                        borderRadius: Math.max(8, Math.round(actionBtn * 0.22)),
-                        border: `1px solid rgba(251,191,36,0.45)`,
-                        background: "rgba(251,191,36,0.08)",
-                        color: "#fcd34d",
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        cursor: "pointer",
-                        flexShrink: 0,
-                      }}
-                    >
-                      <HiFilm size={iconSz} />
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      title="Apri progetto"
-                      aria-label="Apri progetto"
-                      onClick={() => onOpenScenografieProject(r.id, { focus: "project" })}
-                      style={{
-                        width: actionBtn,
-                        height: actionBtn,
-                        borderRadius: Math.max(8, Math.round(actionBtn * 0.22)),
-                        border: `1px solid ${AX.border}`,
-                        background: "rgba(20,20,28,0.85)",
-                        color: AX.text2,
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        cursor: "pointer",
-                        flexShrink: 0,
-                      }}
-                    >
-                      <HiRectangleStack size={iconSz} />
-                    </button>
-                  )
-                ) : null}
-                <button
-                  type="button"
-                  title="Aggiorna stato"
-                  aria-label="Aggiorna stato film"
-                  onClick={() => void refresh()}
+                <div
                   style={{
-                    width: actionBtn,
-                    height: actionBtn,
-                    borderRadius: Math.max(8, Math.round(actionBtn * 0.22)),
-                    border: `1px solid ${AX.border}`,
-                    background: "rgba(20,20,28,0.6)",
-                    color: AX.muted,
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    cursor: "pointer",
-                    flexShrink: 0,
+                    flex: "1 1 auto",
+                    minWidth: 0,
+                    fontSize: titleFont,
+                    fontWeight: 800,
+                    color: AX.text,
+                    lineHeight: 1.18,
+                    letterSpacing: "-0.02em",
+                    display: "-webkit-box",
+                    WebkitLineClamp: 2,
+                    WebkitBoxOrient: "vertical",
+                    overflow: "hidden",
+                    wordBreak: "break-word",
                   }}
                 >
-                  <HiArrowPath size={Math.round(iconSz * 0.88)} />
-                </button>
+                  {r.title}
+                </div>
+                {footerDate}
               </div>
             </div>
             ) : null}

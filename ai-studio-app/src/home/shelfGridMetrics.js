@@ -10,9 +10,9 @@ export const HOME_SHELF_GRID_NORMAL = Object.freeze({
   gap: 10,
 });
 
-/** Tab Home «Film»: card più larghe (locandina), stesso numero di righe visibili della vetrina normale. */
+/** Tab Home «Film»: 4 colonne come la vetrina normale, locandine in formato compatto. */
 export const HOME_SHELF_GRID_FILM = Object.freeze({
-  columns: 3,
+  columns: 4,
   visibleRows: 4,
   gap: 12,
 });
